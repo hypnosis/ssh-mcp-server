@@ -1,0 +1,61 @@
+{
+  "name": "@hypnosis/ssh-mcp-server",
+  "version": "1.0.0",
+  "description": "SSH MCP Server - универсальный инструмент для управления удаленными серверами через AI ассистента (Cursor, Claude Desktop). Поддержка выполнения команд, работы с файлами, логами и system health check.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "ssh-mcp-server": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0",
+    "ssh2": "^1.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ssh2": "^1.15.0",
+    "@vitest/coverage-v8": "^4.0.16",
+    "@vitest/ui": "^4.0.16",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.16"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "ssh",
+    "nginx",
+    "server-management",
+    "logs",
+    "crond",
+    "backups",
+    "packages",
+    "cursor",
+    "claude",
+    "model-context-protocol"
+  ],
+  "author": "Danila Susak",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hypnosis/ssh-mcp-server.git"
+  }
+}

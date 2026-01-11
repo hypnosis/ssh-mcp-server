@@ -30,14 +30,25 @@ async function main() {
   logger.info(`Starting SSH MCP Server v${version}`);
 
   // Load SSH profiles from SSH_PROFILES_FILE
+  logger.debug(`[MCP Server] Checking SSH_PROFILES_FILE environment variable...`);
+  const profilesFile = process.env.SSH_PROFILES_FILE;
+  if (profilesFile) {
+    logger.debug(`[MCP Server] SSH_PROFILES_FILE=${profilesFile}`);
+  } else {
+    logger.error(`[MCP Server] ❌ SSH_PROFILES_FILE environment variable not set`);
+  }
+  
   try {
+    logger.debug(`[MCP Server] Loading SSH profiles...`);
     const profiles = getAvailableProfiles();
     const defaultProfile = getDefaultProfile();
-    logger.info(`Loaded ${profiles.length} SSH profiles: ${profiles.join(', ')}`);
-    logger.info(`Default profile: ${defaultProfile}`);
+    logger.info(`[MCP Server] ✅ Loaded ${profiles.length} SSH profiles: ${profiles.join(', ')}`);
+    logger.info(`[MCP Server] Default profile: "${defaultProfile}"`);
+    logger.debug(`[MCP Server] Profile details:`, profiles.map(p => ({ name: p, default: p === defaultProfile })));
   } catch (error: any) {
-    logger.error('Failed to load SSH profiles:', error.message);
-    logger.error('Please set SSH_PROFILES_FILE environment variable');
+    logger.error(`[MCP Server] ❌ Failed to load SSH profiles: ${error.message}`);
+    logger.error(`[MCP Server] Please set SSH_PROFILES_FILE environment variable`);
+    logger.debug(`[MCP Server] Error details:`, error);
     process.exit(1);
   }
 

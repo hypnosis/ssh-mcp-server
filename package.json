@@ -1,6 +1,6 @@
 {
   "name": "@hypnosis/ssh-mcp-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "SSH MCP Server - Universal tool for managing remote servers via AI assistants (Cursor, Claude Desktop). Supports command execution, file operations, log management and system health check.",
   "type": "module",
   "main": "./dist/index.js",
@@ -20,8 +20,13 @@
     "dev": "tsx src/index.ts",
     "clean": "rm -rf dist",
     "test": "vitest run",
+    "test:unit": "vitest run tests/unit/",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run build && npm run test:unit",
+    "publish:dry": "npm pack --dry-run",
+    "publish:check": "npm pack && tar -tzf *.tgz | head -20 && rm -f *.tgz",
+    "publish:npm": "npm publish --access public"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.6.0",

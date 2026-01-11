@@ -10,18 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.1] - 2026-01-12
 
 ### Added
-- Input validation for `ssh_exec` command parameter to detect malformed array syntax
+- Input validation for array parameters in all tools (ssh_exec, ssh_file_read, ssh_log_tail, ssh_log_search)
+- Centralized array validator utility (`array-validator.ts`) for reusable validation logic
 - Clear error messages when using single quotes instead of double quotes in arrays
 - Improved description in `ssh_exec` tool schema with examples of correct syntax
 - Documentation about array syntax requirements in README.md
+- Array validator documentation (docs/ARRAY_VALIDATOR.md)
 
 ### Fixed
 - Fixed issue where array commands with single quotes (`['cmd1', 'cmd2']`) caused parsing errors
 - Added validation to prevent execution of malformed command arrays
 
+### Changed
+- Refactored array validation to centralized utility (DRY principle)
+- Applied validation to all tools with array parameters for consistency
+
 ### Documentation
 - Added array syntax guidelines to README.md usage examples
 - Updated DEBUG_BATCH_EXEC.md with problem solution and explanation
+- Added ARRAY_VALIDATOR.md with validator API documentation
 - Improved tool descriptions for AI assistants with explicit examples
 
 ## [1.0.0] - 2026-01-XX

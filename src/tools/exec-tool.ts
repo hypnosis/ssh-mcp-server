@@ -7,6 +7,7 @@ import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
+import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 
 /**
  * Dangerous command patterns
@@ -107,38 +108,10 @@ export class ExecTool {
     try {
       const args = request.params.arguments as any;
       
-      // Validator: Check for malformed array syntax (single quotes or stringified array)
-      if (typeof args.command === 'string') {
-        const trimmed = args.command.trim();
-        
-        // Detect malformed array: starts with [ but not [[ (bash test)
-        if (trimmed.startsWith('[') && !trimmed.startsWith('[[')) {
-          // Check if it looks like array with single quotes: ['cmd'] or ['cmd', 'cmd']
-          const hasSingleQuotes = /^\[['"]/.test(trimmed) || /,\s*['"]/.test(trimmed);
-          
-          if (hasSingleQuotes || trimmed.includes('[') && trimmed.includes(',')) {
-            return {
-              content: [{
-                type: 'text',
-                text: `❌ Malformed 'command' parameter detected
-
-Received: ${args.command}
-
-For array of commands, use DOUBLE QUOTES in JSON format:
-✅ Correct:   command: ["hostname", "whoami", "date"]
-❌ Incorrect: command: ['hostname', 'whoami', 'date']
-
-For single command, use string:
-✅ Correct:   command: "hostname"
-
-For bash tests, this validator won't trigger:
-✅ Correct:   command: "[[ -f file.txt ]] && echo exists"
-
-MCP tools require valid JSON syntax for arrays.`
-              }]
-            };
-          }
-        }
+      // Validate array parameter format
+      const validation = validateArrayParameter(args.command, 'command');
+      if (!validation.isValid) {
+        return createValidationErrorResponse(validation.errorMessage!);
       }
       
       // Resolve SSH config

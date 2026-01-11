@@ -1,12 +1,13 @@
 /**
  * SSH Log Tools
- * Инструменты для работы с логами на удаленном сервере
+ * Tools for working with logs on remote server
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
+import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 
 /**
  * Log Tools
@@ -19,7 +20,7 @@ export class LogTools {
   }
   
   /**
-   * Получить описания tools для MCP
+   * Get tool descriptions for MCP
    */
   getTools(): Tool[] {
     return [
@@ -101,7 +102,7 @@ export class LogTools {
   }
   
   /**
-   * Обработать вызов tool
+   * Handle tool call
    */
   async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
     const toolName = request.params.name;
@@ -124,17 +125,24 @@ export class LogTools {
   }
   
   /**
-   * Обработать ssh_log_tail
+   * Handle ssh_log_tail
    */
   private async handleLogTail(request: CallToolRequest) {
     const args = request.params.arguments as any;
+    
+    // Validate array parameter format
+    const validation = validateArrayParameter(args.path, 'path');
+    if (!validation.isValid) {
+      return createValidationErrorResponse(validation.errorMessage!);
+    }
+    
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const paths = Array.isArray(args.path) ? args.path : [args.path];
     const lines = args.lines || 100;
     const sudo = args.sudo || false;
     
-    // Если один лог - простой результат
+    // Single log - simple result
     if (paths.length === 1) {
       const command = `tail -n ${lines} '${this.escapePath(paths[0])}'`;
       const result = await this.executor.execute(sshConfig, command, { sudo });
@@ -190,7 +198,7 @@ export class LogTools {
       }
     }
     
-    // Форматируем вывод
+    // Format output
     let output = `Tail ${results.length} logs (last ${lines} lines):\n\n`;
     
     for (const result of results) {
@@ -209,10 +217,17 @@ export class LogTools {
   }
   
   /**
-   * Обработать ssh_log_search
+   * Handle ssh_log_search
    */
   private async handleLogSearch(request: CallToolRequest) {
     const args = request.params.arguments as any;
+    
+    // Validate array parameter format
+    const validation = validateArrayParameter(args.path, 'path');
+    if (!validation.isValid) {
+      return createValidationErrorResponse(validation.errorMessage!);
+    }
+    
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const paths = Array.isArray(args.path) ? args.path : [args.path];
@@ -221,14 +236,14 @@ export class LogTools {
     const caseSensitive = args.caseSensitive || false;
     const sudo = args.sudo || false;
     
-    // Собираем grep флаги
+    // Build grep flags
     const grepFlags = [];
     grepFlags.push('-E'); // Extended regex
     if (!caseSensitive) grepFlags.push('-i'); // Case insensitive
     if (context > 0) grepFlags.push(`-C ${context}`); // Context lines
     grepFlags.push('-n'); // Line numbers
     
-    // Если один лог - простой результат
+    // Single log - simple result
     if (paths.length === 1) {
       const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' '${this.escapePath(paths[0])}'`;
       const result = await this.executor.execute(sshConfig, command, { sudo });
@@ -292,7 +307,7 @@ export class LogTools {
       }
     }
     
-    // Форматируем вывод
+    // Format output
     let output = `Search in ${results.length} logs (query: "${query}"):\n\n`;
     
     for (const result of results) {
@@ -311,14 +326,14 @@ export class LogTools {
   }
   
   /**
-   * Экранировать путь для shell
+   * Escape path for shell
    */
   private escapePath(path: string): string {
     return path.replace(/'/g, "'\"'\"'");
   }
   
   /**
-   * Экранировать query для grep
+   * Escape query for grep
    */
   private escapeQuery(query: string): string {
     return query.replace(/'/g, "'\"'\"'");

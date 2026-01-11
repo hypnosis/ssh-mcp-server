@@ -1,6 +1,6 @@
 /**
  * SSH Exec Tool
- * Универсальный инструмент для выполнения SSH команд
+ * Universal tool for executing SSH commands
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -9,28 +9,28 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 
 /**
- * Паттерны опасных команд
+ * Dangerous command patterns
  */
 const DANGEROUS_PATTERNS = [
-  // Удаление
+  // Deletion
   { pattern: /\brm\s+-rf\s+\//, message: 'rm -rf / detected' },
   { pattern: /\brm\s+-rf\s+~/, message: 'rm -rf ~ detected' },
   { pattern: /\brm\s+-rf\s+\*/, message: 'rm -rf * detected' },
   
-  // Права
+  // Permissions
   { pattern: /\bchmod\s+777\b/, message: 'chmod 777 detected (security risk)' },
   
-  // Системные
+  // System commands
   { pattern: /\breboot\b/, message: 'reboot detected' },
   { pattern: /\bshutdown\b/, message: 'shutdown detected' },
   { pattern: /\bhalt\b/, message: 'halt detected' },
   { pattern: /\bpoweroff\b/, message: 'poweroff detected' },
   
-  // Docker массовое удаление
+  // Docker bulk deletion
   { pattern: /\bdocker\s+system\s+prune\s+-a/, message: 'docker system prune -a detected' },
   { pattern: /\bdocker\s+rm\s+.*-f\s+\$\(docker\s+ps/, message: 'docker rm all containers detected' },
   
-  // База данных
+  // Database
   { pattern: /\bDROP\s+DATABASE\b/i, message: 'DROP DATABASE detected' },
   { pattern: /\bDROP\s+TABLE\b/i, message: 'DROP TABLE detected' },
   { pattern: /\bTRUNCATE\b/i, message: 'TRUNCATE detected' },
@@ -38,7 +38,7 @@ const DANGEROUS_PATTERNS = [
 ];
 
 /**
- * Проверить команду на опасные паттерны
+ * Check command for dangerous patterns
  */
 function checkDangerousCommand(command: string): string | null {
   for (const { pattern, message } of DANGEROUS_PATTERNS) {
@@ -60,7 +60,7 @@ export class ExecTool {
   }
   
   /**
-   * Получить описание tool для MCP
+   * Get tool description for MCP
    */
   getTool(): Tool {
     return {
@@ -78,7 +78,7 @@ export class ExecTool {
               { type: 'string' },
               { type: 'array', items: { type: 'string' } },
             ],
-            description: 'Single command string or array of commands to execute',
+            description: 'Single command string or array of commands to execute. For arrays, use JSON format with double quotes: ["cmd1", "cmd2"]. Examples: command: "hostname" (single) or command: ["hostname", "whoami", "date"] (batch)',
           },
           sudo: {
             type: 'boolean',
@@ -101,19 +101,53 @@ export class ExecTool {
   }
   
   /**
-   * Обработать вызов tool
+   * Handle tool call
    */
   async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
     try {
       const args = request.params.arguments as any;
       
+      // Validator: Check for malformed array syntax (single quotes or stringified array)
+      if (typeof args.command === 'string') {
+        const trimmed = args.command.trim();
+        
+        // Detect malformed array: starts with [ but not [[ (bash test)
+        if (trimmed.startsWith('[') && !trimmed.startsWith('[[')) {
+          // Check if it looks like array with single quotes: ['cmd'] or ['cmd', 'cmd']
+          const hasSingleQuotes = /^\[['"]/.test(trimmed) || /,\s*['"]/.test(trimmed);
+          
+          if (hasSingleQuotes || trimmed.includes('[') && trimmed.includes(',')) {
+            return {
+              content: [{
+                type: 'text',
+                text: `❌ Malformed 'command' parameter detected
+
+Received: ${args.command}
+
+For array of commands, use DOUBLE QUOTES in JSON format:
+✅ Correct:   command: ["hostname", "whoami", "date"]
+❌ Incorrect: command: ['hostname', 'whoami', 'date']
+
+For single command, use string:
+✅ Correct:   command: "hostname"
+
+For bash tests, this validator won't trigger:
+✅ Correct:   command: "[[ -f file.txt ]] && echo exists"
+
+MCP tools require valid JSON syntax for arrays.`
+              }]
+            };
+          }
+        }
+      }
+      
       // Resolve SSH config
       const sshConfig = resolveSSHConfig({ profile: args.profile });
       
-      // Определяем тип command (string или array)
+      // Determine command type (string or array)
       const commands = Array.isArray(args.command) ? args.command : [args.command];
       
-      // Проверяем на опасные команды
+      // Check for dangerous commands
       const warnings: string[] = [];
       for (const cmd of commands) {
         const warning = checkDangerousCommand(cmd);
@@ -122,7 +156,7 @@ export class ExecTool {
         }
       }
       
-      // Если одна команда - возвращаем простой результат
+      // Single command - return simple result
       if (commands.length === 1) {
         const result = await this.executor.execute(sshConfig, commands[0], {
           sudo: args.sudo || false,
@@ -132,22 +166,22 @@ export class ExecTool {
         
         let output = '';
         
-        // Добавляем предупреждения
+        // Add warnings
         if (warnings.length > 0) {
           output += warnings.join('\n\n') + '\n\n';
         }
         
-        // Добавляем stdout
+        // Add stdout
         if (result.stdout) {
           output += result.stdout;
         }
         
-        // Добавляем stderr если есть
+        // Add stderr if present
         if (result.stderr) {
           output += `\n\nSTDERR:\n${result.stderr}`;
         }
         
-        // Добавляем exit code если не 0
+        // Add exit code if not 0
         if (result.exitCode !== 0) {
           output += `\n\nExit code: ${result.exitCode}`;
         }
@@ -157,7 +191,7 @@ export class ExecTool {
         };
       }
       
-      // Множественные команды - возвращаем структурированный результат
+      // Multiple commands - return structured result
       const results: Array<{
         command: string;
         stdout: string;
@@ -180,10 +214,10 @@ export class ExecTool {
         });
       }
       
-      // Форматируем вывод
+      // Format output
       let output = '';
       
-      // Добавляем предупреждения
+      // Add warnings
       if (warnings.length > 0) {
         output += warnings.join('\n\n') + '\n\n';
         output += '═'.repeat(60) + '\n\n';

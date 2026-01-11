@@ -47,13 +47,13 @@ Create file `~/.cursor/ssh-profiles.json`:
       "host": "server.example.com",
       "username": "admin",
       "port": 22,
-      "privateKeyPath": "~/.ssh/id_rsa"
+      "privateKeyPath": "~/.ssh/your_private_key"
     },
     "staging": {
       "host": "staging.example.com",
       "username": "deploy",
       "port": 22,
-      "privateKeyPath": "~/.ssh/id_rsa"
+      "privateKeyPath": "~/.ssh/your_private_key"
     }
   }
 }
@@ -87,6 +87,14 @@ Done! AI can now manage your servers.
 
 ### ssh_exec - Execute Commands
 
+**⚠️ Important: Array Syntax**
+
+For batch commands, use **double quotes** in JSON format:
+- ✅ Correct: `command: ["cmd1", "cmd2"]`
+- ❌ Incorrect: `command: ['cmd1', 'cmd2']`
+
+MCP tools require valid JSON syntax. Single quotes will cause errors.
+
 ```typescript
 // Single command
 ssh_exec({
@@ -94,7 +102,7 @@ ssh_exec({
   command: "systemctl status nginx"
 })
 
-// Batch commands
+// Batch commands (use double quotes!)
 ssh_exec({
   profile: "production",
   command: [
@@ -121,6 +129,8 @@ ssh_exec({
 
 ### ssh_file_read - Read Files
 
+**Note:** For multiple files, use double quotes: `path: ["file1", "file2"]`
+
 ```typescript
 // Single file
 ssh_file_read({
@@ -128,7 +138,7 @@ ssh_file_read({
   path: "/etc/nginx/nginx.conf"
 })
 
-// Multiple files
+// Multiple files (use double quotes!)
 ssh_file_read({
   profile: "production",
   path: [
@@ -204,6 +214,8 @@ ssh_file_list({
 
 ### ssh_log_tail - Last Log Lines
 
+**Note:** For multiple logs, use double quotes: `path: ["log1", "log2"]`
+
 ```typescript
 // Single log
 ssh_log_tail({
@@ -212,7 +224,7 @@ ssh_log_tail({
   lines: 100
 })
 
-// Multiple logs
+// Multiple logs (use double quotes!)
 ssh_log_tail({
   profile: "production",
   path: [

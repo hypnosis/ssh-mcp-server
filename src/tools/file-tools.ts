@@ -1,12 +1,13 @@
 /**
  * SSH File Tools
- * Инструменты для работы с файлами на удаленном сервере
+ * Tools for working with files on remote server
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
+import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 
 /**
  * File Tools
@@ -19,7 +20,7 @@ export class FileTools {
   }
   
   /**
-   * Получить описания tools для MCP
+   * Get tool descriptions for MCP
    */
   getTools(): Tool[] {
     return [
@@ -133,7 +134,7 @@ export class FileTools {
   }
   
   /**
-   * Обработать вызов tool
+   * Handle tool call
    */
   async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
     const toolName = request.params.name;
@@ -158,17 +159,24 @@ export class FileTools {
   }
   
   /**
-   * Обработать ssh_file_read
+   * Handle ssh_file_read
    */
   private async handleFileRead(request: CallToolRequest) {
     const args = request.params.arguments as any;
+    
+    // Validate array parameter format
+    const validation = validateArrayParameter(args.path, 'path');
+    if (!validation.isValid) {
+      return createValidationErrorResponse(validation.errorMessage!);
+    }
+    
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const paths = Array.isArray(args.path) ? args.path : [args.path];
     const encoding = args.encoding || 'utf8';
     const sudo = args.sudo || false;
     
-    // Если один файл - простой результат
+    // Single file - simple result
     if (paths.length === 1) {
       const command = encoding === 'base64'
         ? `base64 '${this.escapePath(paths[0])}'`
@@ -229,7 +237,7 @@ export class FileTools {
       }
     }
     
-    // Форматируем вывод
+    // Format output
     let output = `Read ${results.length} files:\n\n`;
     
     for (const result of results) {
@@ -249,7 +257,7 @@ export class FileTools {
   }
   
   /**
-   * Обработать ssh_file_write
+   * Handle ssh_file_write
    */
   private async handleFileWrite(request: CallToolRequest) {
     const args = request.params.arguments as any;
@@ -257,7 +265,7 @@ export class FileTools {
     
     const files = Array.isArray(args.files) ? args.files : [args.files];
     
-    // Если один файл - простой результат
+    // Single file - simple result
     if (files.length === 1) {
       const file = files[0];
       await this.writeFile(sshConfig, file.path, file.content, file.mode, file.sudo || false);
@@ -293,7 +301,7 @@ export class FileTools {
       }
     }
     
-    // Форматируем вывод
+    // Format output
     let output = `Write ${results.length} files:\n\n`;
     
     for (const result of results) {
@@ -311,7 +319,7 @@ export class FileTools {
   }
   
   /**
-   * Записать файл на удаленный сервер
+   * Write file to remote server
    */
   private async writeFile(
     sshConfig: any,
@@ -320,13 +328,13 @@ export class FileTools {
     mode?: string,
     sudo: boolean = false
   ): Promise<void> {
-    // Экранируем содержимое для heredoc
+    // Escape content for heredoc
     const escapedContent = content.replace(/'/g, "'\"'\"'");
     
-    // Команда записи через heredoc
+    // Write command via heredoc
     let command = `cat > '${this.escapePath(path)}' << 'SSHEOF'\n${escapedContent}\nSSHEOF`;
     
-    // Добавляем chmod если указаны права
+    // Add chmod if permissions specified
     if (mode) {
       command += ` && chmod ${mode} '${this.escapePath(path)}'`;
     }
@@ -339,7 +347,7 @@ export class FileTools {
   }
   
   /**
-   * Обработать ssh_file_list
+   * Handle ssh_file_list
    */
   private async handleFileList(request: CallToolRequest) {
     const args = request.params.arguments as any;
@@ -369,7 +377,7 @@ export class FileTools {
   }
   
   /**
-   * Экранировать путь для shell
+   * Escape path for shell
    */
   private escapePath(path: string): string {
     return path.replace(/'/g, "'\"'\"'");

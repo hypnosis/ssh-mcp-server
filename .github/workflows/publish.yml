@@ -1,0 +1,96 @@
+name: Publish to NPM
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - '*.*.*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run unit tests (fast, no Docker)
+        run: npm run test:unit
+      
+      - name: Build
+        run: npm run build
+      
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Support both tag formats: vX.Y.Z and X.Y.Z
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=${VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Published version: $VERSION"
+      
+      - name: Verify version matches package.json
+        run: |
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) does not match package.json version ($PACKAGE_VERSION)"
+            exit 1
+          fi
+          echo "Version match confirmed: $TAG_VERSION"
+      
+      - name: Check if version already published
+        id: check_version
+        run: |
+          if npm view @hypnosis/ssh-mcp-server@${{ steps.version.outputs.version }} version >/dev/null 2>&1; then
+            echo "already_published=true" >> $GITHUB_OUTPUT
+            echo "Version ${{ steps.version.outputs.version }} already published, skipping"
+          else
+            echo "already_published=false" >> $GITHUB_OUTPUT
+            echo "Version ${{ steps.version.outputs.version }} not found, will publish"
+          fi
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      
+      - name: Publish to NPM
+        if: steps.check_version.outputs.already_published != 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      
+      - name: Skip publish (already exists)
+        if: steps.check_version.outputs.already_published == 'true'
+        run: echo "✅ Version ${{ steps.version.outputs.version }} already published, skipping"
+      
+      - name: Create GitHub Release
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Release ${{ steps.version.outputs.version }}" \
+            --notes "## Changes in ${{ steps.version.outputs.version }}
+          
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          
+          ### Installation
+          \`\`\`bash
+          npm install -g @hypnosis/ssh-mcp-server
+          \`\`\`
+          
+          Or use with npx:
+          \`\`\`bash
+          npx @hypnosis/ssh-mcp-server
+          \`\`\`"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

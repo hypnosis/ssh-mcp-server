@@ -349,7 +349,8 @@ ssh_snapshot({
 ssh_monitor({
   action: "stats"
 })
-// Returns: cache hit rate, active connections, metrics
+// Returns: cache hit rate, active connections, session metrics
+// Note: Metrics reset automatically when all connections close (session-based)
 
 // Reload SSH profiles (without server restart)
 ssh_monitor({
@@ -446,21 +447,25 @@ Dangerous patterns detected:
       ↓
 SSH MCP Server
       ↓
-Profile Resolver → ~/.cursor/docker-profiles.json
+Profile Resolver → ~/.cursor/ssh-profiles.json
       ↓
-SSH Executor (new connection each time)
+Connection Pool (reuse connections)
       ↓
-7 Tools (exec, file, log, snapshot)
+SSH Executor
+      ↓
+8 Tools (exec, file, log, snapshot, monitor)
       ↓
 Remote Server(s)
 ```
 
 ### Key Principles:
 
-- **NO connection pool** - new connection for each command
+- **Connection Pool** - reuse SSH connections for better performance (6-10× faster)
+- **Session-based metrics** - metrics reset automatically when all connections close
 - **NO streaming** - snapshot results only
 - **REST approach** - arrays where logical
-- **Retry logic** - automatic retries
+- **Retry logic** - automatic retries with exponential backoff
+- **Auto-reconnect** - automatic reconnection on connection loss
 
 ## 🛠️ Development
 

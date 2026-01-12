@@ -518,10 +518,18 @@ src/
 - ✅ Retry logic
 - ✅ Security (warnings)
 
-### v1.1 (Planned)
+### v1.1 - v1.2.2 (Released) ✅
+- ✅ Connection pooling (6-10× faster)
+- ✅ Path security & tilde expansion
+- ✅ Retry mechanism with exponential backoff
+- ✅ Enhanced error messages
+- ✅ Profile reload & monitoring
+- ✅ Session-based metrics
+
+### Future (Planned)
 - 📋 SFTP file upload/download
-- 📋 Connection caching (optional)
 - 📋 Extended snapshot (custom checks)
+- 📋 Connection metrics dashboard
 
 ## 🤝 Contributing
 

@@ -1,7 +1,7 @@
 /**
  * SSH Manager
  * Управление SSH соединениями и выполнением команд на удаленных серверах
- * v2.0.0 - Использует ConnectionPool для переиспользования соединений
+ * v1.1.0 - Использует ConnectionPool для переиспользования соединений
  */
 
 import { Client } from 'ssh2';
@@ -25,7 +25,7 @@ export interface SSHFileTransferOptions {
 
 /**
  * SSH Manager для выполнения команд и работы с файлами
- * v2.0.0 - Использует ConnectionPool для переиспользования соединений
+ * v1.1.0 - Использует ConnectionPool для переиспользования соединений
  */
 export class SSHManager {
   /**
@@ -58,7 +58,7 @@ export class SSHManager {
 
   /**
    * Выполнить несколько команд последовательно
-   * v2.0.0 - Использует одно соединение для всех команд
+   * v1.1.0 - Использует одно соединение для всех команд
    */
   async executeBatch(
     config: SSHConfig,

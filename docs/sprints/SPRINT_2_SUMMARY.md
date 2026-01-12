@@ -2,7 +2,7 @@
 
 **Дата:** 2025-01-13  
 **Статус:** ✅ ЗАВЕРШЕНО  
-**Версия:** v2.0.0  
+**Версия:** v1.1.0  
 **Время выполнения:** ~2 часа (вместо запланированных 4 часов)
 
 ---
@@ -99,7 +99,7 @@ Command 10: Connect (1.5s) + Exec (0.1s) = 1.6s
 ИТОГО: ~16 секунд ❌
 ```
 
-### После (v2.0.0):
+### После (v1.1.0):
 ```
 10 команд подряд:
 Command 1: Connect (1.5s) + Exec (0.1s) = 1.6s
@@ -132,8 +132,8 @@ Command 10: Reuse + Exec (0.1s) = 0.1s
 - ✅ `src/tools/log-tools.ts` - передаёт profileName
 - ✅ `src/tools/snapshot-tool.ts` - передаёт profileName
 - ✅ `src/index.ts` - graceful shutdown
-- ✅ `package.json` - версия 2.0.0
-- ✅ `CHANGELOG.md` - описание изменений v2.0.0
+- ✅ `package.json` - версия 1.1.0
+- ✅ `CHANGELOG.md` - описание изменений v1.1.0
 
 ### Документация:
 - ✅ `docs/sprints/2025-01-13_SPRINT_2_CONNECTION_POOL.md` - статус ЗАВЕРШЕНО
@@ -178,7 +178,7 @@ Tool → SSHExecutor → new Client() → Connect → Exec → Close
   ❌ N команд = N соединений = медленно
 ```
 
-### После (v2.0.0):
+### После (v1.1.0):
 ```
 Tool → SSHExecutor → SSHManager → ConnectionPool → Client (reused)
 Tool → SSHExecutor → SSHManager → ConnectionPool → Client (reused)
@@ -236,7 +236,7 @@ Tool → SSHExecutor → SSHManager → ConnectionPool → Client (reused)
 - ✅ Все 7 задач выполнены
 - ✅ Проект компилируется без ошибок
 - ✅ Документация обновлена
-- ✅ Версия 2.0.0 готова
+- ✅ Версия 1.1.0 готова
 - ⚡ Ожидаемое ускорение: **6-10×**
 
 **Готово к тестированию!** 🚀

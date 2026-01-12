@@ -1,6 +1,6 @@
 /**
  * SSH Executor
- * SSH command execution with connection pooling (v2.0.0)
+ * SSH command execution with connection pooling (v1.1.0)
  */
 
 import { logger } from '../utils/logger.js';
@@ -32,7 +32,7 @@ export interface SSHExecuteResult {
 
 /**
  * SSH Executor for command execution
- * v2.0.0 - Uses SSHManager with connection pooling
+ * v1.1.0 - Uses SSHManager with connection pooling
  */
 export class SSHExecutor {
   private manager: SSHManager;

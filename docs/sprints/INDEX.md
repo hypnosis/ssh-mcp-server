@@ -1,4 +1,4 @@
-# 📑 Индекс документации - SSH MCP Server v2.0.0
+# 📑 Индекс документации - SSH MCP Server v1.1.0
 
 **Дата создания:** 2025-01-12  
 **Статус:** Планирование завершено, готово к реализации
@@ -152,7 +152,7 @@
 | Sprint 3 | 🟡 ВАЖНО | 2h | Тильда + безопасность | [PATH_SECURITY.md](2025-01-15_SPRINT_3_PATH_SECURITY.md) |
 | Sprint 4 | 🟡 ВАЖНО | 2h | Стабильность + retry | [TIMEOUT_ERRORS.md](2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md) |
 | Sprint 5 | 🟢 УДОБСТВО | 2h | Мониторинг + reload | [PROFILES_MONITORING.md](2025-01-17_SPRINT_5_PROFILES_MONITORING.md) |
-| **ИТОГО** | | **10h** | **v2.0.0 Ready** | |
+| **ИТОГО** | | **10h** | **v1.1.0 Ready** | |
 
 ---
 
@@ -317,5 +317,5 @@ cat docs/sprints/2025-01-13_SPRINT_2_CONNECTION_POOL.md
 ---
 
 *Документация создана: 2025-01-12*  
-*Версия: v1.0.0 → v2.0.0*  
+*Версия: v1.0.0 → v1.1.0*  
 *Автор: AI Architecture Analysis*

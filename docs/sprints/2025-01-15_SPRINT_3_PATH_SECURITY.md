@@ -601,7 +601,7 @@ ssh_file_read("../../../etc/passwd")
 5. **Документация**:
    - ✅ README.md - добавлена секция Path Security
    - ✅ BUGLIST.md - закрыты ISSUE-001, ARCH-004, ARCH-005
-   - ✅ CHANGELOG.md - добавлена версия 2.1.0
+   - ✅ CHANGELOG.md - добавлена версия 1.1.1
 
 ### 📁 Изменённые файлы:
 - `src/tools/file-tools.ts` - tilde expansion, path escaping, PathValidator
@@ -610,7 +610,7 @@ ssh_file_read("../../../etc/passwd")
 - `tests/unit/path-security.test.ts` - новый файл (37 тестов)
 - `docs/BUGLIST.md` - обновлён статус issues
 - `README.md` - добавлена документация
-- `CHANGELOG.md` - добавлена версия 2.1.0
+- `CHANGELOG.md` - добавлена версия 1.1.1
 
 ### 🎯 Решённые проблемы:
 - ✅ ISSUE-001 - Тильда не раскрывается в путях файлов

@@ -659,11 +659,11 @@ for i in 1..10:
 
 ## 📝 ЧЕКЛИСТ ЗАВЕРШЕНИЯ
 
-- [x] Race condition в timeout исправлена ✅ (уже было в v2.0.0)
+- [x] Race condition в timeout исправлена ✅ (уже было в v1.1.0)
 - [x] Retry механизм реализован (retry.ts) ✅ (уже существовал)
 - [x] Retry интегрирован в ConnectionPool ✅
 - [x] Детальные ошибки добавлены ✅
-- [x] Auto-reconnect реализован ✅ (уже было в v2.0.0)
+- [x] Auto-reconnect реализован ✅ (уже было в v1.1.0)
 - [x] Graceful degradation работает ✅
 - [x] Тесты error handling написаны ✅ (22 теста)
 - [x] Тесты пройдены ✅ (60 тестов всего, все проходят)

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Connection Pool metrics** - Fixed negative `activeConnections` value (now calculated dynamically from pool size)
+- **Session metrics auto-reset** - Metrics automatically reset when all connections close (session-based metrics)
+
 ## [1.2.1] - 2026-01-17
 
 ### Added - Sprint 5: Profiles Reload & Monitoring 📊

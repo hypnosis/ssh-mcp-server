@@ -10,10 +10,10 @@
  *   "default": "production",
  *   "profiles": {
  *     "production": {
- *       "host": "109.172.39.241",
- *       "username": "root",
+ *       "host": "server.example.com",
+ *       "username": "admin",
  *       "port": 22,
- *       "privateKeyPath": "~/.ssh/id_rsa"
+ *       "privateKeyPath": "~/.ssh/your_private_key"
  *     }
  *   }
  * }
@@ -87,9 +87,13 @@ const PROFILES: ProfilesConfig = loadProfilesFromEnv();
 function expandTilde(filepath?: string): string | undefined {
   if (!filepath) return undefined;
   
-  return filepath.startsWith('~/')
-    ? filepath.replace('~', homedir())
-    : filepath;
+  if (filepath.startsWith('~')) {
+    const home = homedir();
+    // Use regex to replace only the leading ~
+    return filepath.replace(/^~/, home);
+  }
+  
+  return filepath;
 }
 
 /**
@@ -116,30 +120,59 @@ function expandTilde(filepath?: string): string | undefined {
 export function resolveSSHConfig(args: {
   profile?: string;
 }): SSHConfig {
+  logger.debug(`[Profile Resolver] Resolving SSH config, requested profile: ${args.profile || 'default'}`);
+  logger.debug(`[Profile Resolver] Available profiles: ${Object.keys(PROFILES.profiles).join(', ')}`);
+  logger.debug(`[Profile Resolver] Default profile: ${PROFILES.default}`);
+  
   // Priority 1: Profile name specified
   if (args.profile) {
+    logger.debug(`[Profile Resolver] Looking up profile: "${args.profile}"`);
     const profileData = PROFILES.profiles[args.profile];
     
     if (!profileData) {
       const available = Object.keys(PROFILES.profiles).join(', ');
+      logger.error(`[Profile Resolver] ❌ Profile "${args.profile}" not found in SSH_PROFILES_FILE`);
+      logger.error(`[Profile Resolver] Available profiles: ${available}`);
       throw new Error(
         `Profile "${args.profile}" not found in SSH_PROFILES_FILE. ` +
         `Available profiles: ${available}`
       );
     }
     
+    logger.debug(`[Profile Resolver] Profile "${args.profile}" found, validating...`);
+    logger.debug(`[Profile Resolver] Profile data: host=${profileData.host}, username=${profileData.username}, port=${profileData.port || 22}`);
+    
     // Validate required fields for SSH
     if (!profileData.host || !profileData.username) {
+      logger.error(`[Profile Resolver] ❌ Profile "${args.profile}" missing required fields`);
+      logger.error(`[Profile Resolver] Profile data:`, profileData);
       throw new Error(`Profile "${args.profile}" must have "host" and "username" fields`);
     }
     
-    logger.debug(`Using SSH profile: ${args.profile}`);
+    logger.info(`[Profile Resolver] ✅ Using SSH profile: "${args.profile}"`);
+    logger.debug(`[Profile Resolver] Profile details: host=${profileData.host}, port=${profileData.port || 22}, username=${profileData.username}`);
+    
     const expandedKeyPath = expandTilde(profileData.privateKeyPath);
-    if (profileData.privateKeyPath && expandedKeyPath !== profileData.privateKeyPath) {
-      logger.debug(`Expanded privateKeyPath: ${profileData.privateKeyPath} → ${expandedKeyPath}`);
+    if (profileData.privateKeyPath) {
+      logger.debug(`[Profile Resolver] privateKeyPath: ${profileData.privateKeyPath}`);
+      if (expandedKeyPath !== profileData.privateKeyPath) {
+        logger.debug(`[Profile Resolver] Expanded privateKeyPath: ${profileData.privateKeyPath} → ${expandedKeyPath}`);
+      } else {
+        logger.debug(`[Profile Resolver] privateKeyPath did not require expansion`);
+      }
+    } else {
+      logger.debug(`[Profile Resolver] No privateKeyPath specified in profile`);
     }
     
-    return {
+    if (profileData.passphrase) {
+      logger.debug(`[Profile Resolver] Passphrase provided (key is encrypted)`);
+    }
+    
+    if (profileData.password) {
+      logger.debug(`[Profile Resolver] Password authentication configured`);
+    }
+    
+    const sshConfig: SSHConfig = {
       host: profileData.host,
       username: profileData.username,
       port: profileData.port || 22,
@@ -147,21 +180,35 @@ export function resolveSSHConfig(args: {
       passphrase: profileData.passphrase,
       password: profileData.password,
     };
+    
+    logger.debug(`[Profile Resolver] Resolved SSH config:`, {
+      host: sshConfig.host,
+      port: sshConfig.port,
+      username: sshConfig.username,
+      privateKeyPath: sshConfig.privateKeyPath,
+      hasPassphrase: !!sshConfig.passphrase,
+      hasPassword: !!sshConfig.password,
+    });
+    
+    return sshConfig;
   }
   
-  // Priority 2: Default profile (проверяем подходит ли для SSH)
+  // Priority 2: Default profile (check if suitable for SSH)
   const defaultProfileName = PROFILES.default;
+  logger.debug(`[Profile Resolver] No profile specified, using default: "${defaultProfileName}"`);
   const defaultProfileData = PROFILES.profiles[defaultProfileName];
   
-  // Если default profile подходит для SSH - используем его
-  if (defaultProfileData.host && defaultProfileData.username) {
-    logger.debug(`Using default SSH profile: ${defaultProfileName}`);
+  // If default profile is suitable for SSH - use it
+  if (defaultProfileData && defaultProfileData.host && defaultProfileData.username) {
+    logger.info(`[Profile Resolver] ✅ Using default SSH profile: "${defaultProfileName}"`);
+    logger.debug(`[Profile Resolver] Default profile data: host=${defaultProfileData.host}, port=${defaultProfileData.port || 22}, username=${defaultProfileData.username}`);
+    
     const expandedKeyPath = expandTilde(defaultProfileData.privateKeyPath);
     if (defaultProfileData.privateKeyPath && expandedKeyPath !== defaultProfileData.privateKeyPath) {
-      logger.debug(`Expanded privateKeyPath: ${defaultProfileData.privateKeyPath} → ${expandedKeyPath}`);
+      logger.debug(`[Profile Resolver] Expanded privateKeyPath: ${defaultProfileData.privateKeyPath} → ${expandedKeyPath}`);
     }
     
-    return {
+    const sshConfig: SSHConfig = {
       host: defaultProfileData.host,
       username: defaultProfileData.username,
       port: defaultProfileData.port || 22,
@@ -169,19 +216,35 @@ export function resolveSSHConfig(args: {
       passphrase: defaultProfileData.passphrase,
       password: defaultProfileData.password,
     };
+    
+    logger.debug(`[Profile Resolver] Resolved SSH config from default profile:`, {
+      host: sshConfig.host,
+      port: sshConfig.port,
+      username: sshConfig.username,
+      privateKeyPath: sshConfig.privateKeyPath,
+      hasPassphrase: !!sshConfig.passphrase,
+      hasPassword: !!sshConfig.password,
+    });
+    
+    return sshConfig;
   }
   
-  // Priority 3: Ищем первый подходящий профиль (default не подходит для SSH)
-  logger.debug(`Default profile "${defaultProfileName}" is not suitable for SSH, searching for first valid profile...`);
+  // Priority 3: Search for first suitable profile (default not suitable for SSH)
+  logger.warn(`[Profile Resolver] ⚠️  Default profile "${defaultProfileName}" is not suitable for SSH (missing host or username)`);
+  logger.debug(`[Profile Resolver] Default profile data:`, defaultProfileData);
+  logger.debug(`[Profile Resolver] Searching for first valid SSH profile...`);
+  
   for (const [profileName, profileData] of Object.entries(PROFILES.profiles)) {
     if (profileData.host && profileData.username) {
-      logger.debug(`Using first valid SSH profile: ${profileName}`);
+      logger.info(`[Profile Resolver] ✅ Using first valid SSH profile: "${profileName}"`);
+      logger.debug(`[Profile Resolver] Profile data: host=${profileData.host}, port=${profileData.port || 22}, username=${profileData.username}`);
+      
       const expandedKeyPath = expandTilde(profileData.privateKeyPath);
       if (profileData.privateKeyPath && expandedKeyPath !== profileData.privateKeyPath) {
-        logger.debug(`Expanded privateKeyPath: ${profileData.privateKeyPath} → ${expandedKeyPath}`);
+        logger.debug(`[Profile Resolver] Expanded privateKeyPath: ${profileData.privateKeyPath} → ${expandedKeyPath}`);
       }
       
-      return {
+      const sshConfig: SSHConfig = {
         host: profileData.host,
         username: profileData.username,
         port: profileData.port || 22,
@@ -189,10 +252,24 @@ export function resolveSSHConfig(args: {
         passphrase: profileData.passphrase,
         password: profileData.password,
       };
+      
+      logger.debug(`[Profile Resolver] Resolved SSH config from first valid profile:`, {
+        host: sshConfig.host,
+        port: sshConfig.port,
+        username: sshConfig.username,
+        privateKeyPath: sshConfig.privateKeyPath,
+        hasPassphrase: !!sshConfig.passphrase,
+        hasPassword: !!sshConfig.password,
+      });
+      
+      return sshConfig;
     }
   }
   
-  // Не нашли подходящий профиль
+  // No suitable profile found
+  logger.error(`[Profile Resolver] ❌ No valid SSH profile found`);
+  logger.error(`[Profile Resolver] Available profiles: ${Object.keys(PROFILES.profiles).join(', ')}`);
+  logger.error(`[Profile Resolver] All profiles must have "host" and "username" fields for SSH`);
   throw new Error('No valid SSH profile found. Profiles must have "host" and "username" fields.');
 }
 

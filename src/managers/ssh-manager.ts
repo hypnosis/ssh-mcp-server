@@ -1,19 +1,21 @@
 /**
  * SSH Manager
  * Управление SSH соединениями и выполнением команд на удаленных серверах
+ * v2.0.0 - Использует ConnectionPool для переиспользования соединений
  */
 
-import { Client, ConnectConfig } from 'ssh2';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { Client } from 'ssh2';
 import { logger } from '../utils/logger.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
+import { ConnectionPool } from './connection-pool.js';
 
 export interface SSHExecuteOptions {
   /** Таймаут выполнения команды (мс) */
   timeout?: number;
   /** Кодировка вывода */
   encoding?: BufferEncoding;
+  /** Имя профиля для пула соединений */
+  profileName?: string;
 }
 
 export interface SSHFileTransferOptions {
@@ -23,6 +25,7 @@ export interface SSHFileTransferOptions {
 
 /**
  * SSH Manager для выполнения команд и работы с файлами
+ * v2.0.0 - Использует ConnectionPool для переиспользования соединений
  */
 export class SSHManager {
   /**
@@ -37,78 +40,121 @@ export class SSHManager {
     command: string,
     options: SSHExecuteOptions = {}
   ): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const client = new Client();
-      const timeout = options.timeout || 30000;
-      let timeoutId: NodeJS.Timeout;
-
-      client.on('ready', () => {
-        logger.debug(`SSH connected to ${config.host}, executing: ${command}`);
-
-        client.exec(command, (err, stream) => {
-          if (err) {
-            clearTimeout(timeoutId);
-            client.end();
-            reject(new Error(`Failed to execute command: ${err.message}`));
-            return;
-          }
-
-          let stdout = '';
-          let stderr = '';
-
-          stream.on('close', (code: number, signal: string) => {
-            clearTimeout(timeoutId);
-            client.end();
-
-            if (code !== 0) {
-              reject(new Error(`Command failed with code ${code}: ${stderr || stdout}`));
-            } else {
-              resolve(stdout);
-            }
-          });
-
-          stream.on('data', (data: Buffer) => {
-            stdout += data.toString(options.encoding || 'utf8');
-          });
-
-          stream.stderr.on('data', (data: Buffer) => {
-            stderr += data.toString(options.encoding || 'utf8');
-          });
-        });
-      });
-
-      client.on('error', (err) => {
-        clearTimeout(timeoutId);
-        reject(new Error(`SSH connection error: ${err.message}`));
-      });
-
-      // Таймаут подключения
-      timeoutId = setTimeout(() => {
-        client.end();
-        reject(new Error(`SSH command timeout after ${timeout}ms`));
-      }, timeout);
-
-      // Подключение
-      this.connect(client, config);
-    });
+    const pool = ConnectionPool.getInstance();
+    const profileName = options.profileName || 'default';
+    const timeout = options.timeout || 30000;
+    
+    // Get client from pool
+    const client = await pool.getClient(profileName, config);
+    
+    try {
+      const result = await this.executeOnClient(client, command, options);
+      return result;
+    } finally {
+      // Release client back to pool
+      pool.releaseClient(profileName);
+    }
   }
 
   /**
    * Выполнить несколько команд последовательно
+   * v2.0.0 - Использует одно соединение для всех команд
    */
   async executeBatch(
     config: SSHConfig,
     commands: string[],
     options: SSHExecuteOptions = {}
   ): Promise<string[]> {
+    const pool = ConnectionPool.getInstance();
+    const profileName = options.profileName || 'default';
+    
+    // Get client from pool ONCE for all commands
+    const client = await pool.getClient(profileName, config);
+    
     const results: string[] = [];
-
-    for (const command of commands) {
-      const result = await this.execute(config, command, options);
-      results.push(result);
+    
+    try {
+      // Execute all commands on the same client
+      for (const command of commands) {
+        const result = await this.executeOnClient(client, command, options);
+        results.push(result);
+      }
+      
+      return results;
+    } finally {
+      // Release client after ALL commands
+      pool.releaseClient(profileName);
     }
+  }
 
-    return results;
+  /**
+   * Выполнить команду на конкретном клиенте
+   * @param client - SSH2 клиент
+   * @param command - Команда для выполнения
+   * @param options - Опции выполнения
+   * @returns Вывод команды (stdout)
+   */
+  private executeOnClient(
+    client: Client,
+    command: string,
+    options: SSHExecuteOptions = {}
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const timeout = options.timeout || 30000;
+      let timeoutId: NodeJS.Timeout;
+      let settled = false;
+
+      // Helper to resolve once
+      const resolveOnce = (value: string) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeoutId);
+          resolve(value);
+        }
+      };
+
+      // Helper to reject once
+      const rejectOnce = (error: Error) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeoutId);
+          reject(error);
+        }
+      };
+
+      logger.debug(`[SSH Manager] Executing command: ${command.substring(0, 100)}${command.length > 100 ? '...' : ''}`);
+
+      client.exec(command, (err, stream) => {
+        if (err) {
+          rejectOnce(new Error(`Failed to execute command: ${err.message}`));
+          return;
+        }
+
+        let stdout = '';
+        let stderr = '';
+
+        stream.on('close', (code: number) => {
+          if (code !== 0) {
+            rejectOnce(new Error(`Command failed with code ${code}: ${stderr || stdout}`));
+          } else {
+            resolveOnce(stdout);
+          }
+        });
+
+        stream.on('data', (data: Buffer) => {
+          stdout += data.toString(options.encoding || 'utf8');
+        });
+
+        stream.stderr.on('data', (data: Buffer) => {
+          stderr += data.toString(options.encoding || 'utf8');
+        });
+      });
+
+      // Timeout
+      timeoutId = setTimeout(() => {
+        rejectOnce(new Error(`SSH command timeout after ${timeout}ms`));
+      }, timeout);
+    });
   }
 
   /**
@@ -140,56 +186,12 @@ export class SSHManager {
   /**
    * Проверить подключение к серверу
    */
-  async testConnection(config: SSHConfig): Promise<boolean> {
+  async testConnection(config: SSHConfig, profileName?: string): Promise<boolean> {
     try {
-      await this.execute(config, 'echo "test"', { timeout: 5000 });
+      await this.execute(config, 'echo "test"', { timeout: 5000, profileName });
       return true;
     } catch {
       return false;
     }
-  }
-
-  /**
-   * Подключиться к серверу
-   */
-  private connect(client: Client, config: SSHConfig): void {
-    const connectConfig: ConnectConfig = {
-      host: config.host,
-      port: config.port || 22,
-      username: config.username,
-    };
-
-    // Загрузка приватного ключа
-    if (config.privateKeyPath) {
-      try {
-        const keyPath = this.resolveKeyPath(config.privateKeyPath);
-        const privateKey = readFileSync(keyPath, 'utf8');
-        connectConfig.privateKey = privateKey;
-        
-        if (config.passphrase) {
-          connectConfig.passphrase = config.passphrase;
-        }
-      } catch (error: any) {
-        logger.warn(`Failed to load SSH key from ${config.privateKeyPath}: ${error.message}`);
-      }
-    }
-
-    // Пароль для аутентификации
-    if (config.password) {
-      connectConfig.password = config.password;
-    }
-
-    client.connect(connectConfig);
-  }
-
-  /**
-   * Разрешить путь к SSH ключу (поддержка ~)
-   */
-  private resolveKeyPath(keyPath: string): string {
-    if (keyPath.startsWith('~')) {
-      const home = process.env.HOME || process.env.USERPROFILE || '';
-      return keyPath.replace('~', home);
-    }
-    return resolve(keyPath);
   }
 }

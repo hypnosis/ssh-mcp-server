@@ -8,6 +8,7 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
+import { createPathValidator } from '../utils/path-validator.js';
 
 /**
  * Log Tools
@@ -136,16 +137,29 @@ export class LogTools {
       return createValidationErrorResponse(validation.errorMessage!);
     }
     
+    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const paths = Array.isArray(args.path) ? args.path : [args.path];
     const lines = args.lines || 100;
     const sudo = args.sudo || false;
     
+    // Validate paths against security rules (if configured)
+    const pathValidator = createPathValidator(sshConfig);
+    if (pathValidator) {
+      for (const path of paths) {
+        const pathValidation = pathValidator.validate(path);
+        if (!pathValidation.valid) {
+          throw new Error(`Path validation failed: ${pathValidation.error}`);
+        }
+      }
+    }
+    
     // Single log - simple result
     if (paths.length === 1) {
-      const command = `tail -n ${lines} '${this.escapePath(paths[0])}'`;
-      const result = await this.executor.execute(sshConfig, command, { sudo });
+      const safePath = this.buildSafePath(paths[0]);
+      const command = `tail -n ${lines} ${safePath}`;
+      const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
       
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read log: ${result.stderr || result.stdout}`);
@@ -167,8 +181,9 @@ export class LogTools {
     
     for (const path of paths) {
       try {
-        const command = `tail -n ${lines} '${this.escapePath(path)}'`;
-        const result = await this.executor.execute(sshConfig, command, { sudo });
+        const safePath = this.buildSafePath(path);
+        const command = `tail -n ${lines} ${safePath}`;
+        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
         
         if (result.exitCode === 0) {
           const logLines = result.stdout.split('\n').filter(line => line.length > 0);
@@ -228,6 +243,7 @@ export class LogTools {
       return createValidationErrorResponse(validation.errorMessage!);
     }
     
+    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const paths = Array.isArray(args.path) ? args.path : [args.path];
@@ -235,6 +251,17 @@ export class LogTools {
     const context = args.context || 0;
     const caseSensitive = args.caseSensitive || false;
     const sudo = args.sudo || false;
+    
+    // Validate paths against security rules (if configured)
+    const pathValidator = createPathValidator(sshConfig);
+    if (pathValidator) {
+      for (const path of paths) {
+        const pathValidation = pathValidator.validate(path);
+        if (!pathValidation.valid) {
+          throw new Error(`Path validation failed: ${pathValidation.error}`);
+        }
+      }
+    }
     
     // Build grep flags
     const grepFlags = [];
@@ -245,7 +272,8 @@ export class LogTools {
     
     // Single log - simple result
     if (paths.length === 1) {
-      const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' '${this.escapePath(paths[0])}'`;
+      const safePath = this.buildSafePath(paths[0]);
+      const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
       const result = await this.executor.execute(sshConfig, command, { sudo });
       
       // grep exit code 1 = no matches (not an error)
@@ -275,8 +303,9 @@ export class LogTools {
     
     for (const path of paths) {
       try {
-        const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' '${this.escapePath(path)}'`;
-        const result = await this.executor.execute(sshConfig, command, { sudo });
+        const safePath = this.buildSafePath(path);
+        const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
+        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
         
         // grep exit code 1 = no matches
         if (result.exitCode === 0 || result.exitCode === 1) {
@@ -326,16 +355,111 @@ export class LogTools {
   }
   
   /**
-   * Escape path for shell
+   * Expand tilde (~) for remote execution
+   * Converts ~ to $HOME for shell expansion on remote server
+   * 
+   * Examples:
+   *   ~/file       → $HOME/file
+   *   ~            → $HOME
+   *   ~user/file   → ~user/file (left as-is, shell will expand)
+   *   /abs/path    → /abs/path (no change)
+   * 
+   * Note: We use $HOME instead of ~ because:
+   * 1. Single quotes prevent ~ expansion: tail '~/file' won't work
+   * 2. $HOME works in double quotes: tail "$HOME/file" works
+   * 3. We can safely escape everything except $HOME in double quotes
+   */
+  private expandRemoteTilde(path: string): string {
+    if (!path) return path;
+    
+    // ~/path → $HOME/path
+    if (path.startsWith('~/')) {
+      return '$HOME/' + path.substring(2);
+    }
+    
+    // ~ → $HOME
+    if (path === '~') {
+      return '$HOME';
+    }
+    
+    // ~user/path → leave as-is (shell will expand ~user)
+    // /absolute/path → leave as-is
+    // ./relative/path → leave as-is
+    return path;
+  }
+  
+  /**
+   * Escape path for single-quoted context (safest)
+   * Used for paths without tilde or variables
+   * 
+   * Single quotes prevent ALL expansions (variables, commands, globs)
+   * Only need to handle embedded single quotes: ' → '\''
+   */
+  private escapeForSingleQuotes(path: string): string {
+    // Replace ' with '\'' (end quote, escaped quote, start quote)
+    return path.replace(/'/g, "'\\''");
+  }
+  
+  /**
+   * Escape path for double-quoted context
+   * Used when we need variable expansion (e.g., $HOME)
+   * 
+   * Double quotes allow variable expansion but we must escape:
+   * - Backslashes (\)
+   * - Double quotes (")
+   * - Dollar signs ($) - except $HOME which we want to expand
+   * - Backticks (`)
+   * - Exclamation marks (!) - for history expansion
+   */
+  private escapeForDoubleQuotes(str: string): string {
+    return str
+      .replace(/\\/g, '\\\\')   // \ → \\
+      .replace(/"/g, '\\"')     // " → \"
+      .replace(/\$/g, '\\$')    // $ → \$ (prevent variable expansion)
+      .replace(/`/g, '\\`')     // ` → \` (prevent command substitution)
+      .replace(/!/g, '\\!');    // ! → \! (prevent history expansion)
+  }
+  
+  /**
+   * Build safe shell command with proper quoting
+   * 
+   * Strategy:
+   * - If path contains ~ → expand to $HOME → use double quotes
+   * - Otherwise → use single quotes (safest)
+   * 
+   * Double quotes are used for $HOME expansion but everything else is escaped
+   * to prevent injection attacks (variables, commands, etc.)
+   */
+  private buildSafePath(path: string): string {
+    const expanded = this.expandRemoteTilde(path);
+    
+    // Path with $HOME → use double quotes for expansion
+    if (expanded.startsWith('$HOME')) {
+      // Split: $HOME (don't escape) + rest (escape everything)
+      const homePrefix = '$HOME';
+      const restPath = expanded.substring(5); // After $HOME
+      
+      // Escape only the part after $HOME
+      const escapedRest = this.escapeForDoubleQuotes(restPath);
+      return `"${homePrefix}${escapedRest}"`;
+    } else {
+      // Regular path → use single quotes (safest)
+      return `'${this.escapeForSingleQuotes(expanded)}'`;
+    }
+  }
+  
+  /**
+   * Legacy escape method (kept for backward compatibility)
+   * @deprecated Use escapeForSingleQuotes() or escapeForDoubleQuotes() instead
    */
   private escapePath(path: string): string {
-    return path.replace(/'/g, "'\"'\"'");
+    return this.escapeForSingleQuotes(path);
   }
   
   /**
    * Escape query for grep
    */
   private escapeQuery(query: string): string {
-    return query.replace(/'/g, "'\"'\"'");
+    return query.replace(/'/g, "'\\''");
   }
 }

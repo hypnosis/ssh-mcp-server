@@ -19,6 +19,7 @@ import { ExecTool } from './tools/exec-tool.js';
 import { FileTools } from './tools/file-tools.js';
 import { LogTools } from './tools/log-tools.js';
 import { SnapshotTool } from './tools/snapshot-tool.js';
+import { ConnectionPool } from './managers/connection-pool.js';
 
 async function main() {
   // Get version from package.json
@@ -131,6 +132,29 @@ async function main() {
   
   logger.info(`Registered tools: ${toolCount} commands (1 exec + ${fileTools.getTools().length} file + ${logTools.getTools().length} log + 1 snapshot)`);
   logger.info('Listening on STDIO...');
+  
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    logger.info(`\nReceived ${signal}, shutting down SSH MCP Server...`);
+    
+    try {
+      // Close all SSH connections
+      const pool = ConnectionPool.getInstance();
+      await pool.closeAll();
+      
+      logger.info('✅ All SSH connections closed');
+      logger.info('SSH MCP Server stopped gracefully');
+      process.exit(0);
+    } catch (error: any) {
+      logger.error('Error during shutdown:', error);
+      process.exit(1);
+    }
+  };
+  
+  // Register signal handlers
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGHUP', () => shutdown('SIGHUP'));
 }
 
 // Error handling

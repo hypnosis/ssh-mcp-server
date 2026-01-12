@@ -22,10 +22,13 @@
 ### Key Features:
 
 - ✅ **REST approach** - arrays where logical
-- ✅ **Security** - warnings for dangerous commands
+- ✅ **Security** - warnings for dangerous commands, path validation, safe quoting
+- ✅ **Tilde expansion** - `~/file` automatically expands to `$HOME/file`
+- ✅ **Path security** - optional whitelist/blacklist per profile
 - ✅ **sudo support** - parameter in every command
 - ✅ **Profiles** - multiple SSH configurations
 - ✅ **Retry logic** - automatic retries on network errors
+- ✅ **Connection pooling** - reuse SSH connections for better performance
 
 ## 📦 Installation
 
@@ -60,6 +63,55 @@ Create file `~/.cursor/ssh-profiles.json`:
 ```
 
 **Note:** You can use the same profiles file as Docker MCP Server. SSH MCP will automatically skip profiles with `mode: "local"` and use profiles with `host` and `username`.
+
+### 1.1. Optional: Path Security Configuration
+
+You can add optional security rules to restrict file access per profile:
+
+```json
+{
+  "default": "production",
+  "profiles": {
+    "production": {
+      "host": "prod.example.com",
+      "username": "admin",
+      "port": 22,
+      "privateKeyPath": "~/.ssh/id_rsa_prod",
+      
+      "pathSecurity": {
+        "allowedPaths": ["/home/admin", "/var/www", "/var/log"],
+        "deniedPaths": ["/etc/shadow", "/root", "/etc/ssh"],
+        "allowTraversal": false,
+        "maxPathLength": 1000
+      }
+    }
+  }
+}
+```
+
+**Path Security Options:**
+
+- **`allowedPaths`** (optional): Whitelist of allowed directories. If specified, only paths starting with these prefixes are allowed.
+  - Example: `["/home/admin", "/var/www"]`
+  - Subdirectories are allowed: `/home/admin/subdir/file.txt` ✅
+
+- **`deniedPaths`** (optional): Blacklist of forbidden paths. Paths starting with these prefixes will be rejected.
+  - Example: `["/etc/shadow", "/root", "/etc/ssh"]`
+  - Takes priority over `allowedPaths`
+
+- **`allowTraversal`** (optional): Allow path traversal (`../`) in paths. Default: `true`
+  - Set to `false` to prevent directory traversal attacks
+  - Example: `../../../etc/passwd` ❌ rejected
+
+- **`maxPathLength`** (optional): Maximum allowed path length. Default: unlimited
+  - Example: `1000` (paths longer than 1000 chars rejected)
+
+**Security Notes:**
+
+- Path security is **optional**. If not configured, all paths are allowed.
+- Blacklist (`deniedPaths`) is checked before whitelist (`allowedPaths`)
+- These rules apply to: `ssh_file_read`, `ssh_file_write`, `ssh_file_list`, `ssh_log_tail`, `ssh_log_search`
+- Tilde (`~`) paths are supported and automatically expanded to `$HOME`
 
 ### 2. Configure Cursor
 
@@ -131,6 +183,8 @@ ssh_exec({
 
 **Note:** For multiple files, use double quotes: `path: ["file1", "file2"]`
 
+**Tilde Support:** Paths with `~` are automatically expanded to `$HOME`
+
 ```typescript
 // Single file
 ssh_file_read({
@@ -138,12 +192,18 @@ ssh_file_read({
   path: "/etc/nginx/nginx.conf"
 })
 
+// Tilde paths (automatically expanded)
+ssh_file_read({
+  profile: "production",
+  path: "~/.bashrc"  // Expands to $HOME/.bashrc ✅
+})
+
 // Multiple files (use double quotes!)
 ssh_file_read({
   profile: "production",
   path: [
     "/etc/nginx/nginx.conf",
-    "/var/www/app/.env",
+    "~/.ssh/config",        // Tilde works! ✅
     "/etc/hosts"
   ]
 })
@@ -395,6 +455,52 @@ src/
 3. Commit changes (`git commit -m 'Add amazing feature'`)
 4. Push to branch (`git push origin feature/amazing-feature`)
 5. Open Pull Request
+
+## 🔒 Security
+
+### Path Handling & Quoting
+
+SSH MCP Server uses a secure quoting strategy to prevent injection attacks:
+
+**Single Quotes (default):**
+- Used for regular paths without tilde
+- Prevents ALL expansions (variables, commands, globs)
+- Example: `cat '/etc/hosts'` - safest option
+
+**Double Quotes (for tilde):**
+- Used only when path contains `~` (expanded to `$HOME`)
+- Everything except `$HOME` is escaped
+- Prevents: variable expansion (`$VAR`), command substitution (`` `cmd` ``), history expansion (`!`)
+- Example: `cat "$HOME/.bashrc"` - `$HOME` expands, but `$VAR` in filename won't
+
+**What's Protected:**
+- ✅ Command injection via `;`, `&&`, `||`
+- ✅ Variable expansion (`$VAR`)
+- ✅ Command substitution (`` `cmd` ``, `$(cmd)`)
+- ✅ History expansion (`!`)
+- ✅ Glob expansion (`*`, `?`)
+
+**Tilde Expansion:**
+- `~/file` → `$HOME/file` (automatic)
+- `~user/file` → shell expands `~user` (automatic)
+- Works in: `ssh_file_read`, `ssh_file_write`, `ssh_file_list`, `ssh_log_tail`, `ssh_log_search`
+
+### Path Security (Optional)
+
+Add `pathSecurity` to profiles for additional protection:
+
+```json
+{
+  "pathSecurity": {
+    "allowedPaths": ["/home/admin", "/var/www"],
+    "deniedPaths": ["/etc/shadow", "/root"],
+    "allowTraversal": false,
+    "maxPathLength": 1000
+  }
+}
+```
+
+See [Quick Start](#11-optional-path-security-configuration) for details.
 
 ## 👨‍💻 Author
 

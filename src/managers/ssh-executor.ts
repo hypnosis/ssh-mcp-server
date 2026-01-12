@@ -1,46 +1,51 @@
 /**
  * SSH Executor
- * Простое выполнение SSH команд без пула соединений
+ * SSH command execution with connection pooling (v2.0.0)
  */
 
-import { Client } from 'ssh2';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
 import { logger } from '../utils/logger.js';
 import { retryWithTimeout, createSSHRetryPredicate } from '../utils/retry.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
+import { SSHManager } from './ssh-manager.js';
 
 export interface SSHExecuteOptions {
-  /** Таймаут выполнения команды (мс) */
+  /** Command execution timeout (ms) */
   timeout?: number;
-  /** Кодировка вывода */
+  /** Output encoding */
   encoding?: BufferEncoding;
-  /** Рабочая директория */
+  /** Working directory */
   cwd?: string;
-  /** Использовать sudo */
+  /** Use sudo */
   sudo?: boolean;
+  /** Profile name for connection pool */
+  profileName?: string;
 }
 
 export interface SSHExecuteResult {
-  /** Вывод команды (stdout) */
+  /** Command output (stdout) */
   stdout: string;
-  /** Ошибки (stderr) */
+  /** Errors (stderr) */
   stderr: string;
-  /** Код выхода */
+  /** Exit code */
   exitCode: number;
 }
 
 /**
- * SSH Executor для выполнения команд
- * Каждый вызов создает новое SSH подключение
+ * SSH Executor for command execution
+ * v2.0.0 - Uses SSHManager with connection pooling
  */
 export class SSHExecutor {
+  private manager: SSHManager;
+  
+  constructor() {
+    this.manager = new SSHManager();
+  }
   /**
-   * Выполнить команду на удаленном сервере
-   * @param config - SSH конфигурация
-   * @param command - Команда для выполнения
-   * @param options - Опции выполнения
-   * @returns Результат выполнения
+   * Execute command on remote server
+   * @param config - SSH configuration
+   * @param command - Command to execute
+   * @param options - Execution options
+   * @returns Execution result
    */
   async execute(
     config: SSHConfig,
@@ -49,22 +54,32 @@ export class SSHExecutor {
   ): Promise<SSHExecuteResult> {
     const timeout = options.timeout || 30000;
     
-    // Добавляем sudo если нужно
+    // Add sudo if needed
     let finalCommand = command;
     if (options.sudo) {
       finalCommand = `sudo ${command}`;
     }
     
-    // Добавляем cd если указана рабочая директория
+    // Add cd if working directory is specified
     if (options.cwd) {
       finalCommand = `cd ${this.escapeShell(options.cwd)} && ${finalCommand}`;
     }
     
     logger.debug(`Executing SSH command: ${finalCommand.substring(0, 100)}...`);
     
-    // Выполняем с retry логикой
+    // Execute with retry logic using SSHManager
     const executeFn = async () => {
-      return this.executeInternal(config, finalCommand, options);
+      const stdout = await this.manager.execute(config, finalCommand, {
+        timeout,
+        encoding: options.encoding,
+        profileName: options.profileName,
+      });
+      
+      return {
+        stdout,
+        stderr: '',
+        exitCode: 0,
+      };
     };
     
     return retryWithTimeout(executeFn, {
@@ -75,121 +90,18 @@ export class SSHExecutor {
   }
   
   /**
-   * Внутреннее выполнение команды (без retry)
-   */
-  private executeInternal(
-    config: SSHConfig,
-    command: string,
-    options: SSHExecuteOptions
-  ): Promise<SSHExecuteResult> {
-    return new Promise((resolve, reject) => {
-      const client = new Client();
-      const encoding = options.encoding || 'utf8';
-      
-      client.on('ready', () => {
-        logger.debug(`SSH connected to ${config.host}`);
-        
-        client.exec(command, (err, stream) => {
-          if (err) {
-            client.end();
-            reject(new Error(`Failed to execute command: ${err.message}`));
-            return;
-          }
-          
-          let stdout = '';
-          let stderr = '';
-          
-          stream.on('close', (code: number) => {
-            client.end();
-            
-            logger.debug(`SSH command finished with code ${code}`);
-            resolve({
-              stdout,
-              stderr,
-              exitCode: code || 0,
-            });
-          });
-          
-          stream.on('data', (data: Buffer) => {
-            stdout += data.toString(encoding);
-          });
-          
-          stream.stderr.on('data', (data: Buffer) => {
-            stderr += data.toString(encoding);
-          });
-        });
-      });
-      
-      client.on('error', (err) => {
-        reject(new Error(`SSH connection error: ${err.message}`));
-      });
-      
-      // Подключение
-      this.connect(client, config);
-    });
-  }
-  
-  /**
-   * Подключиться к серверу
-   */
-  private connect(client: Client, config: SSHConfig): void {
-    const connectConfig: any = {
-      host: config.host,
-      port: config.port || 22,
-      username: config.username,
-      readyTimeout: 30000,
-    };
-    
-    // Загрузка приватного ключа
-    if (config.privateKeyPath) {
-      try {
-        const keyPath = this.resolveKeyPath(config.privateKeyPath);
-        const privateKey = readFileSync(keyPath, 'utf8');
-        connectConfig.privateKey = privateKey;
-        
-        if (config.passphrase) {
-          connectConfig.passphrase = config.passphrase;
-        }
-        
-        logger.debug(`Using SSH key: ${keyPath}`);
-      } catch (error: any) {
-        logger.warn(`Failed to load SSH key from ${config.privateKeyPath}: ${error.message}`);
-      }
-    }
-    
-    // Пароль для аутентификации
-    if (config.password) {
-      connectConfig.password = config.password;
-      logger.debug('Using password authentication');
-    }
-    
-    client.connect(connectConfig);
-  }
-  
-  /**
-   * Разрешить путь к SSH ключу (поддержка ~)
-   */
-  private resolveKeyPath(keyPath: string): string {
-    if (keyPath.startsWith('~')) {
-      const home = process.env.HOME || process.env.USERPROFILE || '';
-      return keyPath.replace('~', home);
-    }
-    return resolve(keyPath);
-  }
-  
-  /**
-   * Экранировать строку для shell
+   * Escape string for shell
    */
   private escapeShell(str: string): string {
     return `'${str.replace(/'/g, "'\"'\"'")}'`;
   }
   
   /**
-   * Проверить подключение к серверу
+   * Test connection to server
    */
-  async testConnection(config: SSHConfig): Promise<boolean> {
+  async testConnection(config: SSHConfig, profileName?: string): Promise<boolean> {
     try {
-      await this.execute(config, 'echo "test"', { timeout: 5000 });
+      await this.execute(config, 'echo "test"', { timeout: 5000, profileName });
       return true;
     } catch {
       return false;

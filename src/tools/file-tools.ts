@@ -8,6 +8,7 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
+import { createPathValidator } from '../utils/path-validator.js';
 
 /**
  * File Tools
@@ -170,19 +171,29 @@ export class FileTools {
       return createValidationErrorResponse(validation.errorMessage!);
     }
     
+    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const paths = Array.isArray(args.path) ? args.path : [args.path];
     const encoding = args.encoding || 'utf8';
     const sudo = args.sudo || false;
     
+    // Validate paths against security rules (if configured)
+    const pathValidator = createPathValidator(sshConfig);
+    if (pathValidator) {
+      for (const path of paths) {
+        const pathValidation = pathValidator.validate(path);
+        if (!pathValidation.valid) {
+          throw new Error(`Path validation failed: ${pathValidation.error}`);
+        }
+      }
+    }
+    
     // Single file - simple result
     if (paths.length === 1) {
-      const command = encoding === 'base64'
-        ? `base64 '${this.escapePath(paths[0])}'`
-        : `cat '${this.escapePath(paths[0])}'`;
+      const command = this.buildSafeCommand(paths[0], 'cat', encoding);
       
-      const result = await this.executor.execute(sshConfig, command, { sudo });
+      const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
       
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read file: ${result.stderr || result.stdout}`);
@@ -204,11 +215,9 @@ export class FileTools {
     
     for (const path of paths) {
       try {
-        const command = encoding === 'base64'
-          ? `base64 '${this.escapePath(path)}'`
-          : `cat '${this.escapePath(path)}'`;
+        const command = this.buildSafeCommand(path, 'cat', encoding);
         
-        const result = await this.executor.execute(sshConfig, command, { sudo });
+        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
         
         if (result.exitCode === 0) {
           results.push({
@@ -261,14 +270,26 @@ export class FileTools {
    */
   private async handleFileWrite(request: CallToolRequest) {
     const args = request.params.arguments as any;
+    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const files = Array.isArray(args.files) ? args.files : [args.files];
     
+    // Validate paths against security rules (if configured)
+    const pathValidator = createPathValidator(sshConfig);
+    if (pathValidator) {
+      for (const file of files) {
+        const pathValidation = pathValidator.validate(file.path);
+        if (!pathValidation.valid) {
+          throw new Error(`Path validation failed: ${pathValidation.error}`);
+        }
+      }
+    }
+    
     // Single file - simple result
     if (files.length === 1) {
       const file = files[0];
-      await this.writeFile(sshConfig, file.path, file.content, file.mode, file.sudo || false);
+      await this.writeFile(sshConfig, file.path, file.content, file.mode, file.sudo || false, profileName);
       
       return {
         content: [{ type: 'text', text: `File written successfully: ${file.path}` }],
@@ -285,7 +306,7 @@ export class FileTools {
     
     for (const file of files) {
       try {
-        await this.writeFile(sshConfig, file.path, file.content, file.mode, file.sudo || false);
+        await this.writeFile(sshConfig, file.path, file.content, file.mode, file.sudo || false, profileName);
         results.push({
           path: file.path,
           success: true,
@@ -326,20 +347,35 @@ export class FileTools {
     path: string,
     content: string,
     mode?: string,
-    sudo: boolean = false
+    sudo: boolean = false,
+    profileName?: string
   ): Promise<void> {
+    // Expand tilde in path
+    const expanded = this.expandRemoteTilde(path);
+    
     // Escape content for heredoc
     const escapedContent = content.replace(/'/g, "'\"'\"'");
     
+    // Build safe path for write
+    let safePath: string;
+    if (expanded.startsWith('$HOME')) {
+      const homePrefix = '$HOME';
+      const restPath = expanded.substring(5);
+      const escapedRest = this.escapeForDoubleQuotes(restPath);
+      safePath = `"${homePrefix}${escapedRest}"`;
+    } else {
+      safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
+    }
+    
     // Write command via heredoc
-    let command = `cat > '${this.escapePath(path)}' << 'SSHEOF'\n${escapedContent}\nSSHEOF`;
+    let command = `cat > ${safePath} << 'SSHEOF'\n${escapedContent}\nSSHEOF`;
     
     // Add chmod if permissions specified
     if (mode) {
-      command += ` && chmod ${mode} '${this.escapePath(path)}'`;
+      command += ` && chmod ${mode} ${safePath}`;
     }
     
-    const result = await this.executor.execute(sshConfig, command, { sudo });
+    const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
     
     if (result.exitCode !== 0) {
       throw new Error(`Failed to write file: ${result.stderr || result.stdout}`);
@@ -351,7 +387,30 @@ export class FileTools {
    */
   private async handleFileList(request: CallToolRequest) {
     const args = request.params.arguments as any;
+    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
+    
+    // Validate path against security rules (if configured)
+    const pathValidator = createPathValidator(sshConfig);
+    if (pathValidator) {
+      const pathValidation = pathValidator.validate(args.path);
+      if (!pathValidation.valid) {
+        throw new Error(`Path validation failed: ${pathValidation.error}`);
+      }
+    }
+    
+    const expanded = this.expandRemoteTilde(args.path);
+    
+    // Build safe path
+    let safePath: string;
+    if (expanded.startsWith('$HOME')) {
+      const homePrefix = '$HOME';
+      const restPath = expanded.substring(5);
+      const escapedRest = this.escapeForDoubleQuotes(restPath);
+      safePath = `"${homePrefix}${escapedRest}"`;
+    } else {
+      safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
+    }
     
     let command = 'ls -lah';
     
@@ -360,12 +419,12 @@ export class FileTools {
     }
     
     if (args.pattern) {
-      command += ` '${this.escapePath(args.path)}'/${args.pattern}`;
+      command += ` ${safePath}/${args.pattern}`;
     } else {
-      command += ` '${this.escapePath(args.path)}'`;
+      command += ` ${safePath}`;
     }
     
-    const result = await this.executor.execute(sshConfig, command);
+    const result = await this.executor.execute(sshConfig, command, { profileName });
     
     if (result.exitCode !== 0) {
       throw new Error(`Failed to list files: ${result.stderr || result.stdout}`);
@@ -377,9 +436,126 @@ export class FileTools {
   }
   
   /**
-   * Escape path for shell
+   * Expand tilde (~) for remote execution
+   * Converts ~ to $HOME for shell expansion on remote server
+   * 
+   * Examples:
+   *   ~/file       → $HOME/file
+   *   ~            → $HOME
+   *   ~user/file   → ~user/file (left as-is, shell will expand)
+   *   /abs/path    → /abs/path (no change)
+   * 
+   * Note: We use $HOME instead of ~ because:
+   * 1. Single quotes prevent ~ expansion: cat '~/file' won't work
+   * 2. $HOME works in double quotes: cat "$HOME/file" works
+   * 3. We can safely escape everything except $HOME in double quotes
+   */
+  private expandRemoteTilde(path: string): string {
+    if (!path) return path;
+    
+    // ~/path → $HOME/path
+    if (path.startsWith('~/')) {
+      return '$HOME/' + path.substring(2);
+    }
+    
+    // ~ → $HOME
+    if (path === '~') {
+      return '$HOME';
+    }
+    
+    // ~user/path → leave as-is (shell will expand ~user)
+    // /absolute/path → leave as-is
+    // ./relative/path → leave as-is
+    return path;
+  }
+  
+  /**
+   * Escape path for single-quoted context (safest)
+   * Used for paths without tilde or variables
+   * 
+   * Single quotes prevent ALL expansions (variables, commands, globs)
+   * Only need to handle embedded single quotes: ' → '\''
+   */
+  private escapeForSingleQuotes(path: string): string {
+    // Replace ' with '\'' (end quote, escaped quote, start quote)
+    return path.replace(/'/g, "'\\''");
+  }
+  
+  /**
+   * Escape path for double-quoted context
+   * Used when we need variable expansion (e.g., $HOME)
+   * 
+   * Double quotes allow variable expansion but we must escape:
+   * - Backslashes (\)
+   * - Double quotes (")
+   * - Dollar signs ($) - except $HOME which we want to expand
+   * - Backticks (`)
+   * - Exclamation marks (!) - for history expansion
+   */
+  private escapeForDoubleQuotes(str: string): string {
+    return str
+      .replace(/\\/g, '\\\\')   // \ → \\
+      .replace(/"/g, '\\"')     // " → \"
+      .replace(/\$/g, '\\$')    // $ → \$ (prevent variable expansion)
+      .replace(/`/g, '\\`')     // ` → \` (prevent command substitution)
+      .replace(/!/g, '\\!');    // ! → \! (prevent history expansion)
+  }
+  
+  /**
+   * Build safe shell command with proper quoting
+   * 
+   * Strategy:
+   * - If path contains ~ → expand to $HOME → use double quotes
+   * - Otherwise → use single quotes (safest)
+   * 
+   * Double quotes are used for $HOME expansion but everything else is escaped
+   * to prevent injection attacks (variables, commands, etc.)
+   */
+  private buildSafeCommand(path: string, command: string, encoding?: string): string {
+    const expanded = this.expandRemoteTilde(path);
+    
+    // Path with $HOME → use double quotes for expansion
+    if (expanded.startsWith('$HOME')) {
+      // Split: $HOME (don't escape) + rest (escape everything)
+      const homePrefix = '$HOME';
+      const restPath = expanded.substring(5); // After $HOME
+      
+      // Escape only the part after $HOME
+      const escapedRest = this.escapeForDoubleQuotes(restPath);
+      const safePath = `"${homePrefix}${escapedRest}"`;
+      
+      // Build command based on encoding
+      if (encoding === 'base64') {
+        return `base64 ${safePath}`;
+      } else if (command === 'cat') {
+        return `cat ${safePath}`;
+      } else if (command === 'tail') {
+        return `tail ${safePath}`;
+      } else {
+        return `${command} ${safePath}`;
+      }
+    } else {
+      // Regular path → use single quotes (safest)
+      const safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
+      
+      // Build command based on encoding
+      if (encoding === 'base64') {
+        return `base64 ${safePath}`;
+      } else if (command === 'cat') {
+        return `cat ${safePath}`;
+      } else if (command === 'tail') {
+        return `tail ${safePath}`;
+      } else {
+        return `${command} ${safePath}`;
+      }
+    }
+  }
+  
+  /**
+   * Legacy escape method (kept for backward compatibility)
+   * @deprecated Use escapeForSingleQuotes() or escapeForDoubleQuotes() instead
    */
   private escapePath(path: string): string {
-    return path.replace(/'/g, "'\"'\"'");
+    return this.escapeForSingleQuotes(path);
   }
 }

@@ -114,7 +114,8 @@ export class ExecTool {
         return createValidationErrorResponse(validation.errorMessage!);
       }
       
-      // Resolve SSH config
+      // Resolve SSH config and profile name
+      const profileName = args.profile || 'default';
       const sshConfig = resolveSSHConfig({ profile: args.profile });
       
       // Determine command type (string or array)
@@ -135,6 +136,7 @@ export class ExecTool {
           sudo: args.sudo || false,
           cwd: args.cwd,
           timeout: args.timeout || 30000,
+          profileName,
         });
         
         let output = '';
@@ -177,6 +179,7 @@ export class ExecTool {
           sudo: args.sudo || false,
           cwd: args.cwd,
           timeout: args.timeout || 30000,
+          profileName,
         });
         
         results.push({

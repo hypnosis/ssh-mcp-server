@@ -1,7 +1,7 @@
 # 🔍 Анализ архитектуры SSH MCP Server
 
 **Дата:** 2025-01-12  
-**Версия:** v1.0.0 → v2.0.0  
+**Версия:** v1.0.0 → v1.1.0  
 **Статус:** Анализ завершён, план составлен
 
 ---
@@ -22,7 +22,7 @@
 ### План решения
 - **5 спринтов** (5 дней)
 - **Главный фокус:** Connection Pool (Sprint 2) - решает 80% проблем производительности
-- **Ожидаемый результат:** v2.0.0 - production-ready с 6-10× ускорением
+- **Ожидаемый результат:** v1.1.0 - production-ready с 6-10× ускорением
 
 ---
 
@@ -408,7 +408,7 @@ watch(profilesFile, (eventType) => {
   10 команд = 10 соединений = 15-20 секунд ❌
 ```
 
-### Целевая архитектура (v2.0.0)
+### Целевая архитектура (v1.1.0)
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  MCP Server                                             │
@@ -459,7 +459,7 @@ Command 10: Connect (1.5s) + Exec (0.1s) = 1.6s
 ИТОГО: ~16 секунд ❌
 ```
 
-**С Connection Pool (v2.0.0):**
+**С Connection Pool (v1.1.0):**
 ```
 Command 1: Connect (1.5s) + Exec (0.1s) = 1.6s
 Command 2: Reuse + Exec (0.1s) = 0.1s
@@ -480,7 +480,7 @@ executeBatch(["cmd1", ..., "cmd10"])
 → ~16 секунд ❌
 ```
 
-**С Connection Pool (v2.0.0):**
+**С Connection Pool (v1.1.0):**
 ```
 executeBatch(["cmd1", ..., "cmd10"])
 → 1 соединение для всех команд
@@ -508,16 +508,16 @@ Scenario: Переключение между профилями
 
 ## 🎯 ПРИОРИТЕТЫ
 
-### Must Have (v2.0.0)
+### Must Have (v1.1.0)
 1. ✅ Connection Pool (**Sprint 2**) - критично для производительности
 2. ✅ Tilde expansion (**Sprint 3**) - исправить ISSUE-001
 3. ✅ Timeout fix (**Sprint 4**) - стабильность
 
-### Should Have (v2.0.0)
+### Should Have (v1.1.0)
 4. ✅ Path security (**Sprint 3**) - безопасность
 5. ✅ Retry mechanism (**Sprint 4**) - надёжность
 
-### Nice to Have (v2.0.0)
+### Nice to Have (v1.1.0)
 6. ✅ Profile reload (**Sprint 5**) - удобство
 7. ✅ Monitoring tool (**Sprint 5**) - мониторинг
 8. ⭕ Path validator (опционально)
@@ -555,7 +555,7 @@ cat docs/sprints/2025-01-17_SPRINT_5_PROFILES_MONITORING.md
 - Общее время: 5 дней
 
 ### 4. После завершения всех спринтов
-- Релиз v2.0.0
+- Релиз v1.1.0
 - Обновить CHANGELOG.md
 - Закрыть ISSUE-001
 - Celebration! 🎉

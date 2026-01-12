@@ -113,14 +113,25 @@ export class ConnectionPool {
     const existing = this.connections.get(profileName);
     
     if (existing && existing.isReady) {
-      this.metrics.cacheHits++;
-      this.metrics.totalCommands++;
-      existing.lastUsed = Date.now();
-      existing.activeCommands++;
-      
-      logger.debug(`[Connection Pool] Cache HIT for profile "${profileName}" (active: ${existing.activeCommands})`);
-      
-      return existing.client;
+      // Check if config has changed (profile reload)
+      if (this.hasConfigChanged(existing.config, config)) {
+        logger.info(`[Connection Pool] Config changed for "${profileName}", reconnecting...`);
+        
+        // Close old connection
+        await this.closeClient(profileName);
+        
+        // Create new connection (fallthrough)
+      } else {
+        // Config unchanged, reuse connection
+        this.metrics.cacheHits++;
+        this.metrics.totalCommands++;
+        existing.lastUsed = Date.now();
+        existing.activeCommands++;
+        
+        logger.debug(`[Connection Pool] Cache HIT for profile "${profileName}" (active: ${existing.activeCommands})`);
+        
+        return existing.client;
+      }
     }
     
     // Check if connection is being created (avoid race condition)
@@ -227,8 +238,13 @@ export class ConnectionPool {
       idleTime: Date.now() - pooled.lastUsed,
     }));
     
+    // Calculate activeConnections dynamically from actual connections map
+    // to avoid desynchronization with the counter
+    const activeConnections = this.connections.size;
+    
     return {
       ...this.metrics,
+      activeConnections, // Override with calculated value
       connections,
     };
   }
@@ -452,6 +468,18 @@ export class ConnectionPool {
       return keyPath.replace('~', home);
     }
     return resolve(keyPath);
+  }
+  
+  /**
+   * Check if SSH config has changed
+   */
+  private hasConfigChanged(oldConfig: SSHConfig, newConfig: SSHConfig): boolean {
+    return oldConfig.host !== newConfig.host ||
+           oldConfig.port !== newConfig.port ||
+           oldConfig.username !== newConfig.username ||
+           oldConfig.privateKeyPath !== newConfig.privateKeyPath ||
+           oldConfig.password !== newConfig.password ||
+           oldConfig.passphrase !== newConfig.passphrase;
   }
   
   /**

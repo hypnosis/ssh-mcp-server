@@ -19,6 +19,7 @@ import { ExecTool } from './tools/exec-tool.js';
 import { FileTools } from './tools/file-tools.js';
 import { LogTools } from './tools/log-tools.js';
 import { SnapshotTool } from './tools/snapshot-tool.js';
+import { MonitoringTool } from './tools/monitoring-tool.js';
 import { ConnectionPool } from './managers/connection-pool.js';
 
 async function main() {
@@ -58,6 +59,7 @@ async function main() {
   const fileTools = new FileTools();
   const logTools = new LogTools();
   const snapshotTool = new SnapshotTool();
+  const monitoringTool = new MonitoringTool();
 
   // Create MCP Server
   const server = new Server(
@@ -81,6 +83,7 @@ async function main() {
       ...fileTools.getTools(),
       ...logTools.getTools(),
       snapshotTool.getTool(),
+      monitoringTool.getTool(),
     ];
     
     logger.info(`Returning ${allTools.length} tools to MCP client`);
@@ -114,6 +117,10 @@ async function main() {
       return snapshotTool.handleCall(request);
     }
 
+    if (toolName === 'ssh_monitor') {
+      return monitoringTool.handleCall(request);
+    }
+
     throw new Error(`Unknown tool: ${toolName}`);
   });
 
@@ -128,9 +135,10 @@ async function main() {
     1 + // execTool
     fileTools.getTools().length +
     logTools.getTools().length +
-    1; // snapshotTool
+    1 + // snapshotTool
+    1; // monitoringTool
   
-  logger.info(`Registered tools: ${toolCount} commands (1 exec + ${fileTools.getTools().length} file + ${logTools.getTools().length} log + 1 snapshot)`);
+  logger.info(`Registered tools: ${toolCount} commands (1 exec + ${fileTools.getTools().length} file + ${logTools.getTools().length} log + 1 snapshot + 1 monitor)`);
   logger.info('Listening on STDIO...');
   
   // Graceful shutdown

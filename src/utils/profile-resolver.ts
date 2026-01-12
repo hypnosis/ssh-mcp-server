@@ -1,8 +1,10 @@
 /**
  * Profile Resolver - Load SSH profiles from file
  * 
- * Profiles are loaded ONCE from SSH_PROFILES_FILE environment variable at module import.
- * This provides synchronous access with zero I/O overhead.
+ * Profiles are loaded with caching and auto-reload support:
+ * - Cache with TTL (default: 60 seconds)
+ * - File watcher for automatic reload on changes
+ * - Manual reload via reloadProfiles()
  * 
  * @example File configuration
  * ```json
@@ -21,6 +23,7 @@
  */
 
 import { homedir } from 'os';
+import { watch, FSWatcher } from 'fs';
 import { logger } from './logger.js';
 import type { SSHConfig } from './ssh-config.js';
 import { loadProfilesFile, type SSHProfileData } from './profiles-file.js';
@@ -34,8 +37,32 @@ interface ProfilesConfig {
 }
 
 /**
+ * Profiles cache with TTL
+ */
+interface ProfilesCache {
+  config: ProfilesConfig;
+  loadedAt: number;
+  filePath: string;
+}
+
+/**
+ * Environment variables
+ */
+const CACHE_TTL = parseInt(process.env.SSH_MCP_PROFILES_CACHE_TTL || '60000'); // 60 seconds
+const WATCH_PROFILES = process.env.SSH_MCP_PROFILES_WATCH !== 'false'; // true by default
+
+/**
+ * Profiles cache
+ */
+let PROFILES_CACHE: ProfilesCache | null = null;
+
+/**
+ * File watcher instance
+ */
+let fileWatcher: FSWatcher | null = null;
+
+/**
  * Load profiles from file
- * This function runs ONCE at module import time
  * 
  * Priority:
  * 1. SSH_PROFILES_FILE - path to JSON file (required for SSH MCP)
@@ -76,9 +103,102 @@ function loadProfilesFromEnv(): ProfilesConfig {
 }
 
 /**
- * Profiles loaded at module initialization (once)
+ * Get profiles with caching and auto-reload
  */
-const PROFILES: ProfilesConfig = loadProfilesFromEnv();
+function getProfiles(): ProfilesConfig {
+  const profilesFile = process.env.SSH_PROFILES_FILE;
+  
+  if (!profilesFile) {
+    throw new Error('SSH_PROFILES_FILE not set');
+  }
+  
+  // Check cache
+  const now = Date.now();
+  const cacheValid = PROFILES_CACHE &&
+                     PROFILES_CACHE.filePath === profilesFile &&
+                     (now - PROFILES_CACHE.loadedAt) < CACHE_TTL;
+  
+  if (cacheValid) {
+    logger.debug('[Profiles] Using cached profiles');
+    return PROFILES_CACHE!.config;
+  }
+  
+  // Load profiles
+  logger.debug(`[Profiles] Cache expired or invalid, reloading from ${profilesFile}`);
+  
+  const config = loadProfilesFromEnv();
+  
+  PROFILES_CACHE = {
+    config,
+    loadedAt: now,
+    filePath: profilesFile
+  };
+  
+  logger.info(`[Profiles] Reloaded ${Object.keys(config.profiles).length} profiles`);
+  
+  return config;
+}
+
+/**
+ * Force reload profiles (manual)
+ */
+export function reloadProfiles(): void {
+  logger.info('[Profiles] Manual reload requested');
+  PROFILES_CACHE = null;
+  getProfiles(); // Load immediately
+}
+
+/**
+ * Watch SSH_PROFILES_FILE for changes
+ */
+function watchProfilesFile(filePath: string): void {
+  if (!WATCH_PROFILES) {
+    logger.debug('[Profiles] File watching disabled (SSH_MCP_PROFILES_WATCH=false)');
+    return;
+  }
+  
+  if (fileWatcher) {
+    fileWatcher.close();
+  }
+  
+  logger.debug(`[Profiles] Watching ${filePath} for changes...`);
+  
+  try {
+    fileWatcher = watch(filePath, (eventType) => {
+      if (eventType === 'change') {
+        logger.info(`[Profiles] SSH_PROFILES_FILE changed, reloading...`);
+        
+        // Invalidate cache
+        PROFILES_CACHE = null;
+        
+        try {
+          getProfiles(); // Reload
+          logger.info('[Profiles] ✅ Profiles reloaded successfully');
+        } catch (error: any) {
+          logger.error(`[Profiles] ❌ Failed to reload profiles: ${error.message}`);
+        }
+      }
+    });
+    
+    fileWatcher.on('error', (error) => {
+      logger.error(`[Profiles] File watcher error: ${error.message}`);
+    });
+    
+    logger.info('[Profiles] ✅ File watcher started');
+  } catch (error: any) {
+    logger.error(`[Profiles] Failed to start file watcher: ${error.message}`);
+  }
+}
+
+// Initialize: load profiles and start watching
+const profilesFile = process.env.SSH_PROFILES_FILE;
+if (profilesFile) {
+  // Initial load
+  getProfiles();
+  
+  // Start watching
+  watchProfilesFile(profilesFile);
+}
 
 /**
  * Expand tilde (~) in file paths to user home directory
@@ -120,6 +240,8 @@ function expandTilde(filepath?: string): string | undefined {
 export function resolveSSHConfig(args: {
   profile?: string;
 }): SSHConfig {
+  const PROFILES = getProfiles(); // ✅ Use cached profiles with auto-reload
+  
   logger.debug(`[Profile Resolver] Resolving SSH config, requested profile: ${args.profile || 'default'}`);
   logger.debug(`[Profile Resolver] Available profiles: ${Object.keys(PROFILES.profiles).join(', ')}`);
   logger.debug(`[Profile Resolver] Default profile: ${PROFILES.default}`);
@@ -278,6 +400,7 @@ export function resolveSSHConfig(args: {
  * Useful for debugging and error messages
  */
 export function getAvailableProfiles(): string[] {
+  const PROFILES = getProfiles();
   return Object.keys(PROFILES.profiles);
 }
 
@@ -285,5 +408,6 @@ export function getAvailableProfiles(): string[] {
  * Get default profile name
  */
 export function getDefaultProfile(): string {
+  const PROFILES = getProfiles();
   return PROFILES.default;
 }

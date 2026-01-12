@@ -9,7 +9,7 @@
 
 ## ✨ Features
 
-### 7 Powerful Commands:
+### 8 Powerful Commands:
 
 1. **ssh_exec** - Universal command execution (single or batch)
 2. **ssh_file_read** - Read files (single or multiple)
@@ -18,6 +18,7 @@
 5. **ssh_log_tail** - Last N lines from logs (single or multiple)
 6. **ssh_log_search** - Search logs with grep (single or multiple)
 7. **ssh_snapshot** - Instant system health check
+8. **ssh_monitor** - Monitor connections, reload profiles, test connections
 
 ### Key Features:
 
@@ -340,6 +341,75 @@ ssh_snapshot({
 // - Open ports and connections
 // - Recent errors from logs
 ```
+
+### ssh_monitor - Monitoring & Diagnostics
+
+```typescript
+// Get connection pool statistics
+ssh_monitor({
+  action: "stats"
+})
+// Returns: cache hit rate, active connections, metrics
+
+// Reload SSH profiles (without server restart)
+ssh_monitor({
+  action: "reload"
+})
+// Reloads SSH_PROFILES_FILE and shows new profiles
+
+// Test connection to profile
+ssh_monitor({
+  action: "test",
+  profile: "production"
+})
+// Tests connection and shows connect/command timings
+
+// List available profiles
+ssh_monitor({
+  action: "list"
+})
+// Shows all available profiles with default marked
+```
+
+## 🔧 Environment Variables
+
+### Required
+- `SSH_PROFILES_FILE` - Path to SSH profiles JSON file
+
+### Optional (Logging)
+- `SSH_MCP_LOG_LEVEL` - Log level: `debug`, `info`, `warn`, `error` (default: `info`)
+- `SSH_MCP_LOG_TIMESTAMP` - Show timestamps in logs: `true`, `false` (default: `true`)
+- `SSH_MCP_LOG_COLORS` - Enable colors in logs: `true`, `false` (default: `false`)
+
+### Optional (Connection Pool)
+- `SSH_MCP_POOL_IDLE_TIMEOUT` - Idle timeout for connections in ms (default: `30000`)
+- `SSH_MCP_POOL_KEEPALIVE_INTERVAL` - Keep-alive ping interval in ms (default: `10000`)
+
+### Optional (Profiles)
+- `SSH_MCP_PROFILES_CACHE_TTL` - Profile cache TTL in ms (default: `60000`)
+- `SSH_MCP_PROFILES_WATCH` - Watch profiles file for changes: `true`, `false` (default: `true`)
+
+### Example Configuration
+
+```bash
+# Required
+export SSH_PROFILES_FILE="$HOME/.ssh/mcp-profiles.json"
+
+# Optional - Logging
+export SSH_MCP_LOG_LEVEL="debug"
+export SSH_MCP_LOG_TIMESTAMP="true"
+
+# Optional - Connection Pool
+export SSH_MCP_POOL_IDLE_TIMEOUT="60000"
+
+# Optional - Profiles
+export SSH_MCP_PROFILES_WATCH="true"
+export SSH_MCP_PROFILES_CACHE_TTL="60000"
+```
+
+**Note:** Profile reload happens automatically when `SSH_PROFILES_FILE` changes (if `SSH_MCP_PROFILES_WATCH=true`). You can also manually reload profiles using `ssh_monitor(action="reload")`.
+
+---
 
 ## 🔒 Security
 

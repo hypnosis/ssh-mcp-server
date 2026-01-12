@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-01-17
+
+### Added - Sprint 5: Profiles Reload & Monitoring 📊
+
+**Profile Reload:**
+- **Automatic reload** - SSH profiles reload automatically when `SSH_PROFILES_FILE` changes
+- **File watcher** - Monitors profile file for changes (can be disabled with `SSH_MCP_PROFILES_WATCH=false`)
+- **Cache with TTL** - Profiles cached for 60 seconds (configurable with `SSH_MCP_PROFILES_CACHE_TTL`)
+- **Manual reload** - `ssh_monitor(action="reload")` to force reload profiles
+- **Config change detection** - ConnectionPool detects profile config changes and reconnects automatically
+
+**Monitoring Tool (ssh_monitor):**
+- **stats** - Get connection pool statistics (cache hit rate, active connections, metrics)
+- **reload** - Reload SSH profiles without server restart
+- **test** - Test connection to profile with timing metrics
+- **list** - List all available profiles with default marked
+
+**Enhanced Logging:**
+- **Context logger** - `logger.context('ModuleName')` for scoped logging
+- **Performance timer** - `logger.time('label')` for measuring operation duration
+- **Configurable logging** - `SSH_MCP_LOG_LEVEL`, `SSH_MCP_LOG_TIMESTAMP`, `SSH_MCP_LOG_COLORS`
+
+**Environment Variables:**
+- **SSH_MCP_LOG_LEVEL** - Log level: debug, info, warn, error (default: info)
+- **SSH_MCP_LOG_TIMESTAMP** - Show timestamps: true, false (default: true)
+- **SSH_MCP_LOG_COLORS** - Enable colors: true, false (default: false)
+- **SSH_MCP_POOL_IDLE_TIMEOUT** - Connection idle timeout in ms (default: 30000)
+- **SSH_MCP_POOL_KEEPALIVE_INTERVAL** - Keep-alive interval in ms (default: 10000)
+- **SSH_MCP_PROFILES_CACHE_TTL** - Profile cache TTL in ms (default: 60000)
+- **SSH_MCP_PROFILES_WATCH** - Watch profiles file: true, false (default: true)
+
+### Changed - Developer Experience
+- **profile-resolver.ts** - Profiles now cached with TTL and auto-reload support
+- **connection-pool.ts** - Detects profile config changes and reconnects automatically
+- **logger.ts** - Enhanced with context logger and performance timer
+- **index.ts** - Added MonitoringTool registration (8 tools total now)
+
+### Fixed - Usability Issues
+- **ARCH-007** - Profiles singleton without reload (now auto-reload with file watcher)
+- **No monitoring** - Added ssh_monitor tool for diagnostics and stats
+- **No profile reload** - Profiles reload automatically or manually without server restart
+
+### Technical Details
+- New file: `src/tools/monitoring-tool.ts` - MonitoringTool with 4 actions
+- File watcher using Node.js `fs.watch()` for instant profile reload
+- Profile cache with TTL fallback if file watcher fails
+- ConnectionPool checks config changes and reconnects if needed
+- Context logger and performance timer for better debugging
+
+### Documentation
+- Added Environment Variables section to README.md
+- Added ssh_monitor examples to README.md
+- Updated tool count from 7 to 8 commands
+- Documented profile reload behavior
+
 ## [1.2.0] - 2026-01-16
 
 ### Added - Sprint 4: Timeout & Error Handling 🔧

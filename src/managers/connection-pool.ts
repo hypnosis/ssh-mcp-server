@@ -8,6 +8,7 @@ import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { logger } from '../utils/logger.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
+import { retryWithTimeout, createSSHRetryPredicate } from '../utils/retry.js';
 
 /**
  * Pooled connection data
@@ -233,11 +234,88 @@ export class ConnectionPool {
   }
   
   /**
-   * Create new SSH connection
+   * Create new SSH connection with retry
    */
   private async createConnection(profileName: string, config: SSHConfig): Promise<Client> {
     logger.info(`[Connection Pool] Creating new connection for profile "${profileName}"`);
+    logger.debug(`[Connection Pool] Config: ${config.username}@${config.host}:${config.port || 22}`);
     
+    try {
+      // Wrap connection creation in retry with exponential backoff
+      const client = await retryWithTimeout(
+        () => this.connectClient(profileName, config),
+        {
+          maxAttempts: 3,
+          timeout: 10000, // 10s timeout per attempt
+          initialDelay: 1000, // 1s
+          backoffMultiplier: 2, // 1s, 2s, 4s
+          shouldRetry: createSSHRetryPredicate(),
+        }
+      );
+      
+      return client;
+      
+    } catch (error: any) {
+      // Enhanced error messages with helpful hints
+      logger.error(`[Connection Pool] ❌ Failed to connect to profile "${profileName}"`);
+      logger.error(`[Connection Pool] Host: ${config.host}:${config.port || 22}`);
+      logger.error(`[Connection Pool] Username: ${config.username}`);
+      logger.error(`[Connection Pool] Error: ${error.message}`);
+      
+      // Specific error messages with troubleshooting hints
+      if (error.message.includes('ECONNREFUSED') || error.code === 'ECONNREFUSED') {
+        throw new Error(
+          `Connection refused to ${config.host}:${config.port || 22}. ` +
+          `Check if SSH server is running and port is correct.`
+        );
+      }
+      
+      if (error.message.includes('ETIMEDOUT') || error.code === 'ETIMEDOUT') {
+        throw new Error(
+          `Connection timeout to ${config.host}:${config.port || 22}. ` +
+          `Check firewall rules and network connectivity.`
+        );
+      }
+      
+      if (error.message.includes('ENOTFOUND') || error.code === 'ENOTFOUND') {
+        throw new Error(
+          `Host not found: ${config.host}. ` +
+          `Check hostname/IP address in profile configuration.`
+        );
+      }
+      
+      if (error.message.includes('authentication') || error.message.includes('Authentication failed')) {
+        throw new Error(
+          `Authentication failed for ${config.username}@${config.host}. ` +
+          `Check username, SSH key path, and passphrase.`
+        );
+      }
+      
+      if (error.message.includes('privateKey') || error.message.includes('private key')) {
+        throw new Error(
+          `Invalid SSH key at ${config.privateKeyPath}. ` +
+          `Check file exists and has correct permissions (600).`
+        );
+      }
+      
+      if (error.message.includes('timed out') || error.name === 'TimeoutError') {
+        throw new Error(
+          `Connection timeout to ${config.host}:${config.port || 22} after multiple attempts. ` +
+          `Check network connectivity and SSH server availability.`
+        );
+      }
+      
+      // Generic error with context
+      throw new Error(
+        `Failed to connect to ${config.username}@${config.host}:${config.port || 22}: ${error.message}`
+      );
+    }
+  }
+  
+  /**
+   * Connect client (single attempt)
+   */
+  private async connectClient(profileName: string, config: SSHConfig): Promise<Client> {
     return new Promise((resolve, reject) => {
       const client = new Client();
       let connectionEstablished = false;
@@ -310,8 +388,8 @@ export class ConnectionPool {
       
       client.on('error', (err) => {
         if (!connectionEstablished) {
-          logger.error(`[Connection Pool] ❌ Failed to connect for profile "${profileName}": ${err.message}`);
-          reject(new Error(`SSH connection error: ${err.message}`));
+          logger.error(`[Connection Pool] Connection attempt failed for profile "${profileName}": ${err.message}`);
+          reject(err); // Reject with original error for retry logic
         }
       });
       

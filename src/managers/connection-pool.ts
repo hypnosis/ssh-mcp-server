@@ -506,6 +506,26 @@ export class ConnectionPool {
     
     if (toClose.length > 0) {
       logger.info(`[Connection Pool] Cleaned up ${toClose.length} idle connections`);
+      
+      // Reset metrics if pool is now empty (session ended)
+      if (this.connections.size === 0) {
+        logger.debug('[Connection Pool] All connections closed, resetting session metrics');
+        this.resetMetrics();
+      }
     }
+  }
+  
+  /**
+   * Reset session metrics
+   * Called when all connections are closed (pool is empty)
+   */
+  private resetMetrics(): void {
+    this.metrics.totalConnections = 0;
+    this.metrics.totalCommands = 0;
+    this.metrics.cacheHits = 0;
+    this.metrics.cacheMisses = 0;
+    this.metrics.reconnects = 0;
+    
+    logger.debug('[Connection Pool] Session metrics reset to zero');
   }
 }

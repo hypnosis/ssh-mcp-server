@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-01-16
+
+### Added - Sprint 4: Timeout & Error Handling 🔧
+
+**Retry Mechanism:**
+- **Automatic retry** - Connection failures automatically retry up to 3 times
+- **Exponential backoff** - Delays increase progressively (1s, 2s, 4s)
+- **Smart retry logic** - Retries only temporary errors (ECONNREFUSED, ETIMEDOUT, ENOTFOUND)
+- **No retry for auth errors** - Authentication failures fail immediately (no wasted attempts)
+
+**Enhanced Error Messages:**
+- **ECONNREFUSED** - "Check if SSH server is running and port is correct"
+- **ETIMEDOUT** - "Check firewall rules and network connectivity"
+- **ENOTFOUND** - "Check hostname/IP address in profile configuration"
+- **Authentication failed** - "Check username, SSH key path, and passphrase"
+- **Invalid SSH key** - "Check file exists and has correct permissions (600)"
+- **Timeout after retries** - "Check network connectivity and SSH server availability"
+
+**Stability Improvements:**
+- **Race condition fix** - Already fixed in v2.0.0 (resolveOnce/rejectOnce in ssh-manager.ts)
+- **Auto-reconnect** - Already implemented in v2.0.0 (ConnectionPool)
+- **Graceful degradation** - System continues working after temporary failures
+
+### Changed - Error Handling
+- **ConnectionPool** - Integrated retry mechanism with exponential backoff
+- **createConnection()** - Wrapped in `retryWithTimeout()` for automatic retry
+- **connectClient()** - Separated single connection attempt for retry logic
+- **Error messages** - Enhanced with specific troubleshooting hints
+
+### Fixed - Reliability Issues
+- **Temporary network failures** - Now automatically retry instead of failing immediately
+- **Authentication errors** - No longer retry (fail fast with helpful message)
+- **Timeout errors** - Clear error messages with context about what failed
+
+### Technical Details
+- **retry.ts** - Already existed, now integrated into ConnectionPool
+- **createSSHRetryPredicate()** - Fixed to check auth errors first (case-insensitive)
+- **retryWithTimeout()** - 3 attempts, 10s timeout per attempt, exponential backoff
+- **Error context** - All errors include host, port, username for debugging
+
+### Testing
+- **22 new tests** - Comprehensive error handling test suite
+- **Timeout tests** - Verify no race conditions on timeout
+- **Retry tests** - Verify retry logic for temporary errors
+- **Predicate tests** - Verify SSH retry predicate logic
+- **Error message tests** - Verify helpful error messages
+- **60 total tests** - All passing ✅
+
+### Documentation
+- Updated CHANGELOG.md with Sprint 4 changes
+- Error handling improvements documented
+- Retry mechanism explained
+
 ## [2.1.0] - 2026-01-15
 
 ### Added - Sprint 3: Path Security & Tilde Expansion 🛡️

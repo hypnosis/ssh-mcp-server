@@ -129,6 +129,16 @@ export async function retryWithTimeout<T>(
  */
 export function createSSHRetryPredicate(): (error: any) => boolean {
   return (error: any) => {
+    // НЕ повторяем для ошибок аутентификации (проверяем ПЕРВЫМИ!)
+    if (error.message) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes('authentication') ||
+          msg.includes('permission denied') ||
+          msg.includes('publickey')) {
+        return false;
+      }
+    }
+
     // Повторяем для сетевых ошибок
     if (error.code === 'ECONNREFUSED' || 
         error.code === 'ETIMEDOUT' || 
@@ -138,23 +148,15 @@ export function createSSHRetryPredicate(): (error: any) => boolean {
       return true;
     }
 
-    // Повторяем для ошибок с сообщениями о таймауте
-    if (error.message && (
-      error.message.includes('timeout') ||
-      error.message.includes('timed out') ||
-      error.message.includes('connection') ||
-      error.message.includes('network')
-    )) {
-      return true;
-    }
-
-    // НЕ повторяем для ошибок аутентификации
-    if (error.message && (
-      error.message.includes('authentication') ||
-      error.message.includes('permission denied') ||
-      error.message.includes('publickey')
-    )) {
-      return false;
+    // Повторяем для ошибок с сообщениями о таймауте и сети
+    if (error.message) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes('timeout') ||
+          msg.includes('timed out') ||
+          msg.includes('connection') ||
+          msg.includes('network')) {
+        return true;
+      }
     }
 
     // По умолчанию повторяем

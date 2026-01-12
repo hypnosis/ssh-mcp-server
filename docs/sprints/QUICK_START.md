@@ -1,4 +1,4 @@
-# ⚡ Quick Start - SSH MCP Server v2.0.0
+# ⚡ Quick Start - SSH MCP Server v1.2.0
 
 **Время чтения:** 2 минуты  
 **Цель:** Быстро понять что делать и с чего начать
@@ -12,6 +12,7 @@
 **Статус:** 
 - Sprint 2 ✅ ЗАВЕРШЁН (2025-01-13) - Connection Pool реализован!
 - Sprint 3 ✅ ЗАВЕРШЁН (2025-01-15) - Path Security & Tilde Expansion реализовано!
+- Sprint 4 ✅ ЗАВЕРШЁН (2025-01-16) - Timeout & Error Handling реализовано!
 
 ### Главная проблема:
 **Каждая SSH команда = новое соединение = медленно (16s для 10 команд)**
@@ -65,7 +66,7 @@
 │   Время: ~2 часа                                        │
 └─────────────────────────────────────────────────────────┘
            ↓
-        v2.0.0 READY! 🚀
+        v1.2.0 READY! 🚀
 ```
 
 ---
@@ -104,24 +105,40 @@
 
 ---
 
-### 🎯 Следующий шаг: Sprint 4 - Timeout & Error Handling
+### ✅ Sprint 4 ЗАВЕРШЁН! (2025-01-16)
 
-### 1. Прочитай завершённый Sprint 3
+**Выполнено:**
+- ✅ Retry механизм интегрирован в ConnectionPool
+- ✅ Детальные error messages с подсказками
+- ✅ Auto-reconnect уже был реализован в Sprint 2
+- ✅ Race condition уже была исправлена в Sprint 2
+- ✅ 22 новых теста для error handling
+- ✅ Все 60 тестов проходят
+
+**Результат:** 🔧 **Стабильность** + ✅ **Понятные ошибки**!
+
+**Детали:** См. `docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md`
+
+---
+
+### 🎯 Следующий шаг: Sprint 5 - Profiles Reload & Monitoring
+
+### 1. Прочитай завершённые спринты
 ```bash
 cat docs/sprints/2025-01-15_SPRINT_3_PATH_SECURITY.md
-```
-
-### 2. Начни Sprint 4 - Timeout & Error Handling
-```bash
 cat docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md
 ```
 
-**Задачи Sprint 4:**
-- Исправить race condition в timeout
-- Добавить retry механизм (3 попытки)
-- Улучшить error messages
-- Auto-reconnect
-- Тесты
+### 2. Начни Sprint 5 - Profiles Reload & Monitoring
+```bash
+cat docs/sprints/2025-01-17_SPRINT_5_PROFILES_MONITORING.md
+```
+
+**Задачи Sprint 5:**
+- Profile reload без рестарта
+- MonitoringTool (ssh_monitor)
+- Debug logging
+- Документация ENV variables
 
 **Время:** ~2 часа
 
@@ -158,6 +175,15 @@ cat docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md
 - ✅ 37 unit тестов пройдены
 - ✅ ISSUE-001 закрыт ✅
 
+### Sprint 4 ✅ ЗАВЕРШЁН (2025-01-16):
+- ✅ Retry механизм интегрирован в ConnectionPool
+- ✅ Детальные error messages с подсказками
+- ✅ Auto-reconnect работает (уже было в Sprint 2)
+- ✅ Race condition исправлена (уже было в Sprint 2)
+- ✅ Все задачи выполнены (5/5)
+- ✅ 22 новых теста для error handling
+- ✅ Все 60 тестов пройдены
+
 ### Все спринты завершены если:
 - ✅ Performance метрики достигнуты
 - ✅ ISSUE-001 решён ✅
@@ -171,8 +197,8 @@ cat docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md
 ### Порядок выполнения:
 1. ✅ **Sprint 2** - Connection Pool (ЗАВЕРШЁН!)
 2. ✅ **Sprint 3** - Path Security (ЗАВЕРШЁН!)
-3. **Sprint 4** - Timeout & Errors (НАЧНИ С ЭТОГО!)
-4. Sprint 5 (удобство)
+3. ✅ **Sprint 4** - Timeout & Errors (ЗАВЕРШЁН!)
+4. **Sprint 5** - Monitoring (НАЧНИ С ЭТОГО!)
 
 ### Агенты:
 - **SONNET 4.5** - сложные задачи (архитектура, код)
@@ -188,10 +214,10 @@ cat docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md
 ## ❓ FAQ
 
 **Q: С чего начать?**  
-A: Sprint 4 - Timeout & Error Handling. Sprint 2 и 3 уже завершены! ✅
+A: Sprint 5 - Profiles Reload & Monitoring. Sprint 2, 3 и 4 уже завершены! ✅
 
 **Q: Сколько времени?**  
-A: ~6 часов (1.5 дня работы) осталось. Sprint 2 и 3 завершены! ✅
+A: ~2 часа осталось. Sprint 2, 3 и 4 завершены! ✅
 
 **Q: Можно делать параллельно?**  
 A: Да, Sprint 3-5 независимы. Sprint 2 должен быть первым.
@@ -210,16 +236,17 @@ A: В каждом файле спринта есть детальные при�
 # Шаг 1: Прочитай завершённые спринты
 cat docs/sprints/SPRINT_2_SUMMARY.md
 cat docs/sprints/2025-01-15_SPRINT_3_PATH_SECURITY.md
-
-# Шаг 2: Начни Sprint 4
 cat docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md
+
+# Шаг 2: Начни Sprint 5
+cat docs/sprints/2025-01-17_SPRINT_5_PROFILES_MONITORING.md
 
 # ВПЕРЁД! 🚀
 ```
 
 ---
 
-**Sprint 2 и 3 завершены!** ✅  
-**Следующий:** Sprint 4 - Timeout & Error Handling (`2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md`)
+**Sprint 2, 3 и 4 завершены!** ✅  
+**Следующий:** Sprint 5 - Profiles Reload & Monitoring (`2025-01-17_SPRINT_5_PROFILES_MONITORING.md`)
 
 **GOOD LUCK! 🎉**

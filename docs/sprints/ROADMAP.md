@@ -42,7 +42,7 @@
 
 ### Sprint 2: Connection Pool & Performance ✅ ЗАВЕРШЕНО
 **Дата:** 2025-01-13 (1 день)  
-**Файл:** `docs/sprints/2025-01-13_SPRINT_2_CONNECTION_POOL.md`  
+**Файл:** `docs/sprints/archive/CORE_02_connection_pool.md`  
 **Приоритет:** 🔴 КРИТИЧЕСКИЙ  
 **Агент:** SONNET 4.5  
 **Статус:** ✅ **ЗАВЕРШЕНО**
@@ -69,13 +69,13 @@
 
 **Решает проблемы:** #1, #2, #4 ✅
 
-**Детали:** См. `docs/sprints/SPRINT_2_SUMMARY.md`
+**Детали:** См. `docs/sprints/archive/SPRINT_2_SUMMARY.md`
 
 ---
 
 ### Sprint 3: Path Security & Tilde Expansion ✅ ЗАВЕРШЕНО
 **Дата:** 2025-01-15  
-**Файл:** `docs/sprints/2025-01-15_SPRINT_3_PATH_SECURITY.md`  
+**Файл:** `docs/sprints/archive/FIX_03_path_security.md`  
 **Приоритет:** 🟡 СРЕДНИЙ  
 **Агент:** SONNET 4.5
 **Статус:** ✅ **ЗАВЕРШЕНО**
@@ -108,7 +108,7 @@
 
 ### Sprint 4: Timeout & Error Handling ✅ ЗАВЕРШЕНО
 **Дата:** 2025-01-16  
-**Файл:** `docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md`  
+**Файл:** `docs/sprints/archive/FIX_04_timeout_errors.md`  
 **Приоритет:** 🟡 СРЕДНИЙ  
 **Агент:** SONNET 4.5
 **Статус:** ✅ **ЗАВЕРШЕНО**
@@ -136,7 +136,7 @@
 
 ### Sprint 5: Profiles Reload & Monitoring ✅ ЗАВЕРШЕНО
 **Дата:** 2025-01-17  
-**Файл:** `docs/sprints/2025-01-17_SPRINT_5_PROFILES_MONITORING.md`  
+**Файл:** `docs/sprints/archive/CORE_05_profiles_monitoring.md`  
 **Приоритет:** 🟢 НИЗКИЙ  
 **Агент:** SONNET 4.5
 **Статус:** ✅ **ЗАВЕРШЕНО**
@@ -163,7 +163,7 @@
 
 ### Sprint 6: Connection Pool Metrics Fix ✅ ЗАВЕРШЕНО
 **Дата:** 2026-01-12  
-**Файл:** `docs/sprints/2026-01-12_SPRINT_6_METRICS_FIX.md`  
+**Файл:** `docs/sprints/archive/FIX_06_metrics_fix.md`  
 **Приоритет:** 🟡 СРЕДНИЙ  
 **Агент:** AUTO
 **Статус:** ✅ **ЗАВЕРШЕНО**
@@ -269,7 +269,7 @@ Week 2: Архитектурные улучшения
 - `docs/sprints/` - Детальные планы спринтов
 
 ### Для каждого спринта
-- Детальный план в `docs/sprints/YYYY-MM-DD_SPRINT_N_NAME.md`
+- Детальный план в `docs/sprints/archive/PREFIX_NN_description.md`
 - Указан агент (SONNET 4.5 / HAIKU)
 - Указано время на задачу
 - Примеры кода и тесты
@@ -304,10 +304,12 @@ Week 2: Архитектурные улучшения
 ### 2. Изучить завершённые спринты
 ```bash
 # Все спринты завершены - изучи результаты:
-cat docs/sprints/SPRINT_2_SUMMARY.md
-cat docs/sprints/2025-01-15_SPRINT_3_PATH_SECURITY.md
-cat docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md
-cat docs/sprints/2025-01-17_SPRINT_5_PROFILES_MONITORING.md
+cat docs/sprints/archive/SPRINT_2_SUMMARY.md
+cat docs/sprints/archive/CORE_02_connection_pool.md
+cat docs/sprints/archive/FIX_03_path_security.md
+cat docs/sprints/archive/FIX_04_timeout_errors.md
+cat docs/sprints/archive/CORE_05_profiles_monitoring.md
+cat docs/sprints/archive/FIX_06_metrics_fix.md
 ```
 
 ### 3. Использовать проект

@@ -130,14 +130,14 @@ npm run build
 # Тест с валидным массивом
 mcp_ssh_ssh_exec({
   command: ["hostname", "whoami"],
-  profile: "production"
+  profile: "example-profile"
 })
 # ✅ Работает
 
 # Тест с невалидным массивом
 mcp_ssh_ssh_exec({
   command: ['hostname', 'whoami'],
-  profile: "production"
+  profile: "example-profile"
 })
 # ❌ Ошибка с понятным сообщением
 ```

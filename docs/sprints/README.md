@@ -1,7 +1,7 @@
 # 📋 Спринты SSH MCP Server
 
 **Цель:** Исправление архитектурных проблем и повышение производительности  
-**Версия:** v1.0.0 → v1.2.1  
+**Версия:** v1.0.0 → v1.2.2  
 **Период:** 2025-01-13 — 2025-01-17 (5 дней)  
 **Статус:** 
 - Sprint 2 ✅ ЗАВЕРШЁН (2025-01-13)
@@ -13,31 +13,24 @@
 
 ## 🎯 БЫСТРЫЙ СТАРТ
 
-### 1️⃣ Прочитай анализ проблем
-```bash
-cat docs/sprints/ARCHITECTURE_ANALYSIS.md
-```
-**Что внутри:**
-- 7 архитектурных проблем (2 критичных)
-- Диаграммы текущей и целевой архитектуры
-- Метрики производительности (6-10× ускорение)
-
-### 2️⃣ Изучи roadmap
+### 1️⃣ Изучи roadmap
 ```bash
 cat docs/sprints/ROADMAP.md
 ```
 **Что внутри:**
-- Обзор всех 5 спринтов
+- Обзор всех 6 спринтов
 - Timeline и приоритеты
 - Критерии готовности
 
-### 3️⃣ ВСЕ СПРИНТЫ ✅ ЗАВЕРШЕНЫ! Версия v1.2.1 готова!
+### 2️⃣ ВСЕ СПРИНТЫ ✅ ЗАВЕРШЕНЫ! Версия v1.2.2 готова!
 ```bash
-# Изучи все завершённые спринты
-cat docs/sprints/SPRINT_2_SUMMARY.md
-cat docs/sprints/2025-01-15_SPRINT_3_PATH_SECURITY.md
-cat docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md
-cat docs/sprints/2025-01-17_SPRINT_5_PROFILES_MONITORING.md
+# Изучи все завершённые спринты в archive/
+cat docs/sprints/archive/SPRINT_2_SUMMARY.md
+cat docs/sprints/archive/CORE_02_connection_pool.md
+cat docs/sprints/archive/FIX_03_path_security.md
+cat docs/sprints/archive/FIX_04_timeout_errors.md
+cat docs/sprints/archive/CORE_05_profiles_monitoring.md
+cat docs/sprints/archive/FIX_06_metrics_fix.md
 ```
 **Sprint 2 результаты:**
 - ✅ ConnectionPool реализован
@@ -74,13 +67,15 @@ cat docs/sprints/2025-01-17_SPRINT_5_PROFILES_MONITORING.md
 docs/sprints/
 ├── README.md                                    ← ТЫ ЗДЕСЬ
 ├── ROADMAP.md                                   ← Общий roadmap
-├── ARCHITECTURE_ANALYSIS.md                     ← Анализ проблем
 │
-├── 2025-01-13_SPRINT_2_CONNECTION_POOL.md      ← ✅ ЗАВЕРШЕНО (2025-01-13)
-├── SPRINT_2_SUMMARY.md                          ← 📊 Отчёт о выполнении Sprint 2
-├── 2025-01-15_SPRINT_3_PATH_SECURITY.md        ← ✅ ЗАВЕРШЕНО (2025-01-15)
-├── 2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md       ← ✅ ЗАВЕРШЕНО (2025-01-16)
-└── 2025-01-17_SPRINT_5_PROFILES_MONITORING.md  ← ✅ ЗАВЕРШЕНО (2025-01-17)
+└── archive/                                     ← Завершённые спринты
+    ├── CORE_01_mvp.md                          ← ✅ ЗАВЕРШЕНО
+    ├── CORE_02_connection_pool.md               ← ✅ ЗАВЕРШЕНО (2025-01-13)
+    ├── SPRINT_2_SUMMARY.md                      ← 📊 Отчёт о выполнении Sprint 2
+    ├── FIX_03_path_security.md                  ← ✅ ЗАВЕРШЕНО (2025-01-15)
+    ├── FIX_04_timeout_errors.md                 ← ✅ ЗАВЕРШЕНО (2025-01-16)
+    ├── CORE_05_profiles_monitoring.md           ← ✅ ЗАВЕРШЕНО (2025-01-17)
+    └── FIX_06_metrics_fix.md                   ← ✅ ЗАВЕРШЕНО (2026-01-12)
 ```
 
 ---
@@ -89,7 +84,7 @@ docs/sprints/
 
 ### Sprint 2: Connection Pool & Performance ✅ ЗАВЕРШЕНО
 **Дата:** 2025-01-13 (1 день)  
-**Файл:** `2025-01-13_SPRINT_2_CONNECTION_POOL.md`  
+**Файл:** `archive/CORE_02_connection_pool.md`  
 **Агент:** SONNET 4.5  
 **Время:** ~2 часа (выполнено)
 
@@ -110,13 +105,13 @@ docs/sprints/
 - ✅ Проект компилируется без ошибок
 - ✅ Все линтеры пройдены
 
-**Детали:** См. `SPRINT_2_SUMMARY.md`
+**Детали:** См. `archive/SPRINT_2_SUMMARY.md`
 
 ---
 
 ### Sprint 3: Path Security & Tilde Expansion ✅ ЗАВЕРШЕНО
 **Дата:** 2025-01-15 (1 день)  
-**Файл:** `2025-01-15_SPRINT_3_PATH_SECURITY.md`  
+**Файл:** `archive/FIX_03_path_security.md`  
 **Агент:** SONNET 4.5  
 **Время:** ~2 часа (выполнено)
 
@@ -139,7 +134,7 @@ docs/sprints/
 
 ### Sprint 4: Timeout & Error Handling ✅ ЗАВЕРШЕНО
 **Дата:** 2025-01-16 (1 день)  
-**Файл:** `2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md`  
+**Файл:** `archive/FIX_04_timeout_errors.md`  
 **Агент:** SONNET 4.5  
 **Время:** ~2 часа (выполнено)
 
@@ -163,7 +158,7 @@ docs/sprints/
 
 ### Sprint 5: Profiles Reload & Monitoring ✅ ЗАВЕРШЕНО
 **Дата:** 2025-01-17 (1 день)  
-**Файл:** `2025-01-17_SPRINT_5_PROFILES_MONITORING.md`  
+**Файл:** `archive/CORE_05_profiles_monitoring.md`  
 **Агент:** SONNET 4.5  
 **Время:** ~2 часа (выполнено)
 
@@ -215,7 +210,7 @@ docs/sprints/
 
 1. **Открыть файл спринта**
    ```bash
-   cat docs/sprints/2025-01-13_SPRINT_2_CONNECTION_POOL.md
+   cat docs/sprints/archive/CORE_02_connection_pool.md
    ```
 
 2. **Изучить задачи**
@@ -250,7 +245,7 @@ docs/sprints/
 - ✅ Connection Pool реализован и работает
 - ✅ Path Security и Tilde Expansion реализованы
 - ✅ Profile Reload и Monitoring реализованы
-- ✅ Версия v1.2.1 готова к использованию! 🚀
+- ✅ Версия v1.2.2 готова к использованию! 🚀
 
 ### Порядок выполнения:
 1. ✅ **Sprint 2** - Connection Pool (ЗАВЕРШЁН!)
@@ -271,13 +266,13 @@ docs/sprints/
 ## 📝 ДОКУМЕНТАЦИЯ
 
 ### Файлы для чтения:
-- `ARCHITECTURE_ANALYSIS.md` - детальный анализ проблем
 - `ROADMAP.md` - общий план
-- `SPRINT_2_SUMMARY.md` - отчёт о выполнении Sprint 2 ✅
-- `2025-01-13_SPRINT_2_CONNECTION_POOL.md` - завершённый спринт ✅
-- `2025-01-15_SPRINT_3_PATH_SECURITY.md` - завершённый спринт ✅
-- `2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md` - завершённый спринт ✅
-- `2025-01-17_SPRINT_5_PROFILES_MONITORING.md` - завершённый спринт ✅
+- `archive/SPRINT_2_SUMMARY.md` - отчёт о выполнении Sprint 2 ✅
+- `archive/CORE_02_connection_pool.md` - завершённый спринт ✅
+- `archive/FIX_03_path_security.md` - завершённый спринт ✅
+- `archive/FIX_04_timeout_errors.md` - завершённый спринт ✅
+- `archive/CORE_05_profiles_monitoring.md` - завершённый спринт ✅
+- `archive/FIX_06_metrics_fix.md` - завершённый спринт ✅
 
 ### Файлы для обновления:
 - `../../BUGLIST.md` - статусы проблем (уже обновлён)
@@ -297,7 +292,7 @@ docs/sprints/
 - ✅ Performance тесты пройдены (6× ускорение ожидается)
 - ✅ ISSUE-001 решён
 - ✅ Документация обновлена
-- ✅ Готов к релизу v1.2.1
+- ✅ Готов к релизу v1.2.2
 - ✅ Все 5 спринтов завершены
 
 ---
@@ -324,20 +319,22 @@ docs/sprints/
 
 ```bash
 # ВСЕ СПРИНТЫ ЗАВЕРШЕНЫ! ✅
-# Версия v1.2.1 готова к использованию! 🚀
+# Версия v1.2.2 готова к использованию! 🚀
 
 # Изучи все завершённые спринты:
-cat docs/sprints/SPRINT_2_SUMMARY.md
-cat docs/sprints/2025-01-15_SPRINT_3_PATH_SECURITY.md
-cat docs/sprints/2025-01-16_SPRINT_4_TIMEOUT_ERRORS.md
-cat docs/sprints/2025-01-17_SPRINT_5_PROFILES_MONITORING.md
+cat docs/sprints/archive/SPRINT_2_SUMMARY.md
+cat docs/sprints/archive/CORE_02_connection_pool.md
+cat docs/sprints/archive/FIX_03_path_security.md
+cat docs/sprints/archive/FIX_04_timeout_errors.md
+cat docs/sprints/archive/CORE_05_profiles_monitoring.md
+cat docs/sprints/archive/FIX_06_metrics_fix.md
 
 # Прочитай roadmap
 cat docs/sprints/ROADMAP.md
 ```
 
 **ВСЕ СПРИНТЫ ЗАВЕРШЕНЫ!** ✅  
-**Версия:** v1.2.1  
+**Версия:** v1.2.2  
 **Статус:** ГОТОВ К PRODUCTION! 🚀
 
 **GOOD LUCK!** 🎉

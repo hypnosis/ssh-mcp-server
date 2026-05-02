@@ -3,7 +3,7 @@
  * Manages SSH connections with keep-alive, auto-reconnect, and idle cleanup
  */
 
-import { Client, ConnectConfig } from 'ssh2';
+import { Client, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { logger } from '../utils/logger.js';
@@ -160,6 +160,24 @@ export class ConnectionPool {
     }
   }
   
+  /**
+   * Open an SFTP channel on the pooled connection for a profile.
+   * Caller is responsible for closing the SFTP wrapper (`sftp.end()`)
+   * and for calling `releaseClient(profileName)` once done.
+   */
+  async getSftp(profileName: string, config: SSHConfig): Promise<SFTPWrapper> {
+    const client = await this.getClient(profileName, config);
+    return new Promise<SFTPWrapper>((resolve, reject) => {
+      client.sftp((err, sftp) => {
+        if (err) {
+          reject(new Error(`Failed to open SFTP channel: ${err.message}`));
+          return;
+        }
+        resolve(sftp);
+      });
+    });
+  }
+
   /**
    * Release client (decrement active commands counter)
    * @param profileName - Profile name

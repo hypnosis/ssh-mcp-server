@@ -20,6 +20,8 @@ import { FileTools } from './tools/file-tools.js';
 import { LogTools } from './tools/log-tools.js';
 import { SnapshotTool } from './tools/snapshot-tool.js';
 import { MonitoringTool } from './tools/monitoring-tool.js';
+import { TransferTool } from './tools/transfer-tool.js';
+import { AuditTool } from './tools/audit-tool.js';
 import { ConnectionPool } from './managers/connection-pool.js';
 
 async function main() {
@@ -60,6 +62,8 @@ async function main() {
   const logTools = new LogTools();
   const snapshotTool = new SnapshotTool();
   const monitoringTool = new MonitoringTool();
+  const transferTool = new TransferTool();
+  const auditTool = new AuditTool();
 
   // Create MCP Server
   const server = new Server(
@@ -84,6 +88,8 @@ async function main() {
       ...logTools.getTools(),
       snapshotTool.getTool(),
       monitoringTool.getTool(),
+      ...transferTool.getTools(),
+      ...auditTool.getTools(),
     ];
     
     logger.info(`Returning ${allTools.length} tools to MCP client`);
@@ -121,6 +127,19 @@ async function main() {
       return monitoringTool.handleCall(request);
     }
 
+    if (toolName === 'ssh_upload' || toolName === 'ssh_download') {
+      return transferTool.handleCall(request);
+    }
+
+    if (
+      toolName === 'ssh_audit_baseline' ||
+      toolName === 'ssh_tls_check' ||
+      toolName === 'ssh_disk_breakdown' ||
+      toolName === 'ssh_service_status'
+    ) {
+      return auditTool.handleCall(request);
+    }
+
     throw new Error(`Unknown tool: ${toolName}`);
   });
 
@@ -131,14 +150,18 @@ async function main() {
   logger.info('SSH MCP Server started successfully');
   
   // Calculate actual tool count
-  const toolCount = 
+  const transferCount = transferTool.getTools().length;
+  const auditCount = auditTool.getTools().length;
+  const toolCount =
     1 + // execTool
     fileTools.getTools().length +
     logTools.getTools().length +
     1 + // snapshotTool
-    1; // monitoringTool
-  
-  logger.info(`Registered tools: ${toolCount} commands (1 exec + ${fileTools.getTools().length} file + ${logTools.getTools().length} log + 1 snapshot + 1 monitor)`);
+    1 + // monitoringTool
+    transferCount +
+    auditCount;
+
+  logger.info(`Registered tools: ${toolCount} commands (1 exec + ${fileTools.getTools().length} file + ${logTools.getTools().length} log + 1 snapshot + 1 monitor + ${transferCount} transfer + ${auditCount} audit)`);
   logger.info('Listening on STDIO...');
   
   // Graceful shutdown

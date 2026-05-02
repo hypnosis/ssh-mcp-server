@@ -7,18 +7,31 @@
 
 **Author:** Danila Susak | **GitHub:** [@hypnosis](https://github.com/hypnosis) | **License:** MIT
 
+> **⚠️ IMPORTANT for binaries and large files:** use `ssh_upload` / `ssh_download` (SFTP, binary-safe, sha256 verify, atomic rename) — **NOT** base64-chunks through `ssh_exec` or `ssh_file_write` heredoc. Heredoc-based writes corrupt binaries and have no atomic / integrity guarantees. See [Transfer tools](#-transfer-tools-v130) and [docs/transfer.md](docs/transfer.md).
+
 ## ✨ Features
 
-### 8 Powerful Commands:
+### 14 Powerful Commands:
 
+**Core (8):**
 1. **ssh_exec** - Universal command execution (single or batch)
-2. **ssh_file_read** - Read files (single or multiple)
-3. **ssh_file_write** - Write files (single or multiple)
+2. **ssh_file_read** - Read files (single or multiple); `binary: true` for base64
+3. **ssh_file_write** - Write files (single or multiple); `verify` / `atomic` / `binary`
 4. **ssh_file_list** - List files in directory
 5. **ssh_log_tail** - Last N lines from logs (single or multiple)
 6. **ssh_log_search** - Search logs with grep (single or multiple)
 7. **ssh_snapshot** - Instant system health check
 8. **ssh_monitor** - Monitor connections, reload profiles, test connections
+
+**Transfer — SFTP (2, v1.3.0+):**
+9. **ssh_upload** - Binary-safe file/directory upload (sha256 verify, atomic rename, sudo via `install`)
+10. **ssh_download** - Binary-safe file/directory download (sha256 verify)
+
+**Audit — read-only deep checks (4, v1.3.0+):**
+11. **ssh_audit_baseline** - One-shot system audit (replaces 5+ ssh_exec calls)
+12. **ssh_tls_check** - TLS expiry + SAN + issuer + Let's Encrypt renew_hook
+13. **ssh_disk_breakdown** - df + top-N du + docker df + journald + caches
+14. **ssh_service_status** - systemctl status + journalctl tail in one call
 
 ### Key Features:
 
@@ -249,6 +262,59 @@ ssh_file_write({
 })
 ```
 
+#### v1.3.0+ Per-File Flags: `verify`, `atomic`, `binary`
+
+`ssh_file_write` is back-compat by default but now supports three new per-file flags. Internally any of these — or content size > 256KB — routes the write through SFTP instead of the legacy heredoc fast path.
+
+| Flag | Default | What it does |
+|------|---------|--------------|
+| `verify` | `false` | Compute local sha256, compare against remote `sha256sum` (fallback `openssl dgst -sha256`) after write |
+| `atomic` | `false` | Write to `<path>.tmp.<rand>` next to target, then `mv` (atomic on the same FS) |
+| `binary` | `false` | `content` is base64; decoded and uploaded via SFTP. Use this for non-text payloads |
+
+```typescript
+// Verified atomic config write (text)
+ssh_file_write({
+  profile: "production",
+  files: {
+    path: "/etc/nginx/conf.d/app.conf",
+    content: "server { listen 80; }\n",
+    mode: "644",
+    sudo: true,
+    atomic: true,
+    verify: true
+  }
+})
+
+// Binary payload (e.g. small image, certificate, .pem)
+ssh_file_write({
+  profile: "production",
+  files: {
+    path: "/etc/ssl/private/app.pem",
+    content: "<base64-encoded-bytes>",
+    binary: true,
+    mode: "600",
+    sudo: true,
+    atomic: true,
+    verify: true
+  }
+})
+```
+
+> For files larger than ~1 MB, prefer `ssh_upload` — it streams chunks directly and avoids loading content into the LLM context.
+
+#### v1.3.0+ ssh_file_read — `binary: true`
+
+Reads via SFTP and returns base64-encoded bytes, byte-for-byte safe (legacy `cat` over PTY corrupts binaries due to encoding/CR-LF translation).
+
+```typescript
+ssh_file_read({
+  profile: "production",
+  path: "/etc/ssl/certs/app.crt",
+  binary: true   // returns base64
+})
+```
+
 ### ssh_file_list - List Files
 
 ```typescript
@@ -372,6 +438,163 @@ ssh_monitor({
 // Shows all available profiles with default marked
 ```
 
+---
+
+## 📦 Transfer tools (v1.3.0+)
+
+Binary-safe SFTP transfer, piggy-backed on the same connection pool used by other tools. **Use these instead of base64-chunks through ssh_exec** — heredoc / `cat > file` corrupts binaries, has no atomic semantics, no integrity verification, and pulls the whole payload into Node memory.
+
+Defaults: `atomic=true` (write to `<path>.tmp.<rand>`, then `mv`), `verify=true` (local sha256 vs remote `sha256sum` / `openssl dgst -sha256` fallback).
+
+For full API and architecture see [docs/transfer.md](docs/transfer.md).
+
+### ssh_upload — Binary-safe upload
+
+Parameters: `profile, local_path, remote_path, mode?, recursive?, atomic?, verify?, sudo?, owner?, overwrite?, concurrency?`
+
+```typescript
+// 1) Single file with sha256 verify and atomic rename (defaults)
+ssh_upload({
+  profile: "production",
+  local_path: "./build/app.tar.gz",
+  remote_path: "/srv/releases/app-2026-05.tar.gz",
+  mode: "644"
+})
+// SFTP fastPut → write to .tmp.<rand> → sha256 verify → mv → chmod
+
+// 2) Recursive directory upload (auto-detected from local stat)
+ssh_upload({
+  profile: "production",
+  local_path: "./dist",
+  remote_path: "/var/www/app/current",
+  mode: "755",
+  concurrency: 8
+})
+// walks local tree, uploads to staging dir, atomic mv into place
+
+// 3) sudo write to /etc — staged in /tmp, then `sudo install -m 644 -o root:root`
+ssh_upload({
+  profile: "production",
+  local_path: "./nginx-site.conf",
+  remote_path: "/etc/nginx/conf.d/site.conf",
+  mode: "644",
+  owner: "root:root",
+  sudo: true
+})
+// Note: recursive + sudo is not yet supported — workaround: upload to a
+// user-writable staging path, then run a sudo cp -r via ssh_exec.
+
+// 4) Download a binary back (verify on by default)
+ssh_download({
+  profile: "production",
+  remote_path: "/var/log/nginx/access.log.1.gz",
+  local_path: "./logs/access.log.1.gz"
+})
+```
+
+### ssh_download — Binary-safe download
+
+Parameters: `profile, remote_path, local_path, recursive?, verify?, concurrency?`
+
+`recursive` is auto-detected via `test -d`. With `verify=true` the local file's sha256 is compared against the remote one after the transfer.
+
+```typescript
+ssh_download({
+  profile: "production",
+  remote_path: "/var/backups/db",
+  local_path: "./backups/db",
+  recursive: true,
+  concurrency: 4
+})
+```
+
+---
+
+## 🔍 Audit tools (v1.3.0+)
+
+Specialized read-only audit primitives that collect evidence in **one round-trip each**. The big win is `ssh_audit_baseline`: **one call replaces 5+ separate ssh_exec invocations** (df, free, ss, docker ps, systemctl, sshd -T, ufw, …) — both the latency and the result-merging cost are gone.
+
+For pipeline guidance and full section descriptions see [docs/audit.md](docs/audit.md).
+
+### ssh_audit_baseline
+
+One batched compound shell command, results split by sentinel and parsed into structured JSON + a CRITICAL/WARNING/OK shortlist.
+
+Sections (toggle via `include`): `system, disk, mem, net, ssh, services, docker, firewall, updates`. `include_sudo_sections: true` enables `sshd -T` (needs sudo).
+
+Auto red-flag rules:
+- **CRITICAL**: filesystem ≥ 90%, `PermitRootLogin yes`, `PasswordAuthentication yes` on port 22
+- **WARNING**: filesystem 70–90%, exited containers, failed systemd units, reboot pending, > 50 upgradable packages
+- **OK**: everything else
+
+```typescript
+ssh_audit_baseline({
+  profile: "production",
+  include_sudo_sections: true   // enables sshd -T section
+})
+```
+
+### ssh_tls_check
+
+Pipes `openssl s_client -connect <domain>:<port> -servername <domain>` into `openssl x509`, parses `notAfter`, SAN entries (X509v3 Subject Alternative Name), issuer; computes `days_until_expiry`. Also scans `/etc/letsencrypt/renewal/*.conf` for `renew_hook` and `/etc/letsencrypt/renewal-hooks/deploy/`.
+
+- **CRITICAL**: expired, ≤ 7 days, or SAN does not include the requested domain
+- **WARNING**: ≤ 30 days, or no Let's Encrypt deploy_hook configured
+
+```typescript
+ssh_tls_check({
+  profile: "production",
+  domain: "app.example.com",
+  port: 443,
+  check_renew_hook: true
+})
+```
+
+### ssh_disk_breakdown
+
+`df -hT` + `du -shx <path>/* | sort -rh | head -<top_n>` for each `paths[]` + `docker system df -v` + `journalctl --disk-usage` + top-N for `/var/log/*` and `~/.cache/*`.
+
+```typescript
+ssh_disk_breakdown({
+  profile: "production",
+  top_n: 20,
+  paths: ["/", "/var", "/home"]
+})
+```
+
+### ssh_service_status
+
+`systemctl status <unit>` + `is-enabled` + `show` (Restart, RestartSec, LoadState, ActiveState, SubState) + `journalctl -u <unit> -n <log_lines> [--since <since>]` — all in one batched call, parsed into a structured response.
+
+```typescript
+ssh_service_status({
+  profile: "production",
+  unit: "nginx.service",
+  log_lines: 50,
+  since: "1h ago"
+})
+```
+
+### Recommended audit pipeline
+
+```typescript
+// 1) One-shot baseline → CRITICAL/WARNING shortlist
+const baseline = ssh_audit_baseline({ profile: "production", include_sudo_sections: true });
+
+// 2) If any disk warning/critical → drill down
+ssh_disk_breakdown({ profile: "production", top_n: 20 });
+
+// 3) For each public FQDN
+ssh_tls_check({ profile: "production", domain: "app.example.com" });
+
+// 4) For each failed systemd unit
+ssh_service_status({ profile: "production", unit: "nginx.service" });
+```
+
+This pipeline covers ~80% of a typical server audit without touching `ssh_exec`.
+
+---
+
 ## 🔧 Environment Variables
 
 ### Required
@@ -453,7 +676,7 @@ Connection Pool (reuse connections)
       ↓
 SSH Executor
       ↓
-8 Tools (exec, file, log, snapshot, monitor)
+14 Tools (exec, file, log, snapshot, monitor, transfer, audit)
       ↓
 Remote Server(s)
 ```
@@ -496,18 +719,26 @@ npm run dev
 src/
 ├── index.ts                    # Entry point + routing
 ├── managers/
-│   └── ssh-executor.ts         # SSH commands (no pool)
+│   ├── ssh-executor.ts         # SSH commands
+│   └── connection-pool.ts      # Connection pool + getSftp()
 ├── tools/
-│   ├── exec-tool.ts           # ssh_exec
-│   ├── file-tools.ts          # file read/write/list
-│   ├── log-tools.ts           # log tail/search
-│   └── snapshot-tool.ts       # system health
+│   ├── exec-tool.ts            # ssh_exec
+│   ├── file-tools.ts           # ssh_file_read/write/list (verify/atomic/binary)
+│   ├── log-tools.ts            # ssh_log_tail/search
+│   ├── snapshot-tool.ts        # ssh_snapshot
+│   ├── monitoring-tool.ts      # ssh_monitor
+│   ├── transfer-tool.ts        # ssh_upload, ssh_download (v1.3.0)
+│   └── audit-tool.ts           # ssh_audit_baseline, ssh_tls_check,
+│                               # ssh_disk_breakdown, ssh_service_status (v1.3.0)
 └── utils/
-    ├── logger.ts              # Logging
-    ├── ssh-config.ts          # SSH configuration
-    ├── profile-resolver.ts    # Load profiles
-    ├── profiles-file.ts       # Parse profiles
-    └── retry.ts               # Retry logic
+    ├── logger.ts               # Logging
+    ├── ssh-config.ts           # SSH configuration
+    ├── profile-resolver.ts     # Load profiles
+    ├── profiles-file.ts        # Parse profiles
+    ├── path-validator.ts       # Path security
+    ├── retry.ts                # Retry logic
+    ├── sha256.ts               # Local + remote sha256 helpers (v1.3.0)
+    └── tmp-name.ts             # Atomic temp / staging path generators (v1.3.0)
 ```
 
 ## 📝 Roadmap
@@ -526,8 +757,14 @@ src/
 - ✅ Profile reload & monitoring
 - ✅ Session-based metrics
 
+### v1.3.0 (Released) ✅
+- ✅ SFTP transfer tools — `ssh_upload`, `ssh_download` (binary-safe, atomic, sha256 verify)
+- ✅ `ssh_file_write` / `ssh_file_read` extended with `verify`, `atomic`, `binary`
+- ✅ Audit tools — `ssh_audit_baseline`, `ssh_tls_check`, `ssh_disk_breakdown`, `ssh_service_status`
+- ✅ Tool count: 8 → 14
+
 ### Future (Planned)
-- 📋 SFTP file upload/download
+- 📋 Recursive sudo upload (one-shot, without staging workaround)
 - 📋 Extended snapshot (custom checks)
 - 📋 Connection metrics dashboard
 

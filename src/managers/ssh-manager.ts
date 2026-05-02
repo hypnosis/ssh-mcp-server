@@ -4,7 +4,7 @@
  * v1.1.0 - Использует ConnectionPool для переиспользования соединений
  */
 
-import { Client } from 'ssh2';
+import { Client, SFTPWrapper } from 'ssh2';
 import { logger } from '../utils/logger.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 import { ConnectionPool } from './connection-pool.js';
@@ -19,8 +19,14 @@ export interface SSHExecuteOptions {
 }
 
 export interface SSHFileTransferOptions {
-  /** Права доступа для файла */
+  /** Права доступа для файла (octal number, e.g. 0o644) */
   mode?: number;
+  /** Имя профиля для пула соединений */
+  profileName?: string;
+  /** Concurrency for fastPut/fastGet chunking */
+  concurrency?: number;
+  /** Chunk size in bytes (default 32768) */
+  chunkSize?: number;
 }
 
 /**
@@ -158,7 +164,7 @@ export class SSHManager {
   }
 
   /**
-   * Загрузить файл с удаленного сервера
+   * Загрузить файл с удалённого сервера через SFTP (binary-safe, streaming).
    */
   async downloadFile(
     config: SSHConfig,
@@ -166,12 +172,38 @@ export class SSHManager {
     localPath: string,
     options: SSHFileTransferOptions = {}
   ): Promise<void> {
-    // TODO: Реализовать загрузку файла через SFTP
-    throw new Error('downloadFile not implemented yet');
+    const pool = ConnectionPool.getInstance();
+    const profileName = options.profileName || 'default';
+    const sftp = await pool.getSftp(profileName, config);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        sftp.fastGet(
+          remotePath,
+          localPath,
+          {
+            concurrency: options.concurrency ?? 4,
+            chunkSize: options.chunkSize ?? 32768,
+          },
+          (err) => {
+            if (err) {
+              reject(new Error(`SFTP download failed: ${err.message}`));
+              return;
+            }
+            resolve();
+          }
+        );
+      });
+      logger.debug(`[SSH Manager] downloadFile ${remotePath} -> ${localPath}`);
+    } finally {
+      sftp.end();
+      pool.releaseClient(profileName);
+    }
   }
 
   /**
-   * Загрузить файл на удаленный сервер
+   * Загрузить файл на удалённый сервер через SFTP (binary-safe, streaming).
+   * mode опционально применяется через chmod после успешной заливки.
    */
   async uploadFile(
     config: SSHConfig,
@@ -179,8 +211,43 @@ export class SSHManager {
     remotePath: string,
     options: SSHFileTransferOptions = {}
   ): Promise<void> {
-    // TODO: Реализовать загрузку файла через SFTP
-    throw new Error('uploadFile not implemented yet');
+    const pool = ConnectionPool.getInstance();
+    const profileName = options.profileName || 'default';
+    const sftp = await pool.getSftp(profileName, config);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        sftp.fastPut(
+          localPath,
+          remotePath,
+          {
+            concurrency: options.concurrency ?? 4,
+            chunkSize: options.chunkSize ?? 32768,
+            mode: options.mode,
+          },
+          (err) => {
+            if (err) {
+              reject(new Error(`SFTP upload failed: ${err.message}`));
+              return;
+            }
+            resolve();
+          }
+        );
+      });
+      logger.debug(`[SSH Manager] uploadFile ${localPath} -> ${remotePath}`);
+    } finally {
+      sftp.end();
+      pool.releaseClient(profileName);
+    }
+  }
+
+  /**
+   * Получить SFTP-канал на пуле для расширенных операций.
+   * Caller обязан вызвать sftp.end() и pool.releaseClient(profileName).
+   */
+  async getSftp(config: SSHConfig, profileName: string = 'default'): Promise<SFTPWrapper> {
+    const pool = ConnectionPool.getInstance();
+    return pool.getSftp(profileName, config);
   }
 
   /**

@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-05-03
+
+### Added — Transfer & Audit Sprint
+
+**SFTP Transfer Tools (Sprint 6) 📦**
+- `ssh_upload` — binary-safe file/directory upload through SFTP with sha256 verify and atomic rename
+- `ssh_download` — binary-safe download with sha256 verify
+- Native ssh2 SFTP channel piggy-backed on the existing connection pool — no extra deps
+- Concurrent fastPut chunks (default concurrency=4)
+- Atomic semantics: temp file next to target + mv (avoids EXDEV across FS borders)
+- sudo path: stage in /tmp under user → `sudo install -m mode -o owner src dst`
+- sha256 fallback: tries sha256sum, falls back to openssl dgst -sha256
+
+**Audit Tools (Sprint 6) 🔍**
+- `ssh_audit_baseline` — single-batch baseline: hostname, disk, mem, net listeners, sshd config, services, docker, firewall, updates with auto-classification CRITICAL/WARNING/OK
+- `ssh_tls_check` — TLS expiry + SAN match + issuer chain + Let's Encrypt renew_hook detection
+- `ssh_disk_breakdown` — top-N largest dirs + docker df + journald + cache breakdown
+- `ssh_service_status` — combined systemctl status + journalctl tail in one call
+
+**ssh_file_write extensions (back-compat)**
+- New per-file flags: `verify` (sha256 after write), `atomic` (.tmp + rename), `binary` (content as base64; uploaded via SFTP)
+- Routing: any of verify/atomic/binary OR size > 256KB → SFTP path; otherwise legacy heredoc fast path
+- sudo write: stage in /tmp + `sudo install` (avoids sftp under root)
+
+**ssh_file_read extensions (back-compat)**
+- New `binary: true` — reads via SFTP, returns base64 (binary-safe; legacy `cat` over PTY corrupts binaries)
+
+### Changed
+- Connection pool: added `getSftp()` helper around `client.sftp()` for tool reuse
+- SSHManager.uploadFile/downloadFile: implemented (were `throw new Error('not implemented yet')`)
+- Total tool count: 8 → 14
+
+### Technical Details
+- New file: `src/tools/transfer-tool.ts` — TransferTool with ssh_upload, ssh_download
+- New file: `src/tools/audit-tool.ts` — AuditTool with 4 audit primitives
+- New file: `src/utils/sha256.ts` — local + remote hashing helpers
+- New file: `src/utils/tmp-name.ts` — atomic temp/staging path generators
+- New tests: `tests/unit/sha256.test.ts` (8 tests), `tests/unit/tmp-name.test.ts` (9 tests)
+- 77 total tests passing
+
+### Documentation
+- New: docs/transfer.md (SFTP transfer guide)
+- New: docs/audit.md (audit tools guide)
+- README.md: updated tool count and added Transfer/Audit sections
+
 ## [1.2.2] - 2026-01-12
 
 **Note on version jump (1.0.1 → 1.2.2):** This release combines changes from multiple development sprints that were documented in CHANGELOG as versions 1.1.0, 1.1.1, 1.2.0, and 1.2.1, but were never released as separate git tags or npm packages. To maintain consistency with the [Keep a Changelog](https://keepachangelog.com/) standard (every version in CHANGELOG must have a corresponding git tag), all these changes have been consolidated into version 1.2.2.
@@ -177,6 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security warnings for dangerous commands
 - sudo support for all commands
 
+[1.3.0]: https://github.com/hypnosis/ssh-mcp-server/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/hypnosis/ssh-mcp-server/compare/v1.0.1...v1.2.2
 [1.0.1]: https://github.com/hypnosis/ssh-mcp-server/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/hypnosis/ssh-mcp-server/releases/tag/v1.0.0

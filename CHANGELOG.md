@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-05-03
+
+### Documentation
+- README: expanded v1.3.0 tool documentation
+  - `ssh_audit_baseline` — added flags table (`include`, `include_sudo_sections`, `compact`), output format description, subset-include example
+  - `ssh_disk_breakdown` — added sections table (df, du_path, docker, journald, var_log, cache) and defaults
+  - `ssh_service_status` — added sections table (status, is_enabled, show, log) and unit name validation note
+  - Transfer section — added file-size guidance (when to use `ssh_file_write` vs `ssh_upload`)
+  - `ssh_upload` / `ssh_download` — replaced inline parameter lists with full tables
+  - Caveat extended for `recursive + sudo` workflow and symlink behavior on recursive uploads
+  - Installation: added `npx` variant and npm link
+- LICENSE / package.json / README: removed author full name (kept GitHub handle `@hypnosis`)
+
 ## [1.3.0] - 2026-05-03
 
 ### Added — Transfer & Audit Sprint
@@ -222,6 +235,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security warnings for dangerous commands
 - sudo support for all commands
 
+[1.3.1]: https://github.com/hypnosis/ssh-mcp-server/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/hypnosis/ssh-mcp-server/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/hypnosis/ssh-mcp-server/compare/v1.0.1...v1.2.2
 [1.0.1]: https://github.com/hypnosis/ssh-mcp-server/compare/v1.0.0...v1.0.1

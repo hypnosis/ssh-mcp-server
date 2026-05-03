@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org/)
 
-**Author:** Danila Susak | **GitHub:** [@hypnosis](https://github.com/hypnosis) | **License:** MIT
+**GitHub:** [@hypnosis](https://github.com/hypnosis) | **License:** MIT | **npm:** [@hypnosis/ssh-mcp-server](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server)
 
 > **⚠️ IMPORTANT for binaries and large files:** use `ssh_upload` / `ssh_download` (SFTP, binary-safe, sha256 verify, atomic rename) — **NOT** base64-chunks through `ssh_exec` or `ssh_file_write` heredoc. Heredoc-based writes corrupt binaries and have no atomic / integrity guarantees. See [Transfer tools](#-transfer-tools-v130) and [docs/transfer.md](docs/transfer.md).
 
@@ -47,8 +47,14 @@
 ## 📦 Installation
 
 ```bash
+# Global install
 npm install -g @hypnosis/ssh-mcp-server
+
+# Or run on demand without installing
+npx @hypnosis/ssh-mcp-server
 ```
+
+Latest published version: see [npmjs.com/@hypnosis/ssh-mcp-server](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server).
 
 ## 🚀 Quick Start
 
@@ -446,11 +452,28 @@ Binary-safe SFTP transfer, piggy-backed on the same connection pool used by othe
 
 Defaults: `atomic=true` (write to `<path>.tmp.<rand>`, then `mv`), `verify=true` (local sha256 vs remote `sha256sum` / `openssl dgst -sha256` fallback).
 
+**File-size guidance:**
+- ≤ 256 KB, text only → `ssh_file_write` (legacy heredoc, slightly faster — no second sha256 round-trip)
+- 256 KB – 1 MB, text → `ssh_file_write` with `atomic: true, verify: true` (auto-routes to SFTP)
+- Anything binary, or > 1 MB → `ssh_upload` (streams chunks, never loads file into LLM context)
+
 For full API and architecture see [docs/transfer.md](docs/transfer.md).
 
 ### ssh_upload — Binary-safe upload
 
-Parameters: `profile, local_path, remote_path, mode?, recursive?, atomic?, verify?, sudo?, owner?, overwrite?, concurrency?`
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `profile` | string | `"default"` | SSH profile name |
+| `local_path` | string | **required** | Local file or directory path |
+| `remote_path` | string | **required** | Remote destination path |
+| `mode` | string | — | Octal file mode, e.g. `"644"` |
+| `recursive` | boolean | auto | Force directory mode (auto-detected via local `stat()`) |
+| `atomic` | boolean | `true` | Write to `<path>.tmp.<rand>`, then `mv` |
+| `verify` | boolean | `true` | Compare local and remote sha256 after upload |
+| `sudo` | boolean | `false` | Stage in `/tmp`, then `sudo install` into target |
+| `owner` | string | — | When `sudo=true`: `"user:group"` for `install -o/-g` |
+| `overwrite` | boolean | `true` | Allow overwriting an existing remote file |
+| `concurrency` | number | `4` | Parallel SFTP chunk concurrency for `fastPut` |
 
 ```typescript
 // 1) Single file with sha256 verify and atomic rename (defaults)
@@ -481,8 +504,11 @@ ssh_upload({
   owner: "root:root",
   sudo: true
 })
-// Note: recursive + sudo is not yet supported — workaround: upload to a
-// user-writable staging path, then run a sudo cp -r via ssh_exec.
+// Note: recursive + sudo is not supported in one shot — workaround:
+//   1) upload to a user-writable staging path (no sudo)
+//   2) sudo cp -r via ssh_exec
+// Symlinks in recursive uploads are skipped (not dereferenced, not recreated).
+// For symlink fidelity tar -czf locally and upload the tarball.
 
 // 4) Download a binary back (verify on by default)
 ssh_download({
@@ -494,9 +520,14 @@ ssh_download({
 
 ### ssh_download — Binary-safe download
 
-Parameters: `profile, remote_path, local_path, recursive?, verify?, concurrency?`
-
-`recursive` is auto-detected via `test -d`. With `verify=true` the local file's sha256 is compared against the remote one after the transfer.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `profile` | string | `"default"` | SSH profile name |
+| `remote_path` | string | **required** | Remote source path |
+| `local_path` | string | **required** | Local destination path |
+| `recursive` | boolean | auto | Force directory mode (auto-detected via remote `test -d`) |
+| `verify` | boolean | `true` | Compare local and remote sha256 after download |
+| `concurrency` | number | `4` | Parallel SFTP chunk concurrency for `fastGet` |
 
 ```typescript
 ssh_download({
@@ -518,19 +549,33 @@ For pipeline guidance and full section descriptions see [docs/audit.md](docs/aud
 
 ### ssh_audit_baseline
 
-One batched compound shell command, results split by sentinel and parsed into structured JSON + a CRITICAL/WARNING/OK shortlist.
+One batched compound shell command, results split by sentinel markers, parsed into structured JSON + a CRITICAL/WARNING/OK shortlist. Replaces 5–10 separate `ssh_exec` calls (df, free, ss, docker, systemctl, sshd -T, ufw, apt …) with **one round-trip**.
 
-Sections (toggle via `include`): `system, disk, mem, net, ssh, services, docker, firewall, updates`. `include_sudo_sections: true` enables `sshd -T` (needs sudo).
+Sections (toggle via `include`): `system, disk, mem, net, ssh, services, docker, firewall, updates`. By default all sections except `ssh` (sudo).
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `include` | all except `ssh` | Restrict to subset, e.g. `["disk", "services"]` |
+| `include_sudo_sections` | `false` | Enables `sshd -T` (whole compound runs under sudo) |
+| `compact` | `true` | Trim long sections (listeners, interfaces, docker rows) for smaller LLM payload |
+
+Output format: human-readable summary (host header → CRITICAL/WARNING shortlist → disk table → listeners → sshd → services → docker → firewall → updates) followed by `--- raw JSON ---` and the full structured result.
 
 Auto red-flag rules:
 - **CRITICAL**: filesystem ≥ 90%, `PermitRootLogin yes`, `PasswordAuthentication yes` on port 22
 - **WARNING**: filesystem 70–90%, exited containers, failed systemd units, reboot pending, > 50 upgradable packages
-- **OK**: everything else
+- **OK**: filesystem < 70% per mount, everything nominal
 
 ```typescript
 ssh_audit_baseline({
   profile: "production",
   include_sudo_sections: true   // enables sshd -T section
+})
+
+// Restrict to a subset
+ssh_audit_baseline({
+  profile: "production",
+  include: ["disk", "services", "docker"]
 })
 ```
 
@@ -552,7 +597,18 @@ ssh_tls_check({
 
 ### ssh_disk_breakdown
 
-`df -hT` + `du -shx <path>/* | sort -rh | head -<top_n>` for each `paths[]` + `docker system df -v` + `journalctl --disk-usage` + top-N for `/var/log/*` and `~/.cache/*`.
+Single batched call. Use when `ssh_audit_baseline` flags a disk above 70%. Heavier than baseline (multiple `du -shx` traversals), so don't run unconditionally.
+
+| Section | Command |
+|---------|---------|
+| `df` | `df -hT` |
+| `du_<path>` | `du -shx <path>/* \| sort -rh \| head -<top_n>` for each `paths[]` |
+| `docker` | `docker system df -v` (or `NO_DOCKER`) |
+| `journald` | `journalctl --disk-usage` (or `NO_JOURNALD`) |
+| `var_log` | `du -sh /var/log/* \| sort -rh \| head -<top_n>` |
+| `cache` | `du -sh "$HOME"/.cache/* \| sort -rh \| head -<top_n>` |
+
+Defaults: `top_n: 20`, `paths: ["/"]`. `paths` is shell-quoted before interpolation.
 
 ```typescript
 ssh_disk_breakdown({
@@ -564,7 +620,16 @@ ssh_disk_breakdown({
 
 ### ssh_service_status
 
-`systemctl status <unit>` + `is-enabled` + `show` (Restart, RestartSec, LoadState, ActiveState, SubState) + `journalctl -u <unit> -n <log_lines> [--since <since>]` — all in one batched call, parsed into a structured response.
+Replaces `systemctl status` + `journalctl -u` for one systemd unit. All in one batched call, parsed into structured `enabled / active / restart / status_head / log_tail`.
+
+| Section | Command |
+|---------|---------|
+| `status` | `systemctl status <unit> --no-pager \| head -40` |
+| `is_enabled` | `systemctl is-enabled <unit>` |
+| `show` | `systemctl show <unit> --property=Restart,RestartSec,LoadState,ActiveState,SubState` |
+| `log` | `journalctl -u <unit> -n <log_lines> --no-pager [--since <since>]` |
+
+Defaults: `log_lines: 50`. `since` accepts any `journalctl --since` value (`"1h ago"`, `"2026-05-03"`). Unit name is validated against `^[a-zA-Z0-9@._-]+$` for shell-injection safety.
 
 ```typescript
 ssh_service_status({
@@ -822,13 +887,9 @@ Add `pathSecurity` to profiles for additional protection:
 
 See [Quick Start](#11-optional-path-security-configuration) for details.
 
-## 👨‍💻 Author
-
-**Danila Susak** - [GitHub](https://github.com/hypnosis)
-
 ## 📄 License
 
-MIT License - Copyright (c) 2026 Danila Susak
+MIT License - Copyright (c) 2026 hypnosis
 
 See [LICENSE](LICENSE) file for details.
 

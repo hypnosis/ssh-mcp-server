@@ -24,6 +24,22 @@ lerna-debug.log*
 .env.local
 .env.*.local
 
+# Secrets — никогда не коммитим
+.secrets.local
+.secrets/
+secrets.json
+*.secrets.json
+.npmrc
+npm_*
+*_token
+*.token
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+
 # IDE
 .vscode/
 .idea/

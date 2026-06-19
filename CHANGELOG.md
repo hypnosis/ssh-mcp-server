@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-06-20
+
+### Fixed
+- `ssh_upload` / `ssh_exec` with `sudo: true` no longer fail on shell constructs.
+  Previously `sudo <command>` was prepended literally, so any command containing a
+  subshell `(...)`, `if/elif/fi`, or a pipe (e.g. the sha256 verify command) produced
+  `bash: syntax error near unexpected token '('` and the upload's integrity check was
+  silently skipped. Sudo commands are now wrapped as `sudo bash -c '<command>'`, so the
+  remote shell interprets the construct under root. Non-sudo commands are unchanged —
+  they already run through the remote login shell via `client.exec`.
+  - File: `src/managers/ssh-executor.ts` (`execute`)
+
 ## [1.3.1] - 2026-05-03
 
 ### Documentation

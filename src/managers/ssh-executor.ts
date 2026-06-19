@@ -54,10 +54,13 @@ export class SSHExecutor {
   ): Promise<SSHExecuteResult> {
     const timeout = options.timeout || 30000;
     
-    // Add sudo if needed
+    // Add sudo if needed.
+    // Wrap in `bash -c` so shell constructs (subshells `(...)`, `if/elif/fi`, pipes)
+    // survive sudo. Plain `sudo (if ...; fi)` is a shell syntax error — sudo expects a
+    // program, not a shell construct. `sudo bash -c '<cmd>'` runs the whole thing as one.
     let finalCommand = command;
     if (options.sudo) {
-      finalCommand = `sudo ${command}`;
+      finalCommand = `sudo bash -c ${this.escapeShell(command)}`;
     }
     
     // Add cd if working directory is specified

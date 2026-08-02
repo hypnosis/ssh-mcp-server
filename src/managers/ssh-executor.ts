@@ -26,6 +26,8 @@ export interface SSHExecuteOptions {
    * Ставится только чтению: повтор мутирующей команды опаснее её отказа.
    */
   idempotent?: boolean;
+  /** Данные на вход команды (например, манифест для `sha256sum -c -`) */
+  stdin?: string | Buffer;
 }
 
 export interface SSHExecuteResult {
@@ -77,6 +79,7 @@ export class SSHExecutor {
     const result = await runner.exec(finalCommand, {
       timeoutMs: options.timeout || DEFAULT_TIMEOUT_MS,
       idempotent: options.idempotent,
+      stdin: options.stdin,
     });
 
     return {

@@ -159,6 +159,14 @@ describe('SSHExecutor: передача опций транспорту', () => 
     expect(sentOptions().idempotent).toBeFalsy();
   });
 
+  it('передаёт данные на вход команды', async () => {
+    await new SSHExecutor().execute(CONFIG, 'sha256sum -c -', {
+      stdin: 'abc123  /srv/app/file\n',
+    });
+
+    expect(sentOptions().stdin).toBe('abc123  /srv/app/file\n');
+  });
+
   it('передаёт имя профиля в фабрику транспорта', async () => {
     await new SSHExecutor().execute(CONFIG, 'ls', { profileName: 'production' });
 

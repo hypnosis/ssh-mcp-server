@@ -159,7 +159,7 @@ export class LogTools {
     if (paths.length === 1) {
       const safePath = this.buildSafePath(paths[0]);
       const command = `tail -n ${lines} ${safePath}`;
-      const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+      const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
       
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read log: ${result.stderr || result.stdout}`);
@@ -183,7 +183,7 @@ export class LogTools {
       try {
         const safePath = this.buildSafePath(path);
         const command = `tail -n ${lines} ${safePath}`;
-        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+        const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
         
         if (result.exitCode === 0) {
           const logLines = result.stdout.split('\n').filter(line => line.length > 0);
@@ -274,7 +274,7 @@ export class LogTools {
     if (paths.length === 1) {
       const safePath = this.buildSafePath(paths[0]);
       const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
-      const result = await this.executor.execute(sshConfig, command, { sudo });
+      const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
       
       // grep exit code 1 = no matches (not an error)
       if (result.exitCode !== 0 && result.exitCode !== 1) {
@@ -305,7 +305,7 @@ export class LogTools {
       try {
         const safePath = this.buildSafePath(path);
         const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
-        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+        const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
         
         // grep exit code 1 = no matches
         if (result.exitCode === 0 || result.exitCode === 1) {

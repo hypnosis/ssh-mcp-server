@@ -238,7 +238,11 @@ export class FileTools {
       }
       const command = this.buildSafeCommand(paths[0], 'cat', encoding);
 
-      const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+      const result = await this.executor.execute(sshConfig, command, {
+        sudo,
+        profileName,
+        idempotent: true,
+      });
 
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read file: ${result.stderr || result.stdout}`);
@@ -272,7 +276,11 @@ export class FileTools {
         }
         const command = this.buildSafeCommand(path, 'cat', encoding);
 
-        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+        const result = await this.executor.execute(sshConfig, command, {
+          sudo,
+          profileName,
+          idempotent: true,
+        });
 
         if (result.exitCode === 0) {
           results.push({
@@ -529,7 +537,7 @@ export class FileTools {
       if (!file.sudo) {
         const parent = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
         if (parent && parent !== '/') {
-          await this.executor.execute(
+          await this.executor.executeChecked(
             sshConfig,
             `mkdir -p ${shellQuote(parent)}`,
             { profileName }
@@ -554,9 +562,15 @@ export class FileTools {
         const r = await this.executor.execute(sshConfig, cmd, {
           profileName,
           sudo: file.sudo,
+          idempotent: true,
         });
         if (r.stdout.includes('NO_SHA256_TOOL')) {
           logger.warn(`[file-tools] sha256 tools not available on remote; verify skipped`);
+        } else if (r.exitCode !== 0) {
+          // Проверка не состоялась — это не то же самое, что испорченная запись
+          throw new Error(
+            `Failed to verify ${remoteTarget}: ${r.stderr.trim() || `exit code ${r.exitCode}`}`
+          );
         } else {
           const actual = parseRemoteSha256(r.stdout);
           if (actual !== expectedHash) {
@@ -579,13 +593,13 @@ export class FileTools {
         if (file.mode) flags.push(`-m ${file.mode}`);
         const parent = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
         if (parent && parent !== '/') {
-          await this.executor.execute(
+          await this.executor.executeChecked(
             sshConfig,
             `mkdir -p ${shellQuote(parent)}`,
             { profileName, sudo: true }
           );
         }
-        await this.executor.execute(
+        await this.executor.executeChecked(
           sshConfig,
           `install ${flags.join(' ')} ${shellQuote(remoteTarget)} ${shellQuote(file.path)}`,
           { profileName, sudo: true }
@@ -594,13 +608,13 @@ export class FileTools {
           .execute(sshConfig, `rm -f ${shellQuote(remoteTarget)}`, { profileName })
           .catch(() => undefined);
       } else if (atomic) {
-        await this.executor.execute(
+        await this.executor.executeChecked(
           sshConfig,
           `mv -f ${shellQuote(remoteTarget)} ${shellQuote(file.path)}`,
           { profileName }
         );
         if (file.mode) {
-          await this.executor.execute(
+          await this.executor.executeChecked(
             sshConfig,
             `chmod ${file.mode} ${shellQuote(file.path)}`,
             { profileName }
@@ -609,7 +623,7 @@ export class FileTools {
       } else {
         // Non-atomic, non-sudo: chmod final path if mode set
         if (file.mode) {
-          await this.executor.execute(
+          await this.executor.executeChecked(
             sshConfig,
             `chmod ${file.mode} ${shellQuote(file.path)}`,
             { profileName }
@@ -705,8 +719,11 @@ export class FileTools {
       command += ` ${safePath}`;
     }
     
-    const result = await this.executor.execute(sshConfig, command, { profileName });
-    
+    const result = await this.executor.execute(sshConfig, command, {
+      profileName,
+      idempotent: true,
+    });
+
     if (result.exitCode !== 0) {
       throw new Error(`Failed to list files: ${result.stderr || result.stdout}`);
     }

@@ -9,21 +9,18 @@
  * видны в `ps` любому пользователю системы. Секрет доставляется через askpass.
  */
 
-import type { SSHConfig } from '../utils/ssh-config.js';
+import type { SSHConfig, StrictHostKeyChecking } from '../utils/ssh-config.js';
 
-/** Политика проверки ключа хоста */
-export type StrictHostKeyChecking = 'yes' | 'accept-new' | 'no';
+export type { StrictHostKeyChecking };
 
 /**
- * Конфигурация профиля с опциональными транспортными настройками.
- * Поля добавляются к формату профилей аддитивно — старые файлы остаются валидными.
+ * Конфигурация профиля для транспорта.
+ *
+ * Совпадает с конфигурацией профиля: транспортные настройки
+ * (проверка ключа хоста, отказ от ~/.ssh/config) живут там же, где host
+ * и username, — это часть формата профиля, а не отдельная сущность.
  */
-export interface RunnerConfig extends SSHConfig {
-  /** Политика проверки ключа хоста (по умолчанию accept-new) */
-  strictHostKeyChecking?: StrictHostKeyChecking;
-  /** Игнорировать пользовательский ~/.ssh/config */
-  ignoreUserConfig?: boolean;
-}
+export type RunnerConfig = SSHConfig;
 
 /**
  * Возможности окружения, влияющие на набор аргументов

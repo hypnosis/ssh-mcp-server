@@ -233,6 +233,7 @@ export class AuditTool {
       profileName,
       sudo: useSudo,
       timeout: 60000,
+      idempotent: true,
     });
 
     const sections = this.splitSections(r.stdout, SEP);
@@ -497,7 +498,11 @@ export class AuditTool {
       `echo "${SEP}cert${SEP}"; ${opensslCmd}; ` +
       `echo "${SEP}renew${SEP}"; ${renewCmd}`;
 
-    const r = await this.executor.execute(sshConfig, cmd, { profileName, timeout: 30000 });
+    const r = await this.executor.execute(sshConfig, cmd, {
+      profileName,
+      timeout: 30000,
+      idempotent: true,
+    });
     const sections = this.splitSections(r.stdout, SEP);
     const cert = sections.get('cert') || '';
     const renew = sections.get('renew') || '';
@@ -585,6 +590,7 @@ export class AuditTool {
     const r = await this.executor.execute(sshConfig, cmd, {
       profileName,
       timeout: 120000,
+      idempotent: true,
     });
     return { content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${r.stdout}` }] };
   }
@@ -616,6 +622,7 @@ export class AuditTool {
     const r = await this.executor.execute(sshConfig, cmd, {
       profileName,
       timeout: 30000,
+      idempotent: true,
     });
     const sections = this.splitSections(r.stdout, SEP);
     const out = {

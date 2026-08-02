@@ -194,6 +194,14 @@ export class ConnectionPool {
   }
   
   /**
+   * Is there a live connection for this profile right now
+   * (used by the ssh2 runner to report transport state)
+   */
+  isConnected(profileName: string): boolean {
+    return this.connections.get(profileName)?.isReady === true;
+  }
+
+  /**
    * Close client and remove from pool
    * @param profileName - Profile name
    */

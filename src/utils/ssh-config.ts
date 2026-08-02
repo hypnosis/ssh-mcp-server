@@ -6,6 +6,14 @@
 import { logger } from './logger.js';
 
 /**
+ * Политика проверки ключа хоста.
+ * `accept-new` — запомнить ключ при первом подключении, но заметить подмену.
+ */
+export type StrictHostKeyChecking = 'yes' | 'accept-new' | 'no';
+
+export const STRICT_HOST_KEY_CHECKING_VALUES: StrictHostKeyChecking[] = ['yes', 'accept-new', 'no'];
+
+/**
  * SSH конфигурация для подключения к удаленному серверу
  */
 export interface SSHConfig {
@@ -21,6 +29,10 @@ export interface SSHConfig {
   passphrase?: string;
   /** Пароль для аутентификации (не рекомендуется для production) */
   password?: string;
+  /** Политика проверки ключа хоста (по умолчанию accept-new; только бэкенд openssh) */
+  strictHostKeyChecking?: StrictHostKeyChecking;
+  /** Игнорировать пользовательский ~/.ssh/config (только бэкенд openssh) */
+  ignoreUserConfig?: boolean;
 }
 
 

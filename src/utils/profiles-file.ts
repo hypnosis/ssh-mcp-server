@@ -6,7 +6,11 @@
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { logger } from './logger.js';
-import type { SSHConfig } from './ssh-config.js';
+import {
+  STRICT_HOST_KEY_CHECKING_VALUES,
+  type SSHConfig,
+  type StrictHostKeyChecking,
+} from './ssh-config.js';
 
 /**
  * Profiles configuration file structure
@@ -34,6 +38,10 @@ export interface SSHProfileData {
   passphrase?: string;
   /** Password for authentication (not recommended for production) */
   password?: string;
+  /** Host key checking policy: yes | accept-new | no (default: accept-new) */
+  strictHostKeyChecking?: StrictHostKeyChecking;
+  /** Ignore the user's ~/.ssh/config for this profile */
+  ignoreUserConfig?: boolean;
 }
 
 /**
@@ -175,6 +183,28 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       if (profile.password && typeof profile.password === 'string') {
         profileData.password = profile.password;
         logger.debug(`[Profiles File] Profile "${name}" has password authentication configured`);
+      }
+
+      // Опечатка в политике проверки ключа хоста не должна проходить молча:
+      // тихий откат к значению по умолчанию ослабил бы защиту незаметно
+      if (profile.strictHostKeyChecking !== undefined) {
+        if (!STRICT_HOST_KEY_CHECKING_VALUES.includes(profile.strictHostKeyChecking)) {
+          logger.error(
+            `[Profiles File] ❌ Profile "${name}" has invalid strictHostKeyChecking: ${profile.strictHostKeyChecking}`
+          );
+          errors.push(
+            `Profile "${name}" has invalid strictHostKeyChecking: ${profile.strictHostKeyChecking}. ` +
+            `Allowed values: ${STRICT_HOST_KEY_CHECKING_VALUES.join(', ')}`
+          );
+          errorCount++;
+          continue;
+        }
+        profileData.strictHostKeyChecking = profile.strictHostKeyChecking as StrictHostKeyChecking;
+      }
+
+      if (profile.ignoreUserConfig === true) {
+        profileData.ignoreUserConfig = true;
+        logger.debug(`[Profiles File] Profile "${name}" ignores the user's ~/.ssh/config`);
       }
 
       profiles[name] = profileData;

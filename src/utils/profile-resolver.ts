@@ -217,6 +217,25 @@ function expandTilde(filepath?: string): string | undefined {
 }
 
 /**
+ * Build a connection config from profile data.
+ *
+ * Единственное место сборки: раньше он был скопирован трижды, и новое поле
+ * профиля легко доезжало по одному пути и терялось по двум другим.
+ */
+function toSSHConfig(profileData: SSHProfileData): SSHConfig {
+  return {
+    host: profileData.host!,
+    username: profileData.username!,
+    port: profileData.port || 22,
+    privateKeyPath: expandTilde(profileData.privateKeyPath),
+    passphrase: profileData.passphrase,
+    password: profileData.password,
+    strictHostKeyChecking: profileData.strictHostKeyChecking,
+    ignoreUserConfig: profileData.ignoreUserConfig,
+  };
+}
+
+/**
  * Resolve SSH configuration from tool arguments
  * 
  * Priority:
@@ -294,15 +313,8 @@ export function resolveSSHConfig(args: {
       logger.debug(`[Profile Resolver] Password authentication configured`);
     }
     
-    const sshConfig: SSHConfig = {
-      host: profileData.host,
-      username: profileData.username,
-      port: profileData.port || 22,
-      privateKeyPath: expandedKeyPath,
-      passphrase: profileData.passphrase,
-      password: profileData.password,
-    };
-    
+    const sshConfig = toSSHConfig(profileData);
+
     logger.debug(`[Profile Resolver] Resolved SSH config:`, {
       host: sshConfig.host,
       port: sshConfig.port,
@@ -330,15 +342,9 @@ export function resolveSSHConfig(args: {
       logger.debug(`[Profile Resolver] Expanded privateKeyPath: ${defaultProfileData.privateKeyPath} → ${expandedKeyPath}`);
     }
     
-    const sshConfig: SSHConfig = {
-      host: defaultProfileData.host,
-      username: defaultProfileData.username,
-      port: defaultProfileData.port || 22,
-      privateKeyPath: expandedKeyPath,
-      passphrase: defaultProfileData.passphrase,
-      password: defaultProfileData.password,
-    };
-    
+    const sshConfig = toSSHConfig(defaultProfileData);
+
+
     logger.debug(`[Profile Resolver] Resolved SSH config from default profile:`, {
       host: sshConfig.host,
       port: sshConfig.port,
@@ -366,15 +372,9 @@ export function resolveSSHConfig(args: {
         logger.debug(`[Profile Resolver] Expanded privateKeyPath: ${profileData.privateKeyPath} → ${expandedKeyPath}`);
       }
       
-      const sshConfig: SSHConfig = {
-        host: profileData.host,
-        username: profileData.username,
-        port: profileData.port || 22,
-        privateKeyPath: expandedKeyPath,
-        passphrase: profileData.passphrase,
-        password: profileData.password,
-      };
-      
+      const sshConfig = toSSHConfig(profileData);
+
+
       logger.debug(`[Profile Resolver] Resolved SSH config from first valid profile:`, {
         host: sshConfig.host,
         port: sshConfig.port,

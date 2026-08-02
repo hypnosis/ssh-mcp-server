@@ -8,6 +8,9 @@
  * команды, а не поведение инструментов. Удаляется вместе с пулом на шаге 7.
  */
 
+import { mkdir, readdir } from 'fs/promises';
+import { dirname, join } from 'path';
+import { posix as posixPath } from 'path';
 import type { Client, ClientChannel, SFTPWrapper } from 'ssh2';
 import { ConnectionPool } from '../managers/connection-pool.js';
 import { logger } from '../utils/logger.js';
@@ -19,7 +22,6 @@ import {
   SSHRunnerError,
   SSHTimeoutError,
   SSHTransportError,
-  SSHUnsupportedConfigError,
   isRetryable,
 } from './errors.js';
 import type {
@@ -44,6 +46,60 @@ const MULTIPLEXING_DISABLED_REASON =
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Обернуть строку в одинарные кавычки для удалённого shell */
+function shellQuote(value: string): string {
+  return `'${value.split("'").join(`'\\''`)}'`;
+}
+
+/** Превратить колбэк SFTP в промис */
+function promisifyTransfer(
+  start: (done: (err: Error | null | undefined) => void) => void
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    start((err) => (err ? reject(err) : resolve()));
+  });
+}
+
+/** Относительные пути всех файлов каталога; символические ссылки пропускаются */
+async function walkLocalDir(root: string): Promise<string[]> {
+  const files: string[] = [];
+
+  const walk = async (relative: string): Promise<void> => {
+    const absolute = relative ? join(root, relative) : root;
+    for (const entry of await readdir(absolute, { withFileTypes: true })) {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await walk(child);
+      else if (entry.isFile()) files.push(child);
+    }
+  };
+
+  await walk('');
+  return files;
+}
+
+/** То же для удалённого каталога — через SFTP-листинг */
+async function walkRemoteDir(sftp: SFTPWrapper, root: string): Promise<string[]> {
+  const files: string[] = [];
+
+  const walk = async (relative: string): Promise<void> => {
+    const absolute = relative ? posixPath.join(root, relative) : root;
+    const entries = await new Promise<Array<{ filename: string; attrs: { isDirectory(): boolean; isFile(): boolean } }>>(
+      (resolve, reject) => {
+        sftp.readdir(absolute, (err, list) => (err ? reject(err) : resolve(list as never)));
+      }
+    );
+
+    for (const entry of entries) {
+      const child = relative ? `${relative}/${entry.filename}` : entry.filename;
+      if (entry.attrs.isDirectory()) await walk(child);
+      else if (entry.attrs.isFile()) files.push(child);
+    }
+  };
+
+  await walk('');
+  return files;
 }
 
 /**
@@ -109,9 +165,13 @@ export class Ssh2Runner implements CommandRunner {
   }
 
   async upload(localPath: string, remotePath: string, options: TransferOptions = {}): Promise<void> {
-    this.assertNotRecursive(options);
-    await this.transfer(
-      (sftp, done) => sftp.fastPut(localPath, remotePath, {}, done),
+    if (options.recursive) {
+      await this.uploadDirectory(localPath, remotePath, options);
+      return;
+    }
+
+    await this.withSftp(
+      (sftp) => promisifyTransfer((done) => sftp.fastPut(localPath, remotePath, {}, done)),
       `upload ${localPath}`,
       options
     );
@@ -122,9 +182,13 @@ export class Ssh2Runner implements CommandRunner {
     localPath: string,
     options: TransferOptions = {}
   ): Promise<void> {
-    this.assertNotRecursive(options);
-    await this.transfer(
-      (sftp, done) => sftp.fastGet(remotePath, localPath, {}, done),
+    if (options.recursive) {
+      await this.downloadDirectory(remotePath, localPath, options);
+      return;
+    }
+
+    await this.withSftp(
+      (sftp) => promisifyTransfer((done) => sftp.fastGet(remotePath, localPath, {}, done)),
       `download ${remotePath}`,
       options
     );
@@ -167,13 +231,67 @@ export class Ssh2Runner implements CommandRunner {
     return ConnectionPool.getInstance().isConnected(this.profileName);
   }
 
-  private assertNotRecursive(options: TransferOptions): void {
-    if (options.recursive) {
-      throw new SSHUnsupportedConfigError(
-        'The ssh2 backend transfers one file per call and cannot copy a directory; ' +
-        'use SSH_MCP_BACKEND=openssh for recursive transfers'
-      );
+  /**
+   * Загрузить каталог: SFTP умеет только файлы, обход делаем сами.
+   *
+   * Каталоги создаются одной командой заранее — `fastPut` их не создаёт,
+   * а по команде на каталог это лишние обращения к серверу.
+   */
+  private async uploadDirectory(
+    localDir: string,
+    remoteDir: string,
+    options: TransferOptions
+  ): Promise<void> {
+    const files = await walkLocalDir(localDir);
+    if (files.length === 0) return;
+
+    const directories = new Set<string>([remoteDir]);
+    for (const relative of files) {
+      const parent = posixPath.dirname(relative);
+      if (parent && parent !== '.') directories.add(posixPath.join(remoteDir, parent));
     }
+
+    const quoted = [...directories].map(shellQuote).join(' ');
+    await this.exec(`mkdir -p ${quoted}`, { timeoutMs: options.timeoutMs });
+
+    await this.withSftp(
+      async (sftp) => {
+        for (const relative of files) {
+          const local = join(localDir, relative);
+          const remote = posixPath.join(remoteDir, relative);
+          await promisifyTransfer((done) => sftp.fastPut(local, remote, {}, done));
+        }
+      },
+      `upload ${localDir}`,
+      options
+    );
+  }
+
+  /**
+   * Скачать каталог: удалённое дерево обходится через SFTP, локальные
+   * каталоги создаются по мере надобности.
+   */
+  private async downloadDirectory(
+    remoteDir: string,
+    localDir: string,
+    options: TransferOptions
+  ): Promise<void> {
+    await this.withSftp(
+      async (sftp) => {
+        const files = await walkRemoteDir(sftp, remoteDir);
+
+        await mkdir(localDir, { recursive: true });
+        for (const relative of files) {
+          const local = join(localDir, relative);
+          await mkdir(dirname(local), { recursive: true });
+          await promisifyTransfer((done) =>
+            sftp.fastGet(posixPath.join(remoteDir, relative), local, {}, done)
+          );
+        }
+      },
+      `download ${remoteDir}`,
+      options
+    );
   }
 
   private async execOnce(command: string, options: ExecOptions): Promise<ExecResult> {
@@ -319,13 +437,15 @@ export class Ssh2Runner implements CommandRunner {
   }
 
   /**
-   * Общая обвязка передачи файла: канал SFTP, таймаут, возврат канала пулу.
+   * Общая обвязка передачи: канал SFTP, таймаут, возврат канала пулу.
    *
-   * Таймаут здесь появляется впервые: у прежних прямых вызовов fastPut/fastGet
-   * его не было вообще, и оборванная передача висела бесконечно.
+   * Канал один на всю операцию — при передаче каталога открывать его на
+   * каждый файл было бы расточительно. Таймаут здесь появляется впервые:
+   * у прежних прямых вызовов fastPut/fastGet его не было вообще, и оборванная
+   * передача висела бесконечно.
    */
-  private async transfer(
-    operation: (sftp: SFTPWrapper, done: (err: Error | null | undefined) => void) => void,
+  private async withSftp(
+    operation: (sftp: SFTPWrapper) => Promise<void>,
     label: string,
     options: TransferOptions
   ): Promise<void> {
@@ -374,14 +494,13 @@ export class Ssh2Runner implements CommandRunner {
         }
         options.signal?.addEventListener('abort', onAbort, { once: true });
 
-        operation(sftp, (err) => {
-          if (err) {
-            this.lastError = err.message;
-            finish(() => reject(new SSHRunnerError(`Failed to ${label}: ${err.message}`)));
-            return;
+        operation(sftp).then(
+          () => finish(resolve),
+          (error: Error) => {
+            this.lastError = error.message;
+            finish(() => reject(new SSHRunnerError(`Failed to ${label}: ${error.message}`)));
           }
-          finish(resolve);
-        });
+        );
       });
 
       this.transferCount++;

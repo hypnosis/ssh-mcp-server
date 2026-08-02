@@ -7,8 +7,11 @@
  * политика повторов.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { describeRunnerContract, type RunnerScenario } from './runner-contract.js';
 import type { SSHConfig } from '../../src/utils/ssh-config.js';
 
@@ -70,6 +73,8 @@ class FakeChannel extends EventEmitter {
 const scenarios: RunnerScenario[] = [];
 let attemptCount = 0;
 let lastChannel: FakeChannel | undefined;
+/** Команды, отправленные на сервер */
+const executedCommands: string[] = [];
 
 function nextScenario(): RunnerScenario {
   return scenarios.shift() ?? { kind: 'success' };
@@ -79,6 +84,7 @@ function resetTransport(): void {
   scenarios.length = 0;
   attemptCount = 0;
   lastChannel = undefined;
+  executedCommands.length = 0;
   vi.clearAllMocks();
   poolMock.isConnected.mockReturnValue(false);
   poolMock.getClient.mockImplementation(async () => {
@@ -90,7 +96,8 @@ function resetTransport(): void {
     }
 
     return {
-      exec(_command: string, callback: (err: Error | null, channel: FakeChannel) => void) {
+      exec(command: string, callback: (err: Error | null, channel: FakeChannel) => void) {
+        executedCommands.push(command);
         const channel = new FakeChannel();
         lastChannel = channel;
         callback(null, channel);
@@ -189,15 +196,6 @@ describe('Ssh2Runner: специфика бэкенда', () => {
     expect(end).toHaveBeenCalled();
   });
 
-  it('отказывается от рекурсивной передачи с внятным объяснением', async () => {
-    const runner = new Ssh2Runner(CONFIG, 'production');
-
-    await expect(runner.upload('/tmp/dir', '/srv/dir', { recursive: true })).rejects.toThrow(
-      /SSH_MCP_BACKEND=openssh/
-    );
-    expect(poolMock.getSftp).not.toHaveBeenCalled();
-  });
-
   it('в статистике честно сообщает, что мультиплексирования нет', async () => {
     const runner = new Ssh2Runner(CONFIG, 'production');
     poolMock.isConnected.mockReturnValue(true);
@@ -238,6 +236,70 @@ describe('Ssh2Runner: специфика бэкенда', () => {
     await runner.closeMaster();
 
     expect(poolMock.closeClient).toHaveBeenCalledWith('production');
+  });
+
+  it('передаёт каталог целиком, создавая недостающие подкаталоги', async () => {
+    const runner = new Ssh2Runner(CONFIG, 'production');
+    const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-updir-'));
+    mkdirSync(join(localDir, 'conf'));
+    writeFileSync(join(localDir, 'app.js'), 'run();', 'utf8');
+    writeFileSync(join(localDir, 'conf', 'app.ini'), 'key=value', 'utf8');
+
+    const fastPut = vi.fn((_l: string, _r: string, _o: unknown, cb: (e: Error | null) => void) =>
+      cb(null)
+    );
+    poolMock.getSftp.mockResolvedValue({ fastPut, end: vi.fn() });
+
+    try {
+      await runner.upload(localDir, '/srv/app', { recursive: true });
+
+      const remoteTargets = fastPut.mock.calls.map((args) => args[1]);
+      expect(remoteTargets.sort()).toEqual(['/srv/app/app.js', '/srv/app/conf/app.ini']);
+      // Подкаталоги создаются заранее: fastPut не создаёт их сам
+      expect(executedCommands.join(' ')).toContain('/srv/app/conf');
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
+  it('скачивает каталог целиком, повторяя структуру локально', async () => {
+    const runner = new Ssh2Runner(CONFIG, 'production');
+    const localDir = join(mkdtempSync(join(tmpdir(), 'ssh-mcp-downdir-')), 'target');
+
+    const remoteTree: Record<string, Array<{ filename: string; directory: boolean }>> = {
+      '/srv/app': [
+        { filename: 'app.js', directory: false },
+        { filename: 'conf', directory: true },
+      ],
+      '/srv/app/conf': [{ filename: 'app.ini', directory: false }],
+    };
+
+    const readdir = vi.fn(
+      (path: string, cb: (err: Error | null, list?: unknown[]) => void) => {
+        const entries = remoteTree[path] ?? [];
+        cb(
+          null,
+          entries.map((e) => ({
+            filename: e.filename,
+            attrs: { isDirectory: () => e.directory, isFile: () => !e.directory },
+          }))
+        );
+      }
+    );
+    const fastGet = vi.fn((_r: string, _l: string, _o: unknown, cb: (e: Error | null) => void) =>
+      cb(null)
+    );
+    poolMock.getSftp.mockResolvedValue({ readdir, fastGet, end: vi.fn() });
+
+    try {
+      await runner.download('/srv/app', localDir, { recursive: true });
+
+      const sources = fastGet.mock.calls.map((args) => args[0]);
+      expect(sources.sort()).toEqual(['/srv/app/app.js', '/srv/app/conf/app.ini']);
+      expect(existsSync(join(localDir, 'conf'))).toBe(true);
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
   });
 
   it('сбой открытия канала подаётся как транспортная ошибка', async () => {

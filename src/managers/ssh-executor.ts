@@ -1,24 +1,31 @@
 /**
  * SSH Executor
- * SSH command execution with connection pooling (v1.1.0)
+ *
+ * Собирает строку команды (sudo, рабочий каталог) и отдаёт её транспорту.
+ * Как команда доедет до сервера — дело раннера; повторы и таймауты живут
+ * там же, потому что только транспорт знает, что именно сломалось.
  */
 
+import { getRunner } from '../runner/get-runner.js';
 import { logger } from '../utils/logger.js';
-import { retryWithTimeout, createSSHRetryPredicate } from '../utils/retry.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
-import { SSHManager } from './ssh-manager.js';
+
+const DEFAULT_TIMEOUT_MS = 30000;
 
 export interface SSHExecuteOptions {
   /** Command execution timeout (ms) */
   timeout?: number;
-  /** Output encoding */
-  encoding?: BufferEncoding;
   /** Working directory */
   cwd?: string;
   /** Use sudo */
   sudo?: boolean;
-  /** Profile name for connection pool */
+  /** Profile name for the transport */
   profileName?: string;
+  /**
+   * Safe to repeat after a transport failure.
+   * Ставится только чтению: повтор мутирующей команды опаснее её отказа.
+   */
+  idempotent?: boolean;
 }
 
 export interface SSHExecuteResult {
@@ -32,16 +39,14 @@ export interface SSHExecuteResult {
 
 /**
  * SSH Executor for command execution
- * v1.1.0 - Uses SSHManager with connection pooling
  */
 export class SSHExecutor {
-  private manager: SSHManager;
-  
-  constructor() {
-    this.manager = new SSHManager();
-  }
   /**
-   * Execute command on remote server
+   * Execute command on remote server.
+   *
+   * Ненулевой код возврата — часть результата, а не ошибка: `grep` без
+   * совпадений возвращает 1, и вызывающий вправе решать сам, что это значит.
+   *
    * @param config - SSH configuration
    * @param command - Command to execute
    * @param options - Execution options
@@ -52,8 +57,6 @@ export class SSHExecutor {
     command: string,
     options: SSHExecuteOptions = {}
   ): Promise<SSHExecuteResult> {
-    const timeout = options.timeout || 30000;
-    
     // Add sudo if needed.
     // Wrap in `bash -c` so shell constructs (subshells `(...)`, `if/elif/fi`, pipes)
     // survive sudo. Plain `sudo (if ...; fi)` is a shell syntax error — sudo expects a
@@ -62,50 +65,66 @@ export class SSHExecutor {
     if (options.sudo) {
       finalCommand = `sudo bash -c ${this.escapeShell(command)}`;
     }
-    
+
     // Add cd if working directory is specified
     if (options.cwd) {
       finalCommand = `cd ${this.escapeShell(options.cwd)} && ${finalCommand}`;
     }
-    
+
     logger.debug(`Executing SSH command: ${finalCommand.substring(0, 100)}...`);
-    
-    // Execute with retry logic using SSHManager
-    const executeFn = async () => {
-      const stdout = await this.manager.execute(config, finalCommand, {
-        timeout,
-        encoding: options.encoding,
-        profileName: options.profileName,
-      });
-      
-      return {
-        stdout,
-        stderr: '',
-        exitCode: 0,
-      };
-    };
-    
-    return retryWithTimeout(executeFn, {
-      maxAttempts: 3,
-      timeout,
-      shouldRetry: createSSHRetryPredicate(),
+
+    const runner = await getRunner(config, options.profileName || 'default');
+    const result = await runner.exec(finalCommand, {
+      timeoutMs: options.timeout || DEFAULT_TIMEOUT_MS,
+      idempotent: options.idempotent,
     });
+
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode,
+    };
   }
-  
+
+  /**
+   * Execute a command that must succeed.
+   *
+   * Для шагов, после которых нельзя идти дальше: не создан каталог, не
+   * переименован файл, не применены права. Раньше такую проверку делал за нас
+   * транспорт — он бросал на любом ненулевом коде; теперь код честный, и места,
+   * где неудача означает провал операции, называются явно.
+   */
+  async executeChecked(
+    config: SSHConfig,
+    command: string,
+    options: SSHExecuteOptions = {}
+  ): Promise<SSHExecuteResult> {
+    const result = await this.execute(config, command, options);
+
+    if (result.exitCode !== 0) {
+      const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
+      const shortCommand = command.length > 120 ? `${command.substring(0, 120)}…` : command;
+      throw new Error(`Command failed (exit ${result.exitCode}): ${shortCommand} — ${detail}`);
+    }
+
+    return result;
+  }
+
   /**
    * Escape string for shell
    */
   private escapeShell(str: string): string {
     return `'${str.replace(/'/g, "'\"'\"'")}'`;
   }
-  
+
   /**
    * Test connection to server
    */
   async testConnection(config: SSHConfig, profileName?: string): Promise<boolean> {
     try {
-      await this.execute(config, 'echo "test"', { timeout: 5000, profileName });
-      return true;
+      const runner = await getRunner(config, profileName || 'default');
+      const result = await runner.ping();
+      return result.ok;
     } catch {
       return false;
     }

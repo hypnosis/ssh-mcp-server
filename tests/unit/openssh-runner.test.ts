@@ -11,6 +11,7 @@ import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { ProcessRunOptions, ProcessRunOutcome } from '../../src/runner/process.js';
+import { describeRunnerContract } from './runner-contract.js';
 
 const { runProcessMock } = vi.hoisted(() => ({ runProcessMock: vi.fn() }));
 vi.mock('../../src/runner/process.js', () => ({ runProcess: runProcessMock }));
@@ -432,4 +433,56 @@ describe('runner cache', () => {
     );
     expect(controlExit).toBe(true);
   });
+});
+
+/**
+ * Тот же контракт, что проходит бэкенд на ssh2.
+ *
+ * Часть проверок дублирует тесты выше — это цена того, что обещание
+ * инструментам одно на оба транспорта и проверяется одним текстом.
+ */
+const contractScenarios: ProcessRunOutcome[] = [];
+let contractAttempts = 0;
+
+describeRunnerContract({
+  name: 'openssh',
+  backend: 'openssh',
+  createRunner: () => makeRunner(),
+  queue: (...scenarios) => {
+    for (const scenario of scenarios) {
+      if (scenario.kind === 'timeout') {
+        contractScenarios.push(ok({ timedOut: true, exitCode: null }));
+      } else if (scenario.kind === 'cancelled') {
+        contractScenarios.push(ok({ aborted: true, exitCode: null }));
+      } else if (scenario.kind === 'transport-error') {
+        contractScenarios.push(
+          ok({
+            exitCode: SSH_FAILURE_EXIT_CODE,
+            stderr: 'ssh: connect to host example.com port 22: Connection refused',
+          })
+        );
+      } else {
+        contractScenarios.push(
+          ok({
+            stdout: scenario.stdout ?? '',
+            stderr: scenario.stderr ?? '',
+            exitCode: scenario.exitCode ?? 0,
+          })
+        );
+      }
+    }
+  },
+  attempts: () => contractAttempts,
+  reset: () => {
+    contractScenarios.length = 0;
+    contractAttempts = 0;
+    runProcessMock.mockReset();
+    runProcessMock.mockImplementation(async (options: ProcessRunOptions) => {
+      // Служебные вызовы `ssh -O check|exit` попыткой выполнения не считаются
+      if (options.args.includes('-O')) return ok({ exitCode: 1 });
+
+      contractAttempts++;
+      return contractScenarios.shift() ?? ok();
+    });
+  },
 });

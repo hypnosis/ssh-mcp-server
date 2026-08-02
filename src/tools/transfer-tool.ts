@@ -347,7 +347,7 @@ export class TransferTool {
 
       if (opts.atomic) {
         // atomic rename on the same FS
-        await this.executor.execute(
+        await this.executor.executeChecked(
           sshConfig,
           `mv -f ${shellQuote(target)} ${shellQuote(remotePath)}`,
           { profileName }
@@ -355,7 +355,7 @@ export class TransferTool {
       }
 
       if (opts.mode) {
-        await this.executor.execute(
+        await this.executor.executeChecked(
           sshConfig,
           `chmod ${opts.mode} ${shellQuote(remotePath)}`,
           { profileName }
@@ -443,13 +443,13 @@ export class TransferTool {
     // ensure parent dir
     const parent = posixPath.dirname(target);
     if (parent && parent !== '/' && parent !== '.') {
-      await this.executor.execute(
+      await this.executor.executeChecked(
         sshConfig,
         `mkdir -p ${shellQuote(parent)}`,
         { profileName, sudo: true }
       );
     }
-    await this.executor.execute(
+    await this.executor.executeChecked(
       sshConfig,
       `install ${flags.join(' ')} ${shellQuote(stage)} ${shellQuote(target)}`,
       { profileName, sudo: true }
@@ -481,12 +481,23 @@ export class TransferTool {
     sudo: boolean
   ): Promise<boolean> {
     const cmd = buildRemoteSha256Command(shellQuote(remotePath));
-    const r = await this.executor.execute(sshConfig, cmd, { profileName, sudo });
+    const r = await this.executor.execute(sshConfig, cmd, {
+      profileName,
+      sudo,
+      idempotent: true,
+    });
     if (r.stdout.includes('NO_SHA256_TOOL')) {
       logger.warn(
         `[Transfer] Neither sha256sum nor openssl found on remote — verify skipped`
       );
       return false;
+    }
+    // Несостоявшаяся проверка и несовпадение хэшей — разные вещи:
+    // без этой ветки нечитаемый файл выглядел бы как испорченная передача
+    if (r.exitCode !== 0) {
+      throw new Error(
+        `Failed to verify ${remotePath}: ${r.stderr.trim() || `exit code ${r.exitCode}`}`
+      );
     }
     const actual = parseRemoteSha256(r.stdout);
     return actual === expected.toLowerCase();
@@ -536,7 +547,7 @@ export class TransferTool {
     }
 
     // Prepare staging dir
-    await this.executor.execute(
+    await this.executor.executeChecked(
       sshConfig,
       `mkdir -p ${shellQuote(stagingDir)}`,
       { profileName }
@@ -553,7 +564,7 @@ export class TransferTool {
 
         const parent = posixPath.dirname(remote);
         if (parent && parent !== stagingDir) {
-          await this.executor.execute(
+          await this.executor.executeChecked(
             sshConfig,
             `mkdir -p ${shellQuote(parent)}`,
             { profileName }
@@ -583,8 +594,10 @@ export class TransferTool {
       if (opts.atomic) {
         // Remove old final if exists, then rename staging
         const existsCmd = `if [ -e ${shellQuote(finalDir)} ]; then rm -rf ${shellQuote(finalDir)}; fi`;
-        await this.executor.execute(sshConfig, existsCmd, { profileName });
-        await this.executor.execute(
+        // Уборка обязана удаться: иначе `mv` не заменит каталог,
+        // а вложит перенесённый внутрь существующего
+        await this.executor.executeChecked(sshConfig, existsCmd, { profileName });
+        await this.executor.executeChecked(
           sshConfig,
           `mv -f ${shellQuote(stagingDir)} ${shellQuote(finalDir)}`,
           { profileName }
@@ -592,7 +605,7 @@ export class TransferTool {
       }
 
       if (opts.mode) {
-        await this.executor.execute(
+        await this.executor.executeChecked(
           sshConfig,
           `chmod -R ${opts.mode} ${shellQuote(finalDir)}`,
           { profileName }

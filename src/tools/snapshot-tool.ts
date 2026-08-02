@@ -118,27 +118,52 @@ export class SnapshotTool {
   }
   
   /**
+   * Read a value from the server.
+   *
+   * Снимок состоит из независимых чтений: неудача одного не должна отменять
+   * остальные, поэтому вместо исключения возвращается запасное значение.
+   * Все команды снимка — только чтение, поэтому повтор при обрыве связи безопасен.
+   */
+  private async read(
+    config: any,
+    command: string,
+    profileName: string,
+    options: { sudo?: boolean; fallback?: string } = {}
+  ): Promise<string> {
+    const result = await this.executor.execute(config, command, {
+      profileName,
+      sudo: options.sudo,
+      idempotent: true,
+    });
+
+    if (result.exitCode !== 0) {
+      logger.debug(`[Snapshot] "${command}" exited with ${result.exitCode}: ${result.stderr.trim()}`);
+      return options.fallback ?? '';
+    }
+
+    return result.stdout.trim();
+  }
+
+  /**
    * Get timestamp
    */
   private async getTimestamp(config: any, profileName: string): Promise<string> {
-    const result = await this.executor.execute(config, 'date -u +"%Y-%m-%dT%H:%M:%SZ"', { profileName });
-    return result.stdout.trim();
+    return this.read(config, 'date -u +"%Y-%m-%dT%H:%M:%SZ"', profileName, { fallback: 'unknown' });
   }
-  
+
   /**
    * Get hostname
    */
   private async getHostname(config: any, profileName: string): Promise<string> {
-    const result = await this.executor.execute(config, 'hostname', { profileName });
-    return result.stdout.trim();
+    return this.read(config, 'hostname', profileName, { fallback: 'unknown' });
   }
-  
+
   /**
    * Get uptime
    */
   private async getUptime(config: any, profileName: string): Promise<string> {
-    const result = await this.executor.execute(config, 'uptime -p', { profileName });
-    return result.stdout.trim().replace('up ', '');
+    return (await this.read(config, 'uptime -p', profileName, { fallback: 'unknown' }))
+      .replace('up ', '');
   }
   
   /**
@@ -150,17 +175,20 @@ export class SnapshotTool {
     
     for (const service of services) {
       try {
-        const result = await this.executor.execute(config, `systemctl is-active ${service} 2>/dev/null || echo inactive`, { profileName });
-        const status = result.stdout.trim();
-        
+        const status = await this.read(
+          config,
+          `systemctl is-active ${service} 2>/dev/null || echo inactive`,
+          profileName
+        );
+
         if (status === 'active') {
           // Get uptime
-          const uptimeResult = await this.executor.execute(
+          const startedAt = await this.read(
             config,
             `systemctl show ${service} --property=ActiveEnterTimestamp --value 2>/dev/null || echo ""`,
-            { profileName }
+            profileName
           );
-          results.push({ name: service, status, uptime: uptimeResult.stdout.trim() || null });
+          results.push({ name: service, status, uptime: startedAt || null });
         }
       } catch {
         // Service not found, skip
@@ -174,18 +202,19 @@ export class SnapshotTool {
    * Get CPU information
    */
   private async getCPU(config: any, profileName: string): Promise<{ cores: number; usage: number; loadAvg: string }> {
-    const coresResult = await this.executor.execute(config, 'nproc', { profileName });
-    const loadResult = await this.executor.execute(config, 'cat /proc/loadavg', { profileName });
-    const usageResult = await this.executor.execute(
+    const coresOutput = await this.read(config, 'nproc', profileName);
+    const loadOutput = await this.read(config, 'cat /proc/loadavg', profileName);
+    const usageOutput = await this.read(
       config,
       'top -bn1 | grep "Cpu(s)" | awk \'{print $2}\' | cut -d"%" -f1',
-      { profileName }
+      profileName
     );
-    
-    const cores = parseInt(coresResult.stdout.trim());
-    const usage = parseFloat(usageResult.stdout.trim()) || 0;
-    const loadAvg = loadResult.stdout.trim().split(' ').slice(0, 3).join(' ');
-    
+
+    // `|| 0` обязателен: без него недоступный nproc даёт NaN прямо в отчёте
+    const cores = parseInt(coresOutput) || 0;
+    const usage = parseFloat(usageOutput) || 0;
+    const loadAvg = loadOutput.split(' ').slice(0, 3).join(' ');
+
     return { cores, usage, loadAvg };
   }
   
@@ -193,8 +222,7 @@ export class SnapshotTool {
    * Get Memory information
    */
   private async getMemory(config: any, profileName: string): Promise<{ total: string; used: string; free: string; percent: number }> {
-    const result = await this.executor.execute(config, 'free -h | grep Mem', { profileName });
-    const parts = result.stdout.trim().split(/\s+/);
+    const parts = (await this.read(config, 'free -h | grep Mem', profileName)).split(/\s+/);
     
     return {
       total: parts[1] || 'unknown',
@@ -208,10 +236,10 @@ export class SnapshotTool {
    * Get Disk information
    */
   private async getDisk(config: any, profileName: string): Promise<Array<{ mount: string; size: string; used: string; avail: string; percent: string }>> {
-    const result = await this.executor.execute(config, 'df -h | grep -E "^/dev/"', { profileName });
-    const lines = result.stdout.trim().split('\n');
-    
-    return lines.map(line => {
+    const output = await this.read(config, 'df -h | grep -E "^/dev/"', profileName);
+    if (!output) return [];
+
+    return output.split('\n').map(line => {
       const parts = line.split(/\s+/);
       return {
         mount: parts[5] || '?',
@@ -229,29 +257,28 @@ export class SnapshotTool {
   private async getDocker(config: any, profileName: string): Promise<{ containers: any[]; images: number } | undefined> {
     try {
       // Check for Docker presence
-      const checkResult = await this.executor.execute(config, 'which docker', { profileName });
-      if (checkResult.exitCode !== 0) {
+      const dockerPath = await this.read(config, 'which docker', profileName);
+      if (!dockerPath) {
         return undefined;
       }
-      
+
       // Container list
-      const containersResult = await this.executor.execute(
+      const containersOutput = await this.read(
         config,
         'docker ps --format "{{.ID}}|{{.Names}}|{{.Status}}"',
-        { profileName }
+        profileName
       );
-      
-      const containers = containersResult.stdout.trim().split('\n')
+
+      const containers = containersOutput.split('\n')
         .filter(line => line.length > 0)
         .map(line => {
           const [id, name, status] = line.split('|');
           return { id, name, status, uptime: status };
         });
-      
+
       // Image count
-      const imagesResult = await this.executor.execute(config, 'docker images -q | wc -l', { profileName });
-      const images = parseInt(imagesResult.stdout.trim()) || 0;
-      
+      const images = parseInt(await this.read(config, 'docker images -q | wc -l', profileName)) || 0;
+
       return { containers, images };
     } catch {
       return undefined;
@@ -263,25 +290,24 @@ export class SnapshotTool {
    */
   private async getNetwork(config: any, profileName: string): Promise<{ listening: Array<{ port: string; service: string }>; connections: number }> {
     // Open ports
-    const portsResult = await this.executor.execute(
+    const portsOutput = await this.read(
       config,
       'ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u || netstat -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u',
-      { profileName }
+      profileName
     );
-    
-    const ports = portsResult.stdout.trim().split('\n')
+
+    const ports = portsOutput.split('\n')
       .filter(port => port.length > 0 && !isNaN(parseInt(port)))
       .map(port => ({ port, service: this.getServiceByPort(port) }));
-    
+
     // Connection count
-    const connectionsResult = await this.executor.execute(
+    const connectionsOutput = await this.read(
       config,
       'ss -tn 2>/dev/null | grep ESTAB | wc -l || netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l',
-      { profileName }
+      profileName
     );
-    const connections = parseInt(connectionsResult.stdout.trim()) || 0;
-    
-    return { listening: ports, connections };
+
+    return { listening: ports, connections: parseInt(connectionsOutput) || 0 };
   }
   
   /**
@@ -292,14 +318,15 @@ export class SnapshotTool {
     
     // Errors from syslog
     try {
-      const result = await this.executor.execute(
+      const output = await this.read(
         config,
         'tail -n 100 /var/log/syslog 2>/dev/null | grep -iE "error|fatal|critical" | tail -n 3 || echo ""',
-        { sudo: true, profileName }
+        profileName,
+        { sudo: true }
       );
-      
-      if (result.stdout.trim()) {
-        const lines = result.stdout.trim().split('\n');
+
+      if (output) {
+        const lines = output.split('\n');
         lines.forEach(line => {
           if (line.length > 0) {
             errors.push({

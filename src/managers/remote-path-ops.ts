@@ -98,6 +98,30 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
       );
     },
 
+    /**
+     * Наши временные пути, оставшиеся рядом с целью от прошлых операций.
+     *
+     * В шаблон идут только наши приставки: имя цели пользовательское, и `*`
+     * или `[` в нём стали бы чужим шаблоном. Отбор по самому имени делается у
+     * нас, как и сравнение хэшей.
+     *
+     * Читаем построчно: имя с переводом строки внутри даст лишнюю строку в
+     * списке, но список этот только показывается человеку — ничего по нему
+     * не удаляется.
+     */
+    async listArtifacts(directory: string): Promise<string[]> {
+      const result = await run(
+        `find ${shellQuote(directory)} -maxdepth 1 ` +
+        `\\( -name '.upload-*' -o -name '.bak-*' \\) 2>/dev/null`,
+        true
+      );
+
+      return result.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+    },
+
     async removeTree(path: string): Promise<void> {
       await executor.executeChecked(config, `rm -rf -- ${shellQuote(path)}`, {
         profileName,

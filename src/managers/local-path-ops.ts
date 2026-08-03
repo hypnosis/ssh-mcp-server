@@ -6,9 +6,10 @@
  * установки одинаков для обеих сторон, различаются только эти операции.
  */
 
-import { mkdir, rename, rm, lstat, stat } from 'fs/promises';
-import { dirname } from 'path';
+import { mkdir, readdir, rename, rm, lstat, stat } from 'fs/promises';
+import { dirname, join } from 'path';
 import type { PathKind, PathOps } from './installer.js';
+import { ARTIFACT_PREFIXES } from '../utils/tmp-name.js';
 
 export const localPathOps: PathOps = {
   /**
@@ -35,6 +36,17 @@ export const localPathOps: PathOps = {
     } catch {
       return false;
     }
+  },
+
+  /**
+   * Наши временные пути, оставшиеся в каталоге от прошлых операций.
+   * Только чтение: убирать их нельзя — рядом может работать другой вызов.
+   */
+  async listArtifacts(directory: string): Promise<string[]> {
+    const names = await readdir(directory);
+    return names
+      .filter((name) => ARTIFACT_PREFIXES.some((prefix) => name.startsWith(prefix)))
+      .map((name) => join(directory, name));
   },
 
   async ensureParent(path: string): Promise<void> {

@@ -61,6 +61,14 @@ class FakeFs implements PathOps {
     this.removed.push(path);
     this.entries.delete(path);
   }
+
+  /** Соседи цели, похожие на наши временные имена */
+  listSiblings?: (directory: string) => Promise<string[]>;
+
+  async listArtifacts(directory: string): Promise<string[]> {
+    if (!this.listSiblings) return [];
+    return this.listSiblings(directory);
+  }
 }
 
 const FINAL = '/srv/app.conf';
@@ -299,5 +307,74 @@ describe('имена временных путей', () => {
     await install(fs, capture);
 
     expect(staged[0]).not.toBe(staged[1]);
+  });
+});
+
+/**
+ * Следы прерванных операций: называем, но не трогаем.
+ *
+ * Процесс, убитый посреди установки, оставляет рядом с целью временный путь, а
+ * иногда и отведённую в сторону старую копию. Убрать их некому: своё убирает
+ * тот вызов, который создал, а чужое не трогает никто — угадать, доливает ли
+ * их прямо сейчас соседний вызов, нельзя ни по имени, ни по времени.
+ */
+describe('следы прошлых операций', () => {
+  it('называются в ответе и остаются на месте', async () => {
+    fs.put(FINAL, 'file', 'старое содержимое');
+    fs.put('/srv/.bak-aaaaaaaaaaaa.app.conf', 'file', 'копия от прошлой аварии');
+    fs.listSiblings = async () => ['/srv/.bak-aaaaaaaaaaaa.app.conf'];
+
+    const outcome = await install(fs, plan());
+
+    expect(outcome.warnings.join(' ')).toContain('/srv/.bak-aaaaaaaaaaaa.app.conf');
+    // Ни удаления, ни переименования: это чужие данные
+    expect(fs.removed).toEqual([]);
+    expect(fs.content('/srv/.bak-aaaaaaaaaaaa.app.conf')).toBe('копия от прошлой аварии');
+  });
+
+  it('пустой боевой путь рядом с копией — предупреждение с командой возврата', async () => {
+    fs.put('/srv/.bak-bbbbbbbbbbbb.app.conf', 'file', 'единственная целая копия');
+    fs.listSiblings = async () => ['/srv/.bak-bbbbbbbbbbbb.app.conf'];
+
+    const outcome = await install(fs, plan());
+
+    const warning = outcome.warnings.join(' ');
+    expect(warning).toContain('/srv/.bak-bbbbbbbbbbbb.app.conf');
+    expect(warning).toContain('mv -T');
+    expect(fs.content('/srv/.bak-bbbbbbbbbbbb.app.conf')).toBe('единственная целая копия');
+  });
+
+  it('соседи от другой цели и чужие файлы не считаются нашими следами', async () => {
+    fs.listSiblings = async () => [
+      '/srv/.bak-cccccccccccc.other.conf',
+      '/srv/.upload-dddddddddddd.other.conf',
+      '/srv/app.conf.bak',
+      '/srv/.hidden',
+    ];
+
+    const outcome = await install(fs, plan());
+
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it('неудачный листинг не мешает установке', async () => {
+    fs.listSiblings = async () => { throw new Error('permission denied'); };
+
+    const outcome = await install(fs, plan());
+
+    expect(fs.content(FINAL)).toBe('новое содержимое');
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it('отказ установки тоже несёт список следов', async () => {
+    fs.put(FINAL, 'directory');
+    fs.listSiblings = async () => ['/srv/.upload-eeeeeeeeeeee.app.conf'];
+
+    const failure = await install(fs, plan()).catch((error: Error) => error);
+
+    expect(failure).toBeInstanceOf(InstallError);
+    expect((failure as InstanceType<typeof InstallError>).warnings.join(' ')).toContain(
+      '/srv/.upload-eeeeeeeeeeee.app.conf'
+    );
   });
 });

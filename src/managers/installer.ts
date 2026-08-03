@@ -18,7 +18,7 @@
  * снаружи: на сервере это команды через транспорт, локально — обычный fs.
  */
 
-import { buildBackupPath, buildTempPath } from '../utils/tmp-name.js';
+import { buildBackupPath, buildTempPath, isArtifactOf } from '../utils/tmp-name.js';
 
 export type PathKind = 'file' | 'directory' | 'symlink' | 'missing';
 
@@ -42,6 +42,14 @@ export interface PathOps {
   removeTree(path: string): Promise<void>;
   /** Лежит ли путь на отдельной файловой системе (точка монтирования) */
   isSeparateFilesystem?(path: string): Promise<boolean>;
+  /**
+   * Пути в каталоге, похожие на наши временные имена.
+   *
+   * Нужны только чтобы назвать их человеку: убирать их самим нельзя — по
+   * имени не отличить брошенный след от временного пути соседнего вызова,
+   * который прямо сейчас доливает туда данные.
+   */
+  listArtifacts?(directory: string): Promise<string[]>;
 }
 
 export interface InstallPlan {
@@ -97,10 +105,15 @@ export async function install(
   // изменения на диске
   const existing = await ops.inspect(plan.finalPath);
 
+  // Следы прошлых операций: называем их и оставляем как есть
+  const leftovers = await findLeftovers(ops, plan.finalPath);
+  if (leftovers.length > 0) warnings.push(describeLeftovers(leftovers, plan.finalPath, existing));
+
   if (existing === 'symlink') {
     throw new InstallError(
       `the target is a symbolic link: ${plan.finalPath}. ` +
-      'Point the path at the file or directory it leads to, or remove the link first.'
+      'Point the path at the file or directory it leads to, or remove the link first.',
+      warnings
     );
   }
 
@@ -108,7 +121,8 @@ export async function install(
   // вложит одно в другое и отчитается успехом
   if (existing !== 'missing' && existing !== plan.kind) {
     throw new InstallError(
-      `cannot install ${plan.kind} over an existing ${existing}: ${plan.finalPath}`
+      `cannot install ${plan.kind} over an existing ${existing}: ${plan.finalPath}`,
+      warnings
     );
   }
 
@@ -117,7 +131,8 @@ export async function install(
   if (existing !== 'missing' && (await ops.isSeparateFilesystem?.(plan.finalPath))) {
     throw new InstallError(
       `the target is a mount point: ${plan.finalPath}. ` +
-      'Replacing it by rename is not possible; write into a directory inside the volume instead.'
+      'Replacing it by rename is not possible; write into a directory inside the volume instead.',
+      warnings
     );
   }
 
@@ -143,7 +158,9 @@ export async function install(
     throwIfAborted(options.signal);
   } catch (error) {
     await discard(ops, staging);
-    throw error;
+    throw warnings.length > 0
+      ? new InstallError(message(error), warnings)
+      : error;
   }
 
   // commit: с первого удавшегося переименования операция состоялась
@@ -238,6 +255,55 @@ async function restore(
     );
     return false;
   }
+}
+
+/**
+ * Найти рядом с целью наши временные пути от прошлых операций.
+ *
+ * Только чтение. Листинг не удался — считаем, что ничего нет: справка о мусоре
+ * не стоит того, чтобы из-за неё отказала сама установка.
+ */
+async function findLeftovers(ops: PathOps, finalPath: string): Promise<string[]> {
+  if (!ops.listArtifacts) return [];
+
+  const trimmed = finalPath.replace(/\/+$/, '');
+  const lastSlash = trimmed.lastIndexOf('/');
+  const directory = lastSlash > 0 ? trimmed.slice(0, lastSlash) : lastSlash === 0 ? '/' : '.';
+  const base = trimmed.slice(lastSlash + 1);
+
+  try {
+    const found = await ops.listArtifacts(directory);
+    return found.filter((path) => isArtifactOf(path.slice(path.lastIndexOf('/') + 1), base));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Сказать про находку так, чтобы человек мог решить сам.
+ *
+ * Мы их не трогаем: по имени не отличить брошенный след от временного пути
+ * чужого вызова, который прямо сейчас пишет туда данные. Поэтому в ответе —
+ * адреса и готовая команда, а решение за человеком.
+ */
+function describeLeftovers(leftovers: string[], finalPath: string, existing: PathKind): string {
+  const paths = leftovers.map((path) => `'${path}'`).join(' ');
+
+  // Пустая цель рядом с отложенной копией — след процесса, убитого между двумя
+  // переименованиями. Тогда рядом лежат последние целые данные, и это другой
+  // разговор, чем «уберите мусор»
+  if (existing === 'missing') {
+    return (
+      `${finalPath} did not exist before this install, but leftovers from an interrupted ` +
+      `operation are next to it: ${paths}. They were not touched. If those are your data, ` +
+      `put them back yourself: mv -T ${leftovers.map((path) => `'${path}'`).join(' ')} '${finalPath}'`
+    );
+  }
+
+  return (
+    `leftovers from an interrupted operation are next to the target and were left untouched: ` +
+    `${paths}. Remove them yourself once you are sure no other transfer is using them: rm -rf ${paths}`
+  );
 }
 
 /** Убрать временный путь; неудача уборки операцию не меняет */

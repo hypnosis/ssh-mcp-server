@@ -18,7 +18,9 @@ import { sha256OfBuffer } from '../utils/sha256.js';
 import { verifyRemoteFiles } from '../managers/remote-verify.js';
 import { install } from '../managers/installer.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
+import { expandRemoteHome } from '../managers/remote-home.js';
 import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
+import { shellGlob, shellMode } from '../utils/shell-arg.js';
 import { truncatedReadMessage, withTruncationNote } from '../utils/output-notes.js';
 
 /**
@@ -245,7 +247,7 @@ export class FileTools {
         const b64 = await this.readFileBinary(sshConfig, paths[0], profileName);
         return { content: [{ type: 'text', text: b64 }] };
       }
-      const command = this.buildSafeCommand(paths[0], 'cat', encoding);
+      const command = await this.buildReadCommand(sshConfig, profileName, paths[0], encoding, sudo);
 
       const result = await this.executor.execute(sshConfig, command, {
         sudo,
@@ -288,7 +290,7 @@ export class FileTools {
           });
           continue;
         }
-        const command = this.buildSafeCommand(path, 'cat', encoding);
+        const command = await this.buildReadCommand(sshConfig, profileName, path, encoding, sudo);
 
         const result = await this.executor.execute(sshConfig, command, {
           sudo,
@@ -465,7 +467,14 @@ export class FileTools {
       ? Buffer.from(file.content || '', 'base64')
       : Buffer.from(file.content || '', 'utf8');
 
-    const target = await this.resolveWritePath(sshConfig, profileName, file.path, file.sudo);
+    // Права проверяются до первой команды: отказ на полпути оставил бы после
+    // себя временный путь и запись, которой не просили
+    const mode = file.mode ? shellMode(file.mode, 'mode') : undefined;
+
+    const target = await expandRemoteHome(this.executor, sshConfig, file.path, {
+      profileName,
+      sudo: file.sudo,
+    });
     const expectedHash = sha256OfBuffer(buf);
     const ops = remotePathOps({
       executor: this.executor,
@@ -505,10 +514,10 @@ export class FileTools {
         return null;
       },
       finalize: async (staging) => {
-        if (!file.mode) return;
+        if (!mode) return;
         await this.executor.executeChecked(
           sshConfig,
-          `chmod ${file.mode} -- ${shellQuote(staging)}`,
+          `chmod ${mode} -- ${shellQuote(staging)}`,
           { profileName, sudo: file.sudo }
         );
       },
@@ -581,51 +590,6 @@ export class FileTools {
   }
 
   /**
-   * Превратить `~` в настоящий путь до того, как он попадёт в команду.
-   *
-   * Раскрывать тильду на сервере больше нельзя: путь уходит в одинарных
-   * кавычках, где `~` остаётся буквой, и в домашнем каталоге появлялся
-   * настоящий каталог с этим именем. Домашний каталог известен из паспорта —
-   * одна проба за сессию.
-   */
-  private async resolveWritePath(
-    sshConfig: any,
-    profileName: string,
-    path: string,
-    sudo?: boolean
-  ): Promise<{ path: string; warnings: string[] }> {
-    if (!path.startsWith('~')) return { path, warnings: [] };
-
-    if (path !== '~' && !path.startsWith('~/')) {
-      throw new Error(
-        `cannot expand "${path}": another user's home directory is not known here. ` +
-        'Pass an absolute path instead.'
-      );
-    }
-
-    const passport = await this.executor.passport(sshConfig, profileName);
-    if (!passport.home) {
-      throw new Error(
-        `cannot expand "${path}": the server did not report a home directory. ` +
-        'Pass an absolute path instead.'
-      );
-    }
-
-    const expanded = path === '~' ? passport.home : posixPath.join(passport.home, path.slice(2));
-
-    // Под sudo сервер раньше раскрывал тильду сам — уже от имени root, то есть
-    // в /root. Теперь адрес другой, и молчать об этом нельзя: это другой файл
-    const warnings = sudo
-      ? [
-          `"${path}" points at ${expanded} — the home of the login user, not root's. ` +
-          'Pass an absolute path if you meant a different directory.',
-        ]
-      : [];
-
-    return { path: expanded, warnings };
-  }
-
-  /**
    * Забрать файл целиком и вернуть base64.
    * Нужно при binary=true: `cat` через PTY портит байты вне utf8.
    */
@@ -664,19 +628,9 @@ export class FileTools {
       }
     }
     
-    const expanded = this.expandRemoteTilde(args.path);
-    
-    // Build safe path
-    let safePath: string;
-    if (expanded.startsWith('$HOME')) {
-      const homePrefix = '$HOME';
-      const restPath = expanded.substring(5);
-      const escapedRest = this.escapeForDoubleQuotes(restPath);
-      safePath = `"${homePrefix}${escapedRest}"`;
-    } else {
-      safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
-    }
-    
+    const target = await expandRemoteHome(this.executor, sshConfig, args.path, { profileName });
+    const safePath = shellQuote(target.path);
+
     let command = 'ls -lah';
     
     if (args.recursive) {
@@ -684,7 +638,9 @@ export class FileTools {
     }
     
     if (args.pattern) {
-      command += ` ${safePath}/${args.pattern}`;
+      // Шаблон обязан раскрыться на сервере, поэтому в кавычки он не уходит:
+      // всё, кроме знаков шаблона, обезврежено обратным слэшем
+      command += ` ${safePath}/${shellGlob(args.pattern, 'pattern')}`;
     } else {
       command += ` ${safePath}`;
     }
@@ -704,126 +660,26 @@ export class FileTools {
   }
   
   /**
-   * Expand tilde (~) for remote execution
-   * Converts ~ to $HOME for shell expansion on remote server
-   * 
-   * Examples:
-   *   ~/file       → $HOME/file
-   *   ~            → $HOME
-   *   ~user/file   → ~user/file (left as-is, shell will expand)
-   *   /abs/path    → /abs/path (no change)
-   * 
-   * Note: We use $HOME instead of ~ because:
-   * 1. Single quotes prevent ~ expansion: cat '~/file' won't work
-   * 2. $HOME works in double quotes: cat "$HOME/file" works
-   * 3. We can safely escape everything except $HOME in double quotes
+   * Команда чтения файла.
+   *
+   * Путь раскрывается у нас и уезжает в одинарных кавычках — тем же способом,
+   * что и при записи. Под sudo `~` ведёт в дом логин-пользователя, и об этом
+   * говорится в журнале: подмешивать предупреждение в ответ нельзя, ответ здесь
+   * это содержимое файла.
    */
-  private expandRemoteTilde(path: string): string {
-    if (!path) return path;
-    
-    // ~/path → $HOME/path
-    if (path.startsWith('~/')) {
-      return '$HOME/' + path.substring(2);
+  private async buildReadCommand(
+    sshConfig: any,
+    profileName: string,
+    path: string,
+    encoding: string,
+    sudo: boolean
+  ): Promise<string> {
+    const target = await expandRemoteHome(this.executor, sshConfig, path, { profileName, sudo });
+
+    for (const warning of target.warnings) {
+      logger.warn(`[file-tools] ${warning}`);
     }
-    
-    // ~ → $HOME
-    if (path === '~') {
-      return '$HOME';
-    }
-    
-    // ~user/path → leave as-is (shell will expand ~user)
-    // /absolute/path → leave as-is
-    // ./relative/path → leave as-is
-    return path;
-  }
-  
-  /**
-   * Escape path for single-quoted context (safest)
-   * Used for paths without tilde or variables
-   * 
-   * Single quotes prevent ALL expansions (variables, commands, globs)
-   * Only need to handle embedded single quotes: ' → '\''
-   */
-  private escapeForSingleQuotes(path: string): string {
-    // Replace ' with '\'' (end quote, escaped quote, start quote)
-    return path.replace(/'/g, "'\\''");
-  }
-  
-  /**
-   * Escape path for double-quoted context
-   * Used when we need variable expansion (e.g., $HOME)
-   * 
-   * Double quotes allow variable expansion but we must escape:
-   * - Backslashes (\)
-   * - Double quotes (")
-   * - Dollar signs ($) - except $HOME which we want to expand
-   * - Backticks (`)
-   * - Exclamation marks (!) - for history expansion
-   */
-  private escapeForDoubleQuotes(str: string): string {
-    return str
-      .replace(/\\/g, '\\\\')   // \ → \\
-      .replace(/"/g, '\\"')     // " → \"
-      .replace(/\$/g, '\\$')    // $ → \$ (prevent variable expansion)
-      .replace(/`/g, '\\`')     // ` → \` (prevent command substitution)
-      .replace(/!/g, '\\!');    // ! → \! (prevent history expansion)
-  }
-  
-  /**
-   * Build safe shell command with proper quoting
-   * 
-   * Strategy:
-   * - If path contains ~ → expand to $HOME → use double quotes
-   * - Otherwise → use single quotes (safest)
-   * 
-   * Double quotes are used for $HOME expansion but everything else is escaped
-   * to prevent injection attacks (variables, commands, etc.)
-   */
-  private buildSafeCommand(path: string, command: string, encoding?: string): string {
-    const expanded = this.expandRemoteTilde(path);
-    
-    // Path with $HOME → use double quotes for expansion
-    if (expanded.startsWith('$HOME')) {
-      // Split: $HOME (don't escape) + rest (escape everything)
-      const homePrefix = '$HOME';
-      const restPath = expanded.substring(5); // After $HOME
-      
-      // Escape only the part after $HOME
-      const escapedRest = this.escapeForDoubleQuotes(restPath);
-      const safePath = `"${homePrefix}${escapedRest}"`;
-      
-      // Build command based on encoding
-      if (encoding === 'base64') {
-        return `base64 ${safePath}`;
-      } else if (command === 'cat') {
-        return `cat ${safePath}`;
-      } else if (command === 'tail') {
-        return `tail ${safePath}`;
-      } else {
-        return `${command} ${safePath}`;
-      }
-    } else {
-      // Regular path → use single quotes (safest)
-      const safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
-      
-      // Build command based on encoding
-      if (encoding === 'base64') {
-        return `base64 ${safePath}`;
-      } else if (command === 'cat') {
-        return `cat ${safePath}`;
-      } else if (command === 'tail') {
-        return `tail ${safePath}`;
-      } else {
-        return `${command} ${safePath}`;
-      }
-    }
-  }
-  
-  /**
-   * Legacy escape method (kept for backward compatibility)
-   * @deprecated Use escapeForSingleQuotes() or escapeForDoubleQuotes() instead
-   */
-  private escapePath(path: string): string {
-    return this.escapeForSingleQuotes(path);
+
+    return `${encoding === 'base64' ? 'base64' : 'cat'} ${shellQuote(target.path)}`;
   }
 }

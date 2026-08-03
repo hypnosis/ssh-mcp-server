@@ -30,6 +30,7 @@ import {
   shellQuote,
 } from '../utils/tmp-name.js';
 import { createPathValidator } from '../utils/path-validator.js';
+import { shellMode, shellOwner } from '../utils/shell-arg.js';
 
 interface UploadFileResult {
   remote_path: string;
@@ -195,6 +196,11 @@ export class TransferTool {
       if (!v.valid) throw new Error(`Path validation failed: ${v.error}`);
     }
 
+    // Права и владелец проверяются до первого касания сервера: оба уезжают в
+    // команду отдельными словами, где кавычки их не удержат
+    const mode = args.mode ? shellMode(args.mode, 'mode') : undefined;
+    const owner = args.owner ? shellOwner(args.owner, 'owner') : undefined;
+
     const localStat = await stat(args.local_path);
     const isDir = args.recursive ?? localStat.isDirectory();
 
@@ -211,11 +217,11 @@ export class TransferTool {
         args.local_path,
         args.remote_path,
         {
-          mode: args.mode,
+          mode,
           atomic: args.atomic !== false,
           verify: args.verify !== false,
           sudo: !!args.sudo,
-          owner: args.owner,
+          owner,
           overwrite: args.overwrite !== false,
           concurrency: args.concurrency || 4,
         }
@@ -236,11 +242,11 @@ export class TransferTool {
       args.local_path,
       args.remote_path,
       {
-        mode: args.mode,
+        mode,
         atomic: args.atomic !== false,
         verify: args.verify !== false,
         sudo: !!args.sudo,
-        owner: args.owner,
+        owner,
         overwrite: args.overwrite !== false,
         concurrency: args.concurrency || 4,
       }

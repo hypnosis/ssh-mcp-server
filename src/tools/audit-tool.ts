@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { shellQuote } from '../utils/tmp-name.js';
+import { shellCount } from '../utils/shell-arg.js';
 
 interface BaselineResult {
   hostname: string;
@@ -566,16 +567,18 @@ export class AuditTool {
     const args = request.params.arguments as any;
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
-    const topN: number = args.top_n || 20;
-    const paths: string[] = (args.paths && args.paths.length ? args.paths : ['/']).map(
-      (p: string) => shellQuote(p)
-    );
+    const topN = shellCount(args.top_n ?? 20, 'top_n');
+    const requestedPaths: string[] = args.paths && args.paths.length ? args.paths : ['/'];
+    const paths = requestedPaths.map((p) => shellQuote(p));
 
     const SEP = '__SSH_MCP_DISK_SEP__';
+    // В разделителе секции стоит номер, а не путь: путь попадал внутрь двойных
+    // кавычек `echo`, где кавычки от `shellQuote` — обычные буквы, а `$( )`
+    // исполняется
     const duCmds = paths
       .map(
-        (p) =>
-          `echo "${SEP}du_${p}${SEP}"; du -shx ${p}/* 2>/dev/null | sort -rh | head -${topN}`
+        (p, index) =>
+          `echo "${SEP}du_${index}${SEP}"; du -shx ${p}/* 2>/dev/null | sort -rh | head -${topN}`
       )
       .join('; ');
 
@@ -592,7 +595,15 @@ export class AuditTool {
       timeout: 120000,
       idempotent: true,
     });
-    return { content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${r.stdout}` }] };
+
+    // Имя пути возвращается в заголовки секций уже здесь, у нас: человеку нужно
+    // видеть, какой каталог показан, но на сервере этому имени делать нечего
+    const named = requestedPaths.reduce(
+      (text, path, index) => text.split(`${SEP}du_${index}${SEP}`).join(`${SEP}du_${path}${SEP}`),
+      r.stdout
+    );
+
+    return { content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${named}` }] };
   }
 
   // ---------------------------------------------------------------------------
@@ -604,7 +615,7 @@ export class AuditTool {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     const unit: string = args.unit;
-    const lines: number = args.log_lines || 50;
+    const lines = shellCount(args.log_lines ?? 50, 'log_lines');
     const since: string | undefined = args.since;
 
     if (!unit || !/^[a-zA-Z0-9@._-]+$/.test(unit)) {

@@ -10,6 +10,9 @@ import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { createPathValidator } from '../utils/path-validator.js';
 import { TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
+import { shellCount } from '../utils/shell-arg.js';
+import { shellQuote } from '../utils/tmp-name.js';
+import { expandRemoteHome } from '../managers/remote-home.js';
 
 /**
  * Log Tools
@@ -142,7 +145,8 @@ export class LogTools {
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const paths = Array.isArray(args.path) ? args.path : [args.path];
-    const lines = args.lines || 100;
+    // Тип из схемы ничего не гарантирует: MCP отдаёт аргументы как есть
+    const lines = shellCount(args.lines ?? 100, 'lines');
     const sudo = args.sudo || false;
     
     // Validate paths against security rules (if configured)
@@ -158,7 +162,7 @@ export class LogTools {
     
     // Single log - simple result
     if (paths.length === 1) {
-      const safePath = this.buildSafePath(paths[0]);
+      const safePath = await this.buildSafePath(sshConfig, profileName, paths[0], sudo);
       const command = `tail -n ${lines} ${safePath}`;
       const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
       
@@ -185,7 +189,7 @@ export class LogTools {
     
     for (const path of paths) {
       try {
-        const safePath = this.buildSafePath(path);
+        const safePath = await this.buildSafePath(sshConfig, profileName, path, sudo);
         const command = `tail -n ${lines} ${safePath}`;
         const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
         
@@ -255,7 +259,7 @@ export class LogTools {
     
     const paths = Array.isArray(args.path) ? args.path : [args.path];
     const query = args.query;
-    const context = args.context || 0;
+    const context = shellCount(args.context ?? 0, 'context');
     const caseSensitive = args.caseSensitive || false;
     const sudo = args.sudo || false;
     
@@ -279,7 +283,7 @@ export class LogTools {
     
     // Single log - simple result
     if (paths.length === 1) {
-      const safePath = this.buildSafePath(paths[0]);
+      const safePath = await this.buildSafePath(sshConfig, profileName, paths[0], sudo);
       const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
       const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
       
@@ -311,7 +315,7 @@ export class LogTools {
     
     for (const path of paths) {
       try {
-        const safePath = this.buildSafePath(path);
+        const safePath = await this.buildSafePath(sshConfig, profileName, path, sudo);
         const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
         const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
         
@@ -366,107 +370,26 @@ export class LogTools {
   }
   
   /**
-   * Expand tilde (~) for remote execution
-   * Converts ~ to $HOME for shell expansion on remote server
-   * 
-   * Examples:
-   *   ~/file       → $HOME/file
-   *   ~            → $HOME
-   *   ~user/file   → ~user/file (left as-is, shell will expand)
-   *   /abs/path    → /abs/path (no change)
-   * 
-   * Note: We use $HOME instead of ~ because:
-   * 1. Single quotes prevent ~ expansion: tail '~/file' won't work
-   * 2. $HOME works in double quotes: tail "$HOME/file" works
-   * 3. We can safely escape everything except $HOME in double quotes
+   * Путь журнала для команды.
+   *
+   * `~` раскрывается у нас по домашнему каталогу из паспорта и уезжает в
+   * одинарных кавычках — тем же способом, что в записи и чтении файлов.
    */
-  private expandRemoteTilde(path: string): string {
-    if (!path) return path;
-    
-    // ~/path → $HOME/path
-    if (path.startsWith('~/')) {
-      return '$HOME/' + path.substring(2);
+  private async buildSafePath(
+    sshConfig: any,
+    profileName: string,
+    path: string,
+    sudo: boolean
+  ): Promise<string> {
+    const target = await expandRemoteHome(this.executor, sshConfig, path, { profileName, sudo });
+
+    for (const warning of target.warnings) {
+      logger.warn(`[log-tools] ${warning}`);
     }
-    
-    // ~ → $HOME
-    if (path === '~') {
-      return '$HOME';
-    }
-    
-    // ~user/path → leave as-is (shell will expand ~user)
-    // /absolute/path → leave as-is
-    // ./relative/path → leave as-is
-    return path;
+
+    return shellQuote(target.path);
   }
-  
-  /**
-   * Escape path for single-quoted context (safest)
-   * Used for paths without tilde or variables
-   * 
-   * Single quotes prevent ALL expansions (variables, commands, globs)
-   * Only need to handle embedded single quotes: ' → '\''
-   */
-  private escapeForSingleQuotes(path: string): string {
-    // Replace ' with '\'' (end quote, escaped quote, start quote)
-    return path.replace(/'/g, "'\\''");
-  }
-  
-  /**
-   * Escape path for double-quoted context
-   * Used when we need variable expansion (e.g., $HOME)
-   * 
-   * Double quotes allow variable expansion but we must escape:
-   * - Backslashes (\)
-   * - Double quotes (")
-   * - Dollar signs ($) - except $HOME which we want to expand
-   * - Backticks (`)
-   * - Exclamation marks (!) - for history expansion
-   */
-  private escapeForDoubleQuotes(str: string): string {
-    return str
-      .replace(/\\/g, '\\\\')   // \ → \\
-      .replace(/"/g, '\\"')     // " → \"
-      .replace(/\$/g, '\\$')    // $ → \$ (prevent variable expansion)
-      .replace(/`/g, '\\`')     // ` → \` (prevent command substitution)
-      .replace(/!/g, '\\!');    // ! → \! (prevent history expansion)
-  }
-  
-  /**
-   * Build safe shell command with proper quoting
-   * 
-   * Strategy:
-   * - If path contains ~ → expand to $HOME → use double quotes
-   * - Otherwise → use single quotes (safest)
-   * 
-   * Double quotes are used for $HOME expansion but everything else is escaped
-   * to prevent injection attacks (variables, commands, etc.)
-   */
-  private buildSafePath(path: string): string {
-    const expanded = this.expandRemoteTilde(path);
-    
-    // Path with $HOME → use double quotes for expansion
-    if (expanded.startsWith('$HOME')) {
-      // Split: $HOME (don't escape) + rest (escape everything)
-      const homePrefix = '$HOME';
-      const restPath = expanded.substring(5); // After $HOME
-      
-      // Escape only the part after $HOME
-      const escapedRest = this.escapeForDoubleQuotes(restPath);
-      return `"${homePrefix}${escapedRest}"`;
-    } else {
-      // Regular path → use single quotes (safest)
-      return `'${this.escapeForSingleQuotes(expanded)}'`;
-    }
-  }
-  
-  /**
-   * Legacy escape method (kept for backward compatibility)
-   * @deprecated Use escapeForSingleQuotes() or escapeForDoubleQuotes() instead
-   */
-  private escapePath(path: string): string {
-    return this.escapeForSingleQuotes(path);
-  }
-  
+
   /**
    * Escape query for grep
    */

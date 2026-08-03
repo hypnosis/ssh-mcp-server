@@ -235,14 +235,31 @@ describe('передача файлов: неудачный шаг не выда
     expect(response.content[0].text).toContain('No space left');
   });
 
-  it('несостоявшаяся sudo-копия при записи файла тоже ошибка', async () => {
+  it('несостоявшаяся запись содержимого не выдаётся за успех', async () => {
+    respondWith([
+      [/^cat > /, { exitCode: 1, stderr: "cat: /etc/.upload-x.app.conf: Permission denied" }],
+    ]);
+
+    const response = await new FileTools().handleCall(
+      call('ssh_file_write', {
+        files: [{ path: '/etc/app.conf', content: 'key = value', sudo: true, atomic: true }],
+      })
+    );
+
+    expect(response.content[0].text).toContain('Permission denied');
+  });
+
+  it('несостоявшаяся sudo-копия крупного файла тоже ошибка', async () => {
+    // Выше порога содержимое едет транспортом, а под sudo — через /tmp и `cp`
     respondWith([
       [/^cp -- /, { exitCode: 1, stderr: "cp: cannot create '/etc/app.conf': Permission denied" }],
     ]);
 
     const response = await new FileTools().handleCall(
       call('ssh_file_write', {
-        files: [{ path: '/etc/app.conf', content: 'key = value', sudo: true, atomic: true }],
+        files: [
+          { path: '/etc/app.conf', content: 'x'.repeat(300 * 1024), sudo: true, atomic: true },
+        ],
       })
     );
 

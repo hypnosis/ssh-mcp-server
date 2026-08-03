@@ -74,12 +74,18 @@ export class SSHExecutor {
     options: SSHExecuteOptions = {}
   ): Promise<SSHExecuteResult> {
     // Add sudo if needed.
-    // Wrap in `bash -c` so shell constructs (subshells `(...)`, `if/elif/fi`, pipes)
+    // Wrap in `<shell> -c` so shell constructs (subshells `(...)`, `if/elif/fi`, pipes)
     // survive sudo. Plain `sudo (if ...; fi)` is a shell syntax error — sudo expects a
-    // program, not a shell construct. `sudo bash -c '<cmd>'` runs the whole thing as one.
+    // program, not a shell construct.
+    //
+    // Язык берётся из паспорта. Жёсткий `bash` означал, что на машине без него
+    // не работает ни одна операция с повышением прав: измерено на Alpine, где
+    // любой sudo-вызов отвечал «bash: command not found». `sh` есть везде,
+    // поэтому он же и ответ на «паспорт не прочитан».
     let finalCommand = command;
     if (options.sudo) {
-      finalCommand = `sudo bash -c ${this.escapeShell(command)}`;
+      const passport = await this.passport(config, options.profileName);
+      finalCommand = `sudo ${passport.bash ? 'bash' : 'sh'} -c ${this.escapeShell(command)}`;
     }
 
     // Add cd if working directory is specified

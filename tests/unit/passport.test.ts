@@ -100,6 +100,30 @@ describe('parsePassport', () => {
     });
   });
 
+  it('читает домашний каталог: без него `~/x` раскрывать нечем', () => {
+    expect(parsePassport(`${COREUTILS_LINE} home=/home/deploy`).home).toBe('/home/deploy');
+  });
+
+  it('домашний каталог с пробелом доезжает целиком', () => {
+    // Поле идёт последним и читается до конца строки: разбей мы его по
+    // пробелам, как остальные, — путь обрезался бы до «/home/john»
+    expect(parsePassport(`${COREUTILS_LINE} home=/home/john doe`).home).toBe('/home/john doe');
+  });
+
+  it('не абсолютный домашний каталог считается неизвестным', () => {
+    // Пустой ответ, `~` или обрывок означают, что мы не знаем, куда писать.
+    // Догадка здесь означала бы файл не по тому адресу
+    expect(parsePassport(`${COREUTILS_LINE} home=`).home).toBe('');
+    expect(parsePassport(`${COREUTILS_LINE} home=~`).home).toBe('');
+  });
+
+  it('старый ответ без поля home разбирается по-прежнему', () => {
+    const passport = parsePassport(COREUTILS_LINE);
+
+    expect(passport.home).toBe('');
+    expect(passport.bash).toBe(true);
+  });
+
   it('незнакомое значение поля не ломает разбор остальных', () => {
     const passport = parsePassport(
       'SSH_MCP_PASSPORT bash=1 sha256=magictool coreutils=coreutils rsync=1 timeout=1 install=1 os=Linux'

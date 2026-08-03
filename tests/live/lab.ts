@@ -1,0 +1,80 @@
+/**
+ * Лаборатория живых тестов: два контейнера с разными наборами утилит.
+ *
+ * Обычный `npm test` живую сетку пропускает, если лаборатория не поднята, —
+ * но пропуск виден в выводе поимённо. `npm run test:live` (SSH_MCP_LIVE=1)
+ * наоборот падает: отсутствие лаборатории там — это несделанная проверка,
+ * а не «нечего проверять».
+ *
+ * Поднять: npm run lab:up
+ */
+
+import { connect } from 'net';
+import { existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import type { SSHConfig } from '../../src/utils/ssh-config.js';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** Ключ лаборатории — создаётся scripts/lab-up.sh, в репозиторий не попадает */
+export const LAB_KEY = join(REPO_ROOT, '.lab', 'key');
+
+/** Сервер лаборатории */
+export interface LabServer {
+  /** Имя для заголовка теста */
+  name: string;
+  port: number;
+}
+
+export const LAB_SERVERS: LabServer[] = [
+  { name: 'alpine/BusyBox', port: 2231 },
+  { name: 'debian/dash', port: 2232 },
+];
+
+/** Строгий режим: отсутствие лаборатории — падение, а не пропуск */
+export const LAB_REQUIRED = process.env.SSH_MCP_LIVE === '1';
+
+/**
+ * Сокет мультиплексирования упирается в 104 байта, поэтому каталог
+ * управления держим коротким — длинный путь ломает ssh с кодом 255.
+ */
+export const LAB_CONTROL_DIR = '/tmp/mcp-lab-ctl';
+
+export function labConfig(server: LabServer, username = 'root'): SSHConfig {
+  return {
+    host: '127.0.0.1',
+    port: server.port,
+    username,
+    privateKeyPath: LAB_KEY,
+    strictHostKeyChecking: 'no',
+    ignoreUserConfig: true,
+  };
+}
+
+/** Отвечает ли порт — дешёвая проба, чтобы обычный прогон не ждал таймаутов */
+function portOpen(port: number, timeoutMs = 300): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect({ host: '127.0.0.1', port });
+    const finish = (open: boolean) => {
+      socket.destroy();
+      resolve(open);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+/** Почему лаборатория недоступна, или null если всё на месте */
+export async function labUnavailableReason(): Promise<string | null> {
+  if (!existsSync(LAB_KEY)) return `нет ключа ${LAB_KEY}`;
+
+  for (const server of LAB_SERVERS) {
+    if (!(await portOpen(server.port))) return `порт ${server.port} (${server.name}) молчит`;
+  }
+
+  return null;
+}

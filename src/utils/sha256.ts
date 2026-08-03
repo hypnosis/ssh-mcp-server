@@ -60,6 +60,48 @@ export function parseRemoteSha256(stdout: string): string {
 }
 
 /**
+ * Проверка целой пачки файлов одной командой.
+ *
+ * Манифест приходит на stdin, поэтому длина списка не упирается в лимит
+ * командной строки, а на каталог из сотни файлов уходит один запуск вместо ста.
+ */
+export const SHA256_BATCH_CHECK_COMMAND =
+  `if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --quiet -; ` +
+  `else echo NO_SHA256_TOOL; fi`;
+
+/**
+ * Собрать манифест для `sha256sum -c`.
+ *
+ * Формат coreutils: `<hex>␣␣<path>`. Имя с обратным слэшем или переводом
+ * строки записывается в экранированном виде, а вся строка помечается ведущим
+ * `\` — иначе такой файл разорвал бы манифест на две строки.
+ */
+export function buildSha256Manifest(
+  entries: Array<{ hash: string; path: string }>
+): string {
+  return entries
+    .map(({ hash, path }) => {
+      if (!/[\\\n]/.test(path)) return `${hash}  ${path}`;
+      const escaped = path.replace(/\\/g, '\\\\').replace(/\n/g, '\\n');
+      return `\\${hash}  ${escaped}`;
+    })
+    .join('\n')
+    .concat('\n');
+}
+
+/**
+ * Пути файлов, не прошедших проверку: строки вида `<path>: FAILED`.
+ * Имена возвращаются как есть — экранирование coreutils не разворачивается.
+ */
+export function parseSha256CheckFailures(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((line) => /^(.*): FAILED(?: open or read)?$/.exec(line.trim()))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => match[1]);
+}
+
+/**
  * Get size of a local file
  */
 export async function localFileSize(localPath: string): Promise<number> {

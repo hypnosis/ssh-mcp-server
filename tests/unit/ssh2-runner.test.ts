@@ -262,6 +262,27 @@ describe('Ssh2Runner: специфика бэкенда', () => {
     }
   });
 
+  it('несозданные подкаталоги обрываются понятной ошибкой, а не отказом передачи', async () => {
+    const runner = new Ssh2Runner(CONFIG, 'production');
+    const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-updir-fail-'));
+    writeFileSync(join(localDir, 'app.js'), 'run();', 'utf8');
+
+    // Первый (и единственный) вызов — тот самый mkdir дерева каталогов
+    scenarios.push({ kind: 'success', exitCode: 1, stderr: 'mkdir: Permission denied' });
+    const fastPut = vi.fn();
+    poolMock.getSftp.mockResolvedValue({ fastPut, end: vi.fn() });
+
+    try {
+      await expect(runner.upload(localDir, '/srv/app', { recursive: true })).rejects.toThrow(
+        /Permission denied/
+      );
+      // До передачи дело не дошло: лить файлы в несуществующий каталог бессмысленно
+      expect(fastPut).not.toHaveBeenCalled();
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
   it('скачивает каталог целиком, повторяя структуру локально', async () => {
     const runner = new Ssh2Runner(CONFIG, 'production');
     const localDir = join(mkdtempSync(join(tmpdir(), 'ssh-mcp-downdir-')), 'target');

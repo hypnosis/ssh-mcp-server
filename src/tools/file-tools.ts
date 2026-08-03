@@ -5,12 +5,13 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
-import { ConnectionPool } from '../managers/connection-pool.js';
+import { getRunner } from '../runner/get-runner.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { createPathValidator } from '../utils/path-validator.js';
 import {
@@ -530,10 +531,8 @@ export class FileTools {
         ? buildTempPath(file.path)
         : file.path;
 
-    const pool = ConnectionPool.getInstance();
-    const sftp = await pool.getSftp(profileName, sshConfig);
     try {
-      // Ensure parent dir on remote (best-effort, non-sudo path only)
+      // Ensure parent dir on remote (non-sudo path only)
       if (!file.sudo) {
         const parent = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
         if (parent && parent !== '/') {
@@ -544,15 +543,10 @@ export class FileTools {
           );
         }
       }
-      await new Promise<void>((resolve, reject) => {
-        sftp.fastPut(localFile, remoteTarget, { concurrency: 4, chunkSize: 32768 }, (err) => {
-          if (err) reject(new Error(`SFTP fastPut failed: ${err.message}`));
-          else resolve();
-        });
-      });
+
+      const runner = await getRunner(sshConfig, profileName);
+      await runner.upload(localFile, remoteTarget);
     } finally {
-      sftp.end();
-      pool.releaseClient(profileName);
       try { rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
 
@@ -643,8 +637,8 @@ export class FileTools {
   }
 
   /**
-   * Read a file via SFTP into a Buffer and return base64.
-   * Used when binary=true to avoid utf8 corruption from `cat` over PTY.
+   * Забрать файл целиком и вернуть base64.
+   * Нужно при binary=true: `cat` через PTY портит байты вне utf8.
    */
   private async readFileBinary(
     sshConfig: any,
@@ -653,26 +647,13 @@ export class FileTools {
   ): Promise<string> {
     const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-read-'));
     const localFile = join(localDir, 'payload.bin');
-    const pool = ConnectionPool.getInstance();
-    const sftp = await pool.getSftp(profileName, sshConfig);
     try {
-      await new Promise<void>((resolve, reject) => {
-        sftp.fastGet(
-          remotePath,
-          localFile,
-          { concurrency: 4, chunkSize: 32768 },
-          (err) => {
-            if (err) reject(new Error(`SFTP fastGet failed: ${err.message}`));
-            else resolve();
-          }
-        );
-      });
-      const buf = (await import('fs/promises')).readFile(localFile);
-      const data = await buf;
+      const runner = await getRunner(sshConfig, profileName);
+      await runner.download(remotePath, localFile);
+
+      const data = await readFile(localFile);
       return data.toString('base64');
     } finally {
-      sftp.end();
-      pool.releaseClient(profileName);
       try { rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   }

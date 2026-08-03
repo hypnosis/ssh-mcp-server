@@ -21,6 +21,8 @@
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit/",
+    "test:live": "SSH_MCP_LIVE=1 vitest run tests/live/",
+    "lab:up": "bash scripts/lab-up.sh",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepublishOnly": "npm run build && npm run test:unit",

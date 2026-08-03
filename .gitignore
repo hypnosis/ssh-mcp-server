@@ -61,6 +61,9 @@ tmp/
 temp/
 *.tmp
 
+# Лаборатория живых тестов: ключ и локальное состояние контейнеров
+.lab/
+
 # SSH profiles (never commit!)
 *.profiles.json
 ssh-profiles.json

@@ -121,3 +121,54 @@ describe('точка монтирования', () => {
     await expect(ops().isSeparateFilesystem('/srv/data')).resolves.toBe(false);
   });
 });
+
+describe('поиск следов прошлых операций', () => {
+  it('ищет только по нашим приставкам и только в самом каталоге', async () => {
+    executeMock.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+
+    await ops().listArtifacts!('/srv');
+
+    const command = lastCommand(executeMock);
+    // Приставки наши, поэтому в шаблон они попадают безопасно; имя цели
+    // пользовательское и в шаблон не идёт вовсе — иначе `*` или `[` в нём
+    // превратились бы в чужой шаблон
+    expect(command).toContain(`-maxdepth 1`);
+    expect(command).toContain(`-name '.upload-*'`);
+    expect(command).toContain(`-name '.bak-*'`);
+    expect(command).toContain(`'/srv'`);
+  });
+
+  it('читает построчно и не спотыкается о пробелы в именах', async () => {
+    executeMock.mockResolvedValue({
+      stdout: "/srv/.bak-aabbccddeeff.site conf\n/srv/.upload-112233445566.app\n\n",
+      stderr: '',
+      exitCode: 0,
+    });
+
+    const found = await ops().listArtifacts!('/srv');
+
+    expect(found).toEqual([
+      '/srv/.bak-aabbccddeeff.site conf',
+      '/srv/.upload-112233445566.app',
+    ]);
+  });
+
+  it('ненулевой код — просто «ничего не нашли», а не отказ операции', async () => {
+    executeMock.mockResolvedValue({
+      stdout: '',
+      stderr: 'find: /srv: No such file or directory',
+      exitCode: 1,
+    });
+
+    await expect(ops().listArtifacts!('/srv')).resolves.toEqual([]);
+  });
+
+  it('поиск не меняет ничего на сервере: только чтение', async () => {
+    executeMock.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+
+    await ops().listArtifacts!('/srv');
+
+    expect(executeCheckedMock).not.toHaveBeenCalled();
+    expect(lastCommand(executeMock)).not.toMatch(/rm |mv |-delete|-exec/);
+  });
+});

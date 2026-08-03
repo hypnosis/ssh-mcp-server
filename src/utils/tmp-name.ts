@@ -58,6 +58,25 @@ export function buildBackupPath(path: string): string {
   return `${parent}/.bak-${rand}.${base}`;
 }
 
+/** Приставки временных имён — по ним узнаём свои следы рядом с целью */
+export const ARTIFACT_PREFIXES = ['.upload-', '.bak-'];
+
+/**
+ * Похоже ли имя на наш временный путь для этой цели.
+ *
+ * Проверка нужна точная: рядом лежат и чужие скрытые файлы, и наши же
+ * временные пути от **другой** цели в том же каталоге. Назвать чужое своим —
+ * значит посоветовать человеку удалить не то.
+ */
+export function isArtifactOf(name: string, base: string): boolean {
+  return ARTIFACT_PREFIXES.some((prefix) => {
+    if (!name.startsWith(prefix)) return false;
+    const rest = name.slice(prefix.length);
+    const dot = rest.indexOf('.');
+    return dot > 0 && /^[0-9a-f]+$/.test(rest.slice(0, dot)) && rest.slice(dot + 1) === base;
+  });
+}
+
 /**
  * Build a remote /tmp staging path used for sudo uploads
  * (sftp under user, then sudo install/move into the protected dir).

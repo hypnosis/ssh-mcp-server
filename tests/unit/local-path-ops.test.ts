@@ -168,3 +168,36 @@ describe('тип цели', () => {
     ).rejects.toThrow(/symbolic link/i);
   });
 });
+
+describe('следы прошлых операций на локальной стороне', () => {
+  it('перечисляются, называются в ответе и остаются на диске', async () => {
+    const leftover = join(dir, '.upload-aabbccddeeff.report.txt');
+    writeFileSync(target, 'прежний отчёт', 'utf8');
+    writeFileSync(leftover, 'недокачанное', 'utf8');
+
+    const outcome = await install(localPathOps, {
+      finalPath: target,
+      kind: 'file',
+      stage: async (staging: string) => writeFileSync(staging, 'новый отчёт', 'utf8'),
+    });
+
+    expect(outcome.warnings.join(' ')).toContain(leftover);
+    expect(readFileSync(target, 'utf8')).toBe('новый отчёт');
+    // След прошлой операции не наш, чтобы его убирать
+    expect(existsSync(leftover)).toBe(true);
+    expect(readFileSync(leftover, 'utf8')).toBe('недокачанное');
+  });
+
+  it('чужие файлы рядом следами не считаются', async () => {
+    writeFileSync(join(dir, '.upload-aabbccddeeff.other.txt'), 'от другой цели', 'utf8');
+    writeFileSync(join(dir, 'report.txt.bak'), 'чужая копия', 'utf8');
+
+    const outcome = await install(localPathOps, {
+      finalPath: target,
+      kind: 'file',
+      stage: async (staging: string) => writeFileSync(staging, 'новый отчёт', 'utf8'),
+    });
+
+    expect(outcome.warnings).toEqual([]);
+  });
+});

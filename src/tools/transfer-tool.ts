@@ -12,17 +12,19 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
-import { SFTPWrapper, FileEntryWithStats } from 'ssh2';
 import { stat, readdir } from 'fs/promises';
-import { join, posix as posixPath, basename } from 'path';
+import { join, posix as posixPath } from 'path';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
-import { ConnectionPool } from '../managers/connection-pool.js';
+import { getRunner } from '../runner/get-runner.js';
 import {
   sha256OfFile,
   buildRemoteSha256Command,
   parseRemoteSha256,
+  buildSha256Manifest,
+  parseSha256CheckFailures,
+  SHA256_BATCH_CHECK_COMMAND,
 } from '../utils/sha256.js';
 import {
   buildTempPath,
@@ -249,10 +251,13 @@ export class TransferTool {
       lines.push(`  files: ${(r as UploadDirResult).files_uploaded}`);
     }
     lines.push(`  bytes: ${r.bytes}`);
-    if (r.verified) {
+    if (!r.verified) {
+      lines.push(`  sha256: skipped`);
+    } else if (r.sha256) {
       lines.push(`  sha256: ${r.sha256} (verified)`);
     } else {
-      lines.push(`  sha256: skipped`);
+      // У каталога общего хэша нет — сошлись все файлы разом
+      lines.push(`  sha256: verified (${(r as UploadDirResult).files_uploaded} files)`);
     }
     lines.push(`  atomic: ${r.atomic}`);
     lines.push(`  sudo: ${r.sudo}`);
@@ -291,7 +296,7 @@ export class TransferTool {
     // sudo path: SFTP into /tmp, then `sudo install` into place
     if (opts.sudo) {
       const stage = buildSudoStagingPath();
-      await this.sftpPutFile(sshConfig, profileName, localPath, stage, opts);
+      await this.putFile(sshConfig, profileName, localPath, stage);
       try {
         await this.sudoInstallFile(sshConfig, profileName, stage, remotePath, opts);
       } finally {
@@ -323,7 +328,7 @@ export class TransferTool {
     const target = opts.atomic ? buildTempPath(remotePath) : remotePath;
 
     try {
-      await this.sftpPutFile(sshConfig, profileName, localPath, target, opts);
+      await this.putFile(sshConfig, profileName, localPath, target);
 
       if (opts.verify) {
         const localHash = await localHashPromise!;
@@ -381,50 +386,29 @@ export class TransferTool {
     }
   }
 
-  private async sftpPutFile(
+  /**
+   * Положить один файл на сервер.
+   *
+   * Родительский каталог создаётся заранее и обязан создаться: раньше неудача
+   * здесь молчала, и передача падала дальше на невнятном «No such file».
+   */
+  private async putFile(
     sshConfig: any,
     profileName: string,
     localPath: string,
-    remotePath: string,
-    opts: { concurrency: number }
+    remotePath: string
   ): Promise<void> {
-    const pool = ConnectionPool.getInstance();
-    const sftp = await pool.getSftp(profileName, sshConfig);
-    try {
-      // Ensure parent dir exists (best-effort)
-      const parent = posixPath.dirname(remotePath);
-      if (parent && parent !== '/' && parent !== '.') {
-        await new Promise<void>((resolve) => {
-          sftp.stat(parent, (err) => {
-            if (err) {
-              this.executor
-                .execute(sshConfig, `mkdir -p ${shellQuote(parent)}`, {
-                  profileName,
-                })
-                .then(() => resolve())
-                .catch(() => resolve());
-            } else {
-              resolve();
-            }
-          });
-        });
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        sftp.fastPut(
-          localPath,
-          remotePath,
-          { concurrency: opts.concurrency, chunkSize: 32768 },
-          (err) => {
-            if (err) reject(new Error(`SFTP fastPut failed: ${err.message}`));
-            else resolve();
-          }
-        );
-      });
-    } finally {
-      sftp.end();
-      pool.releaseClient(profileName);
+    const parent = posixPath.dirname(remotePath);
+    if (parent && parent !== '/' && parent !== '.') {
+      await this.executor.executeChecked(
+        sshConfig,
+        `mkdir -p ${shellQuote(parent)}`,
+        { profileName }
+      );
     }
+
+    const runner = await getRunner(sshConfig, profileName);
+    await runner.upload(localPath, remotePath);
   }
 
   private async sudoInstallFile(
@@ -503,6 +487,43 @@ export class TransferTool {
     return actual === expected.toLowerCase();
   }
 
+  /**
+   * Проверить пачку файлов одной командой.
+   *
+   * Возвращает false, если на сервере нечем считать хэши, и бросает, если
+   * хотя бы один файл не сошёлся — с перечислением, какие именно.
+   */
+  private async verifyBatch(
+    sshConfig: any,
+    profileName: string,
+    entries: Array<{ hash: string; path: string }>
+  ): Promise<boolean> {
+    if (entries.length === 0) return false;
+
+    const r = await this.executor.execute(sshConfig, SHA256_BATCH_CHECK_COMMAND, {
+      profileName,
+      stdin: buildSha256Manifest(entries),
+      idempotent: true,
+    });
+
+    if (r.stdout.includes('NO_SHA256_TOOL')) {
+      logger.warn(`[Transfer] sha256sum not found on remote — verify skipped`);
+      return false;
+    }
+
+    if (r.exitCode !== 0) {
+      const failed = parseSha256CheckFailures(r.stdout);
+      if (failed.length > 0) {
+        throw new Error(`sha256 mismatch for ${failed.length} file(s): ${failed.join(', ')}`);
+      }
+      throw new Error(
+        `Failed to verify ${entries.length} file(s): ${r.stderr.trim() || `exit code ${r.exitCode}`}`
+      );
+    }
+
+    return true;
+  }
+
   // ---------------------------------------------------------------------------
   // Directory upload
   // ---------------------------------------------------------------------------
@@ -554,41 +575,28 @@ export class TransferTool {
     );
 
     let totalBytes = 0;
+    let verified = false;
     try {
-      // Upload files with bounded concurrency
-      await this.runWithConcurrency(files, opts.concurrency, async (rel) => {
-        const local = join(localDir, rel);
-        const remote = posixPath.join(stagingDir, rel);
-        const fileStat = await stat(local);
-        totalBytes += fileStat.size;
+      for (const rel of files) {
+        totalBytes += (await stat(join(localDir, rel))).size;
+      }
 
-        const parent = posixPath.dirname(remote);
-        if (parent && parent !== stagingDir) {
-          await this.executor.executeChecked(
-            sshConfig,
-            `mkdir -p ${shellQuote(parent)}`,
-            { profileName }
-          );
-        }
+      // Дерево уезжает целиком: подкаталоги создаёт транспорт
+      const runner = await getRunner(sshConfig, profileName);
+      await runner.upload(localDir, stagingDir, { recursive: true });
 
-        await this.sftpPutFile(sshConfig, profileName, local, remote, {
-          concurrency: 1, // per-file inner concurrency
-        });
-
-        if (opts.verify) {
-          const expected = await sha256OfFile(local);
-          const ok = await this.verifySha256(
-            sshConfig,
-            profileName,
-            remote,
-            expected,
-            false
-          );
-          if (!ok) {
-            throw new Error(`sha256 mismatch for ${rel}`);
-          }
-        }
-      });
+      if (opts.verify) {
+        verified = await this.verifyBatch(
+          sshConfig,
+          profileName,
+          await Promise.all(
+            files.map(async (rel) => ({
+              hash: await sha256OfFile(join(localDir, rel)),
+              path: posixPath.join(stagingDir, rel),
+            }))
+          )
+        );
+      }
 
       // Replace target dir atomically (best-effort)
       if (opts.atomic) {
@@ -615,7 +623,7 @@ export class TransferTool {
       return {
         remote_path: finalDir,
         bytes: totalBytes,
-        verified: opts.verify,
+        verified,
         atomic: opts.atomic,
         sudo: false,
         files_uploaded: files.length,
@@ -653,25 +661,6 @@ export class TransferTool {
     return out;
   }
 
-  private async runWithConcurrency<T>(
-    items: T[],
-    concurrency: number,
-    worker: (item: T) => Promise<void>
-  ): Promise<void> {
-    const queue = [...items];
-    const runners: Promise<void>[] = [];
-    const next = async (): Promise<void> => {
-      while (queue.length > 0) {
-        const item = queue.shift()!;
-        await worker(item);
-      }
-    };
-    for (let i = 0; i < Math.min(concurrency, items.length); i++) {
-      runners.push(next());
-    }
-    await Promise.all(runners);
-  }
-
   // ---------------------------------------------------------------------------
   // ssh_download
   // ---------------------------------------------------------------------------
@@ -692,21 +681,23 @@ export class TransferTool {
       (await this.isRemoteDir(sshConfig, profileName, args.remote_path));
 
     if (isDir) {
-      const count = await this.downloadDirectory(
+      const result = await this.downloadDirectory(
         sshConfig,
         profileName,
         args.remote_path,
         args.local_path,
-        {
-          verify: args.verify !== false,
-          concurrency: args.concurrency || 4,
-        }
+        { verify: args.verify !== false }
       );
+      const verdict = result.verified
+        ? `verified (${result.files} files)`
+        : 'skipped';
       return {
         content: [
           {
             type: 'text',
-            text: `✓ Downloaded directory: ${args.remote_path} -> ${args.local_path}\n  files: ${count}`,
+            text:
+              `✓ Downloaded directory: ${args.remote_path} -> ${args.local_path}\n` +
+              `  files: ${result.files}\n  sha256: ${verdict}`,
           },
         ],
       };
@@ -717,10 +708,7 @@ export class TransferTool {
       profileName,
       args.remote_path,
       args.local_path,
-      {
-        verify: args.verify !== false,
-        concurrency: args.concurrency || 4,
-      }
+      { verify: args.verify !== false }
     );
     return {
       content: [
@@ -750,30 +738,13 @@ export class TransferTool {
     profileName: string,
     remotePath: string,
     localPath: string,
-    opts: { verify: boolean; concurrency: number }
+    opts: { verify: boolean }
   ): Promise<number> {
-    const pool = ConnectionPool.getInstance();
-    const sftp = await pool.getSftp(profileName, sshConfig);
-    let bytes = 0;
-    try {
-      await new Promise<void>((resolve, reject) => {
-        sftp.fastGet(
-          remotePath,
-          localPath,
-          { concurrency: opts.concurrency, chunkSize: 32768 },
-          (err) => {
-            if (err) reject(new Error(`SFTP fastGet failed: ${err.message}`));
-            else resolve();
-          }
-        );
-      });
-    } finally {
-      sftp.end();
-      pool.releaseClient(profileName);
-    }
+    const runner = await getRunner(sshConfig, profileName);
+    await runner.download(remotePath, localPath, {});
 
     const localStats = await stat(localPath);
-    bytes = localStats.size;
+    const bytes = localStats.size;
 
     if (opts.verify) {
       const localHash = await sha256OfFile(localPath);
@@ -792,64 +763,38 @@ export class TransferTool {
     return bytes;
   }
 
+  /**
+   * Скачать каталог целиком.
+   *
+   * Обход удалённого дерева теперь делает транспорт, поэтому здесь остаётся
+   * только пересчитать полученное и, если просили, сверить хэши — раньше
+   * verify для каталога молча ничего не делал.
+   */
   private async downloadDirectory(
     sshConfig: any,
     profileName: string,
     remoteDir: string,
     localDir: string,
-    opts: { verify: boolean; concurrency: number }
-  ): Promise<number> {
-    const pool = ConnectionPool.getInstance();
-    const sftp = await pool.getSftp(profileName, sshConfig);
-    let count = 0;
-    try {
-      // Build remote file list via SFTP recursive listing
-      const files: string[] = [];
-      const walk = async (rel: string) => {
-        const abs = rel ? posixPath.join(remoteDir, rel) : remoteDir;
-        const entries = await new Promise<FileEntryWithStats[]>(
-          (resolve, reject) => {
-            sftp.readdir(abs, (err, list) => {
-              if (err) reject(err);
-              else resolve(list);
-            });
-          }
-        );
-        for (const e of entries) {
-          const childRel = rel ? `${rel}/${e.filename}` : e.filename;
-          if (e.attrs.isDirectory()) {
-            await walk(childRel);
-          } else if (e.attrs.isFile()) {
-            files.push(childRel);
-          }
-        }
-      };
-      await walk('');
-      count = files.length;
+    opts: { verify: boolean }
+  ): Promise<{ files: number; verified: boolean }> {
+    const runner = await getRunner(sshConfig, profileName);
+    await runner.download(remoteDir, localDir, { recursive: true });
 
-      const { mkdir } = await import('fs/promises');
-      await mkdir(localDir, { recursive: true });
-      for (const rel of files) {
-        const localFile = join(localDir, rel);
-        const remoteFile = posixPath.join(remoteDir, rel);
-        const parent = join(localDir, posixPath.dirname(rel));
-        await mkdir(parent, { recursive: true });
-        await new Promise<void>((resolve, reject) => {
-          sftp.fastGet(
-            remoteFile,
-            localFile,
-            { concurrency: opts.concurrency, chunkSize: 32768 },
-            (err) => {
-              if (err) reject(new Error(`fastGet ${rel}: ${err.message}`));
-              else resolve();
-            }
-          );
-        });
-      }
-    } finally {
-      sftp.end();
-      pool.releaseClient(profileName);
-    }
-    return count;
+    const files = await this.walkLocalDir(localDir);
+
+    const verified = opts.verify
+      ? await this.verifyBatch(
+          sshConfig,
+          profileName,
+          await Promise.all(
+            files.map(async (rel) => ({
+              hash: await sha256OfFile(join(localDir, rel)),
+              path: posixPath.join(remoteDir, rel),
+            }))
+          )
+        )
+      : false;
+
+    return { files: files.length, verified };
   }
 }

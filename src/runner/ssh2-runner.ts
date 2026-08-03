@@ -252,7 +252,13 @@ export class Ssh2Runner implements CommandRunner {
     }
 
     const quoted = [...directories].map(shellQuote).join(' ');
-    await this.exec(`mkdir -p ${quoted}`, { timeoutMs: options.timeoutMs });
+    const created = await this.exec(`mkdir -p ${quoted}`, { timeoutMs: options.timeoutMs });
+    // Без этой проверки передача упала бы дальше — на «No such file» от fastPut,
+    // где уже не видно, что настоящая причина в правах на каталог
+    if (created.exitCode !== 0) {
+      const detail = created.stderr.trim() || `exit code ${created.exitCode}`;
+      throw new SSHRunnerError(`Failed to create remote directories under ${remoteDir}: ${detail}`);
+    }
 
     await this.withSftp(
       async (sftp) => {

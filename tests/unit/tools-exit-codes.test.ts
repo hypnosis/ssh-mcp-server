@@ -28,22 +28,9 @@ vi.mock('../../src/managers/ssh-executor.js', async (importOriginal) => {
   };
 });
 
-const { sftpMock } = vi.hoisted(() => ({
-  sftpMock: {
-    fastPut: vi.fn((_l: string, _r: string, _o: unknown, cb: (e: Error | null) => void) => cb(null)),
-    fastGet: vi.fn((_r: string, _l: string, _o: unknown, cb: (e: Error | null) => void) => cb(null)),
-    stat: vi.fn((_p: string, cb: (e: Error | null, s?: unknown) => void) => cb(null, {})),
-    end: vi.fn(),
-  },
-}));
-
-vi.mock('../../src/managers/connection-pool.js', () => ({
-  ConnectionPool: {
-    getInstance: () => ({
-      getSftp: async () => sftpMock,
-      releaseClient: vi.fn(),
-    }),
-  },
+// Передача файлов идёт через транспорт; здесь проверяются только команды вокруг неё
+vi.mock('../../src/runner/get-runner.js', () => ({
+  getRunner: async () => ({ upload: vi.fn(), download: vi.fn() }),
 }));
 
 vi.mock('../../src/utils/profile-resolver.js', () => ({

@@ -68,7 +68,10 @@ beforeEach(() => {
   downloadMock.mockResolvedValue(undefined);
 });
 
-describe('ssh_file_write: бинарная запись', () => {
+/** Содержимое выше порога, за которым запись уходит транспортом */
+const BIG = Buffer.alloc(300 * 1024, 0x41);
+
+describe('ssh_file_write: крупное содержимое идёт транспортом', () => {
   it('отдаёт содержимое транспорту и убирает локальный временный файл', async () => {
     let staged: string | undefined;
     let stagedContent: Buffer | undefined;
@@ -82,7 +85,7 @@ describe('ssh_file_write: бинарная запись', () => {
         files: [
           {
             path: '/srv/logo.png',
-            content: Buffer.from('binary-bytes').toString('base64'),
+            content: BIG.toString('base64'),
             binary: true,
           },
         ],
@@ -90,16 +93,30 @@ describe('ssh_file_write: бинарная запись', () => {
     );
 
     expect(uploadMock).toHaveBeenCalledTimes(1);
-    expect(stagedContent?.toString()).toBe('binary-bytes');
+    expect(stagedContent?.equals(BIG)).toBe(true);
     // Временный каталог убирается сразу после передачи
     expect(existsSync(staged!)).toBe(false);
     expect(text).toContain('written successfully');
   });
 
+  it('мелкое двоичное содержимое едет байтами в stdin, без второй передачи', async () => {
+    const bytes = Buffer.from([0x00, 0x1a, 0x7f, 0xff, 0x0a]);
+
+    await textOf(
+      call('ssh_file_write', {
+        files: [{ path: '/srv/small.bin', content: bytes.toString('base64'), binary: true }],
+      })
+    );
+
+    expect(uploadMock).not.toHaveBeenCalled();
+    const write = executeMock.mock.calls.find(([, c]) => (c as string).startsWith('cat >'));
+    expect((write?.[2] as { stdin?: Buffer })?.stdin?.equals(bytes)).toBe(true);
+  });
+
   it('запись кладёт файл на временный путь и заменяет цель переименованием', async () => {
     await textOf(
       call('ssh_file_write', {
-        files: [{ path: '/srv/app.bin', content: 'AAAA', binary: true, atomic: true }],
+        files: [{ path: '/srv/app.bin', content: BIG.toString('base64'), binary: true, atomic: true }],
       })
     );
 
@@ -112,7 +129,9 @@ describe('ssh_file_write: бинарная запись', () => {
   it('sudo-запись передаётся в /tmp, а рядом с целью появляется копией под правами', async () => {
     await textOf(
       call('ssh_file_write', {
-        files: [{ path: '/etc/app.conf', content: 'key = value', sudo: true, atomic: true }],
+        files: [
+          { path: '/etc/app.conf', content: BIG.toString('base64'), binary: true, sudo: true, atomic: true },
+        ],
       })
     );
 
@@ -131,8 +150,8 @@ describe('ssh_file_write: бинарная запись', () => {
     const text = await textOf(
       call('ssh_file_write', {
         files: [
-          { path: '/srv/a.bin', content: 'AAAA', binary: true },
-          { path: '/srv/b.bin', content: 'BBBB', binary: true },
+          { path: '/srv/a.bin', content: BIG.toString('base64'), binary: true },
+          { path: '/srv/b.bin', content: BIG.toString('base64'), binary: true },
         ],
       })
     );

@@ -6,7 +6,7 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { readFile } from 'fs/promises';
-import { join } from 'path';
+import { join, posix as posixPath } from 'path';
 import { tmpdir } from 'os';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -20,6 +20,14 @@ import { install } from '../managers/installer.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
 import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
 import { truncatedReadMessage, withTruncationNote } from '../utils/output-notes.js';
+
+/**
+ * До какого размера содержимое едет прямо в канале команды.
+ *
+ * Выше этой границы файл отдаётся транспорту: держать мегабайты в памяти
+ * процесса и гнать их одним куском незачем, а транспорт умеет их потоком.
+ */
+const INLINE_WRITE_LIMIT = 256 * 1024;
 
 /**
  * File Tools
@@ -366,10 +374,14 @@ export class FileTools {
     // Single file - simple result
     if (files.length === 1) {
       const file = files[0];
-      await this.writeFileRouted(sshConfig, file, profileName);
+      const written = await this.writeFileRouted(sshConfig, file, profileName);
+
+      // Печатается путь, по которому файл оказался на самом деле: при `~` он
+      // отличается от запрошенного, и человек должен видеть настоящий адрес
+      const notes = written.warnings.map((warning) => `\n⚠ ${warning}`).join('');
 
       return {
-        content: [{ type: 'text', text: `File written successfully: ${file.path}` }],
+        content: [{ type: 'text', text: `File written successfully: ${written.path}${notes}` }],
       };
     }
 
@@ -378,15 +390,17 @@ export class FileTools {
       path: string;
       success: boolean;
       bytesWritten: number;
+      warnings?: string[];
       error?: string;
     }> = [];
 
     for (const file of files) {
       try {
-        await this.writeFileRouted(sshConfig, file, profileName);
+        const written = await this.writeFileRouted(sshConfig, file, profileName);
         results.push({
-          path: file.path,
+          path: written.path,
           success: true,
+          warnings: written.warnings,
           bytesWritten: file.binary
             ? Buffer.from(file.content || '', 'base64').length
             : Buffer.byteLength(file.content, 'utf8'),
@@ -407,6 +421,9 @@ export class FileTools {
     for (const result of results) {
       if (result.success) {
         output += `✓ ${result.path} (${result.bytesWritten} bytes)\n`;
+        for (const warning of result.warnings || []) {
+          output += `  ⚠ ${warning}\n`;
+        }
       } else {
         output += `✗ ${result.path}\n`;
         output += `  Error: ${result.error}\n`;
@@ -419,60 +436,17 @@ export class FileTools {
   }
   
   /**
-   * Write file to remote server
-   */
-  private async writeFile(
-    sshConfig: any,
-    path: string,
-    content: string,
-    mode?: string,
-    sudo: boolean = false,
-    profileName?: string
-  ): Promise<void> {
-    // Expand tilde in path
-    const expanded = this.expandRemoteTilde(path);
-    
-    // Escape content for heredoc
-    const escapedContent = content.replace(/'/g, "'\"'\"'");
-    
-    // Build safe path for write
-    let safePath: string;
-    if (expanded.startsWith('$HOME')) {
-      const homePrefix = '$HOME';
-      const restPath = expanded.substring(5);
-      const escapedRest = this.escapeForDoubleQuotes(restPath);
-      safePath = `"${homePrefix}${escapedRest}"`;
-    } else {
-      safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
-    }
-    
-    // Write command via heredoc
-    let command = `cat > ${safePath} << 'SSHEOF'\n${escapedContent}\nSSHEOF`;
-    
-    // Add chmod if permissions specified
-    if (mode) {
-      command += ` && chmod ${mode} ${safePath}`;
-    }
-    
-    const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
-
-    if (result.exitCode !== 0) {
-      throw new Error(`Failed to write file: ${result.stderr || result.stdout}`);
-    }
-  }
-
-  /**
-   * Route a write to either the heredoc fast path or SFTP path,
-   * depending on the per-file flags.
+   * Записать файл на сервер.
    *
-   * SFTP path is taken when ANY of:
-   *  - file.binary === true
-   *  - file.verify === true
-   *  - file.atomic === true
-   *  - utf8 content size > 256KB
+   * Путь один на любое содержимое: данные попадают во временный путь рядом с
+   * целью и встают на место установщиком. Различается только способ наполнения
+   * временного пути — мелкое едет потоком в stdin команды `cat`, крупное и
+   * двоичное отдаётся транспорту.
    *
-   * SFTP path also handles file.sudo via /tmp staging + `sudo install`.
-   * Otherwise the legacy heredoc writer is used (back-compat).
+   * Содержимое не появляется в строке команды никогда. Прежний быстрый путь
+   * вклеивал его в heredoc, и на живых серверах это портило запись: апостроф
+   * превращался в пять символов, строка `SSHEOF` внутри текста обрывала файл,
+   * а его остаток исполнялся как команды.
    */
   private async writeFileRouted(
     sshConfig: any,
@@ -486,54 +460,12 @@ export class FileTools {
       binary?: boolean;
     },
     profileName: string
-  ): Promise<void> {
-    const useSftp =
-      file.binary === true ||
-      file.verify === true ||
-      file.atomic === true ||
-      Buffer.byteLength(file.content || '', 'utf8') > 256 * 1024;
-
-    if (!useSftp) {
-      // Legacy fast path — unchanged behaviour
-      await this.writeFile(
-        sshConfig,
-        file.path,
-        file.content,
-        file.mode,
-        file.sudo || false,
-        profileName
-      );
-      return;
-    }
-
-    await this.writeFileSftp(sshConfig, file, profileName);
-  }
-
-  /**
-   * SFTP write path: writes the buffer to a local temp file, fastPut to remote,
-   * then optional sha256 verify, atomic rename, chmod, and sudo install.
-   */
-  private async writeFileSftp(
-    sshConfig: any,
-    file: {
-      path: string;
-      content: string;
-      mode?: string;
-      sudo?: boolean;
-      verify?: boolean;
-      atomic?: boolean;
-      binary?: boolean;
-    },
-    profileName: string
-  ): Promise<void> {
+  ): Promise<{ path: string; warnings: string[] }> {
     const buf = file.binary
       ? Buffer.from(file.content || '', 'base64')
       : Buffer.from(file.content || '', 'utf8');
 
-    const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-write-'));
-    const localFile = join(localDir, 'payload.bin');
-    writeFileSync(localFile, buf);
-
+    const target = await this.resolveWritePath(sshConfig, profileName, file.path, file.sudo);
     const expectedHash = sha256OfBuffer(buf);
     const ops = remotePathOps({
       executor: this.executor,
@@ -542,71 +474,155 @@ export class FileTools {
       sudo: file.sudo,
     });
 
+    const outcome = await install(ops, {
+      finalPath: target.path,
+      kind: 'file',
+      stage: (staging) =>
+        buf.length > INLINE_WRITE_LIMIT
+          ? this.stageByTransport(sshConfig, profileName, staging, buf, file.sudo)
+          : this.stageByStdin(sshConfig, profileName, staging, buf, file.sudo),
+      verify: async (staging) => {
+        if (!file.verify) return null;
+
+        const result = await verifyRemoteFiles(
+          this.executor,
+          sshConfig,
+          [{ path: staging, hash: expectedHash }],
+          { profileName, sudo: file.sudo }
+        );
+
+        if (result.status === 'mismatched') {
+          return `local=${expectedHash}, remote differs`;
+        }
+
+        // «Проверить нечем» — не то же самое, что испорченная запись:
+        // отказывать здесь значило бы рушить исправную запись на сервере
+        // без sha256sum и openssl
+        if (result.status === 'unavailable') {
+          logger.warn(`[file-tools] verification skipped: ${result.reason}`);
+        }
+
+        return null;
+      },
+      finalize: async (staging) => {
+        if (!file.mode) return;
+        await this.executor.executeChecked(
+          sshConfig,
+          `chmod ${file.mode} -- ${shellQuote(staging)}`,
+          { profileName, sudo: file.sudo }
+        );
+      },
+    });
+
+    return { path: outcome.path, warnings: [...target.warnings, ...outcome.warnings] };
+  }
+
+  /**
+   * Наполнить временный путь потоком в stdin.
+   *
+   * Содержимое идёт байтами по каналу, а не текстом команды, поэтому shell его
+   * не разбирает: ни кавычки, ни границы строк, ни нулевой байт ничего не
+   * значат. Проверено вживую на BusyBox и dash, на обоих бэкендах.
+   */
+  private async stageByStdin(
+    sshConfig: any,
+    profileName: string,
+    staging: string,
+    content: Buffer,
+    sudo?: boolean
+  ): Promise<void> {
+    await this.executor.executeChecked(sshConfig, `cat > ${shellQuote(staging)}`, {
+      profileName,
+      sudo,
+      stdin: content,
+    });
+  }
+
+  /** Наполнить временный путь через транспорт: для крупного и двоичного */
+  private async stageByTransport(
+    sshConfig: any,
+    profileName: string,
+    staging: string,
+    content: Buffer,
+    sudo?: boolean
+  ): Promise<void> {
+    const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-write-'));
+    const localFile = join(localDir, 'payload.bin');
+    writeFileSync(localFile, content);
+
     try {
-      await install(ops, {
-        finalPath: file.path,
-        kind: 'file',
-        stage: async (staging) => {
-          const runner = await getRunner(sshConfig, profileName);
+      const runner = await getRunner(sshConfig, profileName);
 
-          if (!file.sudo) {
-            await runner.upload(localFile, staging);
-            return;
-          }
+      if (!sudo) {
+        await runner.upload(localFile, staging);
+        return;
+      }
 
-          // Под sudo передача идёт от имени пользователя в /tmp, а рядом с целью
-          // копия появляется уже с правами. `install` здесь не годится: он
-          // копирует поверх, то есть уничтожает старое содержимое до того, как
-          // записано новое, — ровно то, чего этот протокол не допускает
-          const handoff = buildSudoStagingPath();
-          await runner.upload(localFile, handoff);
-          try {
-            await this.executor.executeChecked(
-              sshConfig,
-              `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
-              { profileName, sudo: true }
-            );
-          } finally {
-            await this.executor
-              .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, { profileName })
-              .catch(() => undefined);
-          }
-        },
-        verify: async (staging) => {
-          if (!file.verify) return null;
-
-          const outcome = await verifyRemoteFiles(
-            this.executor,
-            sshConfig,
-            [{ path: staging, hash: expectedHash }],
-            { profileName, sudo: file.sudo }
-          );
-
-          if (outcome.status === 'mismatched') {
-            return `local=${expectedHash}, remote differs`;
-          }
-
-          // «Проверить нечем» — не то же самое, что испорченная запись:
-          // отказывать здесь значило бы рушить исправную запись на сервере
-          // без sha256sum и openssl
-          if (outcome.status === 'unavailable') {
-            logger.warn(`[file-tools] verification skipped: ${outcome.reason}`);
-          }
-
-          return null;
-        },
-        finalize: async (staging) => {
-          if (!file.mode) return;
-          await this.executor.executeChecked(
-            sshConfig,
-            `chmod ${file.mode} -- ${shellQuote(staging)}`,
-            { profileName, sudo: file.sudo }
-          );
-        },
-      });
+      // Под sudo передача идёт от имени пользователя в /tmp, а рядом с целью
+      // копия появляется уже с правами. `install` здесь не годится: он
+      // копирует поверх, то есть уничтожает старое содержимое до того, как
+      // записано новое, — ровно то, чего этот протокол не допускает
+      const handoff = buildSudoStagingPath();
+      await runner.upload(localFile, handoff);
+      try {
+        await this.executor.executeChecked(
+          sshConfig,
+          `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
+          { profileName, sudo: true }
+        );
+      } finally {
+        await this.executor
+          .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, { profileName })
+          .catch(() => undefined);
+      }
     } finally {
       try { rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
+  }
+
+  /**
+   * Превратить `~` в настоящий путь до того, как он попадёт в команду.
+   *
+   * Раскрывать тильду на сервере больше нельзя: путь уходит в одинарных
+   * кавычках, где `~` остаётся буквой, и в домашнем каталоге появлялся
+   * настоящий каталог с этим именем. Домашний каталог известен из паспорта —
+   * одна проба за сессию.
+   */
+  private async resolveWritePath(
+    sshConfig: any,
+    profileName: string,
+    path: string,
+    sudo?: boolean
+  ): Promise<{ path: string; warnings: string[] }> {
+    if (!path.startsWith('~')) return { path, warnings: [] };
+
+    if (path !== '~' && !path.startsWith('~/')) {
+      throw new Error(
+        `cannot expand "${path}": another user's home directory is not known here. ` +
+        'Pass an absolute path instead.'
+      );
+    }
+
+    const passport = await this.executor.passport(sshConfig, profileName);
+    if (!passport.home) {
+      throw new Error(
+        `cannot expand "${path}": the server did not report a home directory. ` +
+        'Pass an absolute path instead.'
+      );
+    }
+
+    const expanded = path === '~' ? passport.home : posixPath.join(passport.home, path.slice(2));
+
+    // Под sudo сервер раньше раскрывал тильду сам — уже от имени root, то есть
+    // в /root. Теперь адрес другой, и молчать об этом нельзя: это другой файл
+    const warnings = sudo
+      ? [
+          `"${path}" points at ${expanded} — the home of the login user, not root's. ` +
+          'Pass an absolute path if you meant a different directory.',
+        ]
+      : [];
+
+    return { path: expanded, warnings };
   }
 
   /**

@@ -12,13 +12,14 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
-import { stat, readdir } from 'fs/promises';
+import { stat } from 'fs/promises';
 import { join, posix as posixPath } from 'path';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
 import { sha256OfFile } from '../utils/sha256.js';
+import { listTreeFiles } from '../utils/local-tree.js';
 import { verifyRemoteFiles, type VerifyEntry } from '../managers/remote-verify.js';
 import { install } from '../managers/installer.js';
 import { localPathOps } from '../managers/local-path-ops.js';
@@ -524,8 +525,10 @@ export class TransferTool {
       }
     }
 
-    // Collect local files (relative paths) up front
-    const files = await this.walkLocalDir(localDir);
+    // Дерево считаем так же, как его видит транспорт: по ссылкам он идёт,
+    // на битой и на цикле останавливается — узнать об этом лучше здесь,
+    // до того как часть файлов уедет на сервер
+    const files = await listTreeFiles(localDir);
     if (files.length === 0) {
       throw new Error(`local directory is empty: ${localDir}`);
     }
@@ -587,26 +590,6 @@ export class TransferTool {
       files_uploaded: files.length,
       warnings: outcome.warnings,
     };
-  }
-
-  private async walkLocalDir(root: string): Promise<string[]> {
-    const out: string[] = [];
-    const walk = async (rel: string) => {
-      const abs = rel ? join(root, rel) : root;
-      const entries = await readdir(abs, { withFileTypes: true });
-      for (const e of entries) {
-        const childRel = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) {
-          await walk(childRel);
-        } else if (e.isFile()) {
-          out.push(childRel);
-        }
-        // symlinks intentionally ignored — sftp.fastPut would dereference,
-        // user can request explicit support in a follow-up.
-      }
-    };
-    await walk('');
-    return out;
   }
 
   // ---------------------------------------------------------------------------
@@ -750,7 +733,7 @@ export class TransferTool {
       kind: 'directory',
       stage: async (staging) => {
         await runner.download(remoteDir, staging, { recursive: true });
-        files = await this.walkLocalDir(staging);
+        files = await listTreeFiles(staging);
       },
       verify: async (staging) => {
         if (!opts.verify) return null;

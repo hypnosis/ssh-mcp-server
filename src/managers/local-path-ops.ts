@@ -1,0 +1,51 @@
+/**
+ * Файловые операции установщика на локальной машине
+ *
+ * Нужны скачиванию: сегодня оно пишет прямо в конечный путь пользователя,
+ * и оборванная загрузка оставляет вместо целого файла его начало. Протокол
+ * установки одинаков для обеих сторон, различаются только эти операции.
+ */
+
+import { mkdir, rename, rm, lstat, stat } from 'fs/promises';
+import { dirname } from 'path';
+import type { PathKind, PathOps } from './installer.js';
+
+export const localPathOps: PathOps = {
+  /**
+   * Смотрим на сам путь, а не на то, куда он ведёт: подменить ссылку — значит
+   * либо переписать чужой файл в стороне, либо оставить пользователя без той
+   * связи, ради которой ссылка и создавалась.
+   */
+  async inspect(path: string): Promise<PathKind> {
+    try {
+      const stats = await lstat(path);
+      if (stats.isSymbolicLink()) return 'symlink';
+      return stats.isDirectory() ? 'directory' : 'file';
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+      throw error;
+    }
+  },
+
+  /** Точка монтирования: сам путь и его родитель лежат на разных устройствах */
+  async isSeparateFilesystem(path: string): Promise<boolean> {
+    try {
+      const [own, parent] = await Promise.all([stat(path), stat(dirname(path))]);
+      return own.dev !== parent.dev;
+    } catch {
+      return false;
+    }
+  },
+
+  async ensureParent(path: string): Promise<void> {
+    await mkdir(dirname(path), { recursive: true });
+  },
+
+  async rename(from: string, to: string): Promise<void> {
+    await rename(from, to);
+  },
+
+  async removeTree(path: string): Promise<void> {
+    await rm(path, { recursive: true, force: true });
+  },
+};

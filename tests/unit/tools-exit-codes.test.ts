@@ -49,7 +49,12 @@ const { FileTools } = await import('../../src/tools/file-tools.js');
 function respondWith(table: Array<[RegExp, Partial<SSHExecuteResult>]>): void {
   executeMock.mockImplementation(async (_config: unknown, command: string) => {
     const match = table.find(([pattern]) => pattern.test(command));
-    return { stdout: '', stderr: '', exitCode: 0, ...(match?.[1] ?? {}) };
+    if (match) return { stdout: '', stderr: '', exitCode: 0, ...match[1] };
+    // Разведка типа цели у установщика: по умолчанию путь свободен
+    if (command.includes('SSH_MCP_KIND')) {
+      return { stdout: 'SSH_MCP_KIND_ABSENT\n', stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: '', exitCode: 0 };
   });
 }
 
@@ -200,7 +205,7 @@ describe('передача файлов: неудачный шаг не выда
   });
 
   it('несостоявшееся атомарное переименование — это ошибка загрузки', async () => {
-    respondWith([[/^mv -f/, { exitCode: 1, stderr: 'mv: cannot move: Read-only file system' }]]);
+    respondWith([[/^mv -T/, { exitCode: 1, stderr: 'mv: cannot move: Read-only file system' }]]);
 
     const response = await new TransferTool().handleCall(
       call('ssh_upload', {
@@ -230,9 +235,9 @@ describe('передача файлов: неудачный шаг не выда
     expect(response.content[0].text).toContain('No space left');
   });
 
-  it('несостоявшийся sudo install при записи файла тоже ошибка', async () => {
+  it('несостоявшаяся sudo-копия при записи файла тоже ошибка', async () => {
     respondWith([
-      [/^install /, { exitCode: 1, stderr: "install: cannot create '/etc/app.conf': Permission denied" }],
+      [/^cp -- /, { exitCode: 1, stderr: "cp: cannot create '/etc/app.conf': Permission denied" }],
     ]);
 
     const response = await new FileTools().handleCall(

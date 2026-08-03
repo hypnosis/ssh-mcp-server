@@ -40,6 +40,14 @@ const CONFIG: SSHConfig = {
 };
 
 /**
+ * Канал SFTP: настоящий SFTPWrapper — EventEmitter, и обрыв связи приходит
+ * событием `error` уже после того, как канал открылся.
+ */
+function fakeSftp(methods: Record<string, unknown> = {}): EventEmitter & Record<string, any> {
+  return Object.assign(new EventEmitter(), { end: vi.fn(), ...methods });
+}
+
+/**
  * Канал ssh2: события данных и close, плюс запись в stdin
  */
 class FakeChannel extends EventEmitter {
@@ -168,7 +176,7 @@ describe('Ssh2Runner: специфика бэкенда', () => {
       cb(null)
     );
     const end = vi.fn();
-    poolMock.getSftp.mockResolvedValue({ fastPut, end });
+    poolMock.getSftp.mockResolvedValue(fakeSftp({ fastPut, end }));
 
     await runner.upload('/tmp/local.txt', '/srv/remote.txt');
 
@@ -188,7 +196,7 @@ describe('Ssh2Runner: специфика бэкенда', () => {
       cb(null)
     );
     const end = vi.fn();
-    poolMock.getSftp.mockResolvedValue({ fastGet, end });
+    poolMock.getSftp.mockResolvedValue(fakeSftp({ fastGet, end }));
 
     await runner.download('/srv/remote.txt', '/tmp/local.txt');
 
@@ -248,7 +256,7 @@ describe('Ssh2Runner: специфика бэкенда', () => {
     const fastPut = vi.fn((_l: string, _r: string, _o: unknown, cb: (e: Error | null) => void) =>
       cb(null)
     );
-    poolMock.getSftp.mockResolvedValue({ fastPut, end: vi.fn() });
+    poolMock.getSftp.mockResolvedValue(fakeSftp({ fastPut }));
 
     try {
       await runner.upload(localDir, '/srv/app', { recursive: true });
@@ -270,7 +278,7 @@ describe('Ssh2Runner: специфика бэкенда', () => {
     // Первый (и единственный) вызов — тот самый mkdir дерева каталогов
     scenarios.push({ kind: 'success', exitCode: 1, stderr: 'mkdir: Permission denied' });
     const fastPut = vi.fn();
-    poolMock.getSftp.mockResolvedValue({ fastPut, end: vi.fn() });
+    poolMock.getSftp.mockResolvedValue(fakeSftp({ fastPut }));
 
     try {
       await expect(runner.upload(localDir, '/srv/app', { recursive: true })).rejects.toThrow(
@@ -310,7 +318,7 @@ describe('Ssh2Runner: специфика бэкенда', () => {
     const fastGet = vi.fn((_r: string, _l: string, _o: unknown, cb: (e: Error | null) => void) =>
       cb(null)
     );
-    poolMock.getSftp.mockResolvedValue({ readdir, fastGet, end: vi.fn() });
+    poolMock.getSftp.mockResolvedValue(fakeSftp({ readdir, fastGet }));
 
     try {
       await runner.download('/srv/app', localDir, { recursive: true });
@@ -321,6 +329,21 @@ describe('Ssh2Runner: специфика бэкенда', () => {
     } finally {
       rmSync(localDir, { recursive: true, force: true });
     }
+  });
+
+  it('обрыв канала посреди передачи приходит понятным отказом, а не ожиданием таймаута', async () => {
+    const runner = new Ssh2Runner(CONFIG, 'production');
+    // Колбэк fastPut не позовут никогда: связь оборвалась на середине передачи,
+    // и единственный признак этого — событие на канале
+    const sftp = fakeSftp({ fastPut: vi.fn() });
+    poolMock.getSftp.mockResolvedValue(sftp);
+
+    const transfer = runner.upload('/tmp/local.txt', '/srv/remote.txt', { timeoutMs: 60000 });
+    await new Promise((resolve) => setImmediate(resolve));
+    sftp.emit('error', new Error('Connection reset by peer'));
+
+    await expect(transfer).rejects.toThrow(/Connection reset by peer/);
+    expect(poolMock.releaseClient).toHaveBeenCalledWith('production');
   });
 
   it('сбой открытия канала подаётся как транспортная ошибка', async () => {

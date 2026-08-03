@@ -43,7 +43,12 @@ const { FileTools } = await import('../../src/tools/file-tools.js');
 function respondWith(table: Array<[RegExp, Partial<SSHExecuteResult>]>): void {
   executeMock.mockImplementation(async (_config: unknown, command: string) => {
     const match = table.find(([pattern]) => pattern.test(command));
-    return { stdout: '', stderr: '', exitCode: 0, ...(match?.[1] ?? {}) };
+    if (match) return { stdout: '', stderr: '', exitCode: 0, ...match[1] };
+    // Разведка типа цели у установщика: по умолчанию путь свободен
+    if (command.includes('SSH_MCP_KIND')) {
+      return { stdout: 'SSH_MCP_KIND_ABSENT\n', stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: '', exitCode: 0 };
   });
 }
 
@@ -91,7 +96,7 @@ describe('ssh_file_write: бинарная запись', () => {
     expect(text).toContain('written successfully');
   });
 
-  it('атомарная запись кладёт файл на временный путь и переименовывает', async () => {
+  it('запись кладёт файл на временный путь и заменяет цель переименованием', async () => {
     await textOf(
       call('ssh_file_write', {
         files: [{ path: '/srv/app.bin', content: 'AAAA', binary: true, atomic: true }],
@@ -100,10 +105,11 @@ describe('ssh_file_write: бинарная запись', () => {
 
     const target = uploadMock.mock.calls[0][1] as string;
     expect(target).toMatch(/^\/srv\/\.upload-[0-9a-f]+\.app\.bin$/);
-    expect(executeMock.mock.calls.some(([, c]) => /^mv -f/.test(c as string))).toBe(true);
+    // Именно `-T`: обычный `mv` при занятой цели-каталоге вложил бы файл внутрь
+    expect(executeMock.mock.calls.some(([, c]) => /^mv -T --/.test(c as string))).toBe(true);
   });
 
-  it('sudo-запись стейджится в /tmp и ставится install-ом', async () => {
+  it('sudo-запись передаётся в /tmp, а рядом с целью появляется копией под правами', async () => {
     await textOf(
       call('ssh_file_write', {
         files: [{ path: '/etc/app.conf', content: 'key = value', sudo: true, atomic: true }],
@@ -111,7 +117,12 @@ describe('ssh_file_write: бинарная запись', () => {
     );
 
     expect(uploadMock.mock.calls[0][1] as string).toMatch(/^\/tmp\//);
-    expect(executeMock.mock.calls.some(([, c]) => /^install /.test(c as string))).toBe(true);
+    const commands = executeMock.mock.calls.map(([, c]) => c as string);
+    // `install` копирует поверх цели, то есть стирает старое до записи нового —
+    // поэтому копия делается рядом, а на место встаёт переименованием
+    expect(commands.some((c) => /^install /.test(c))).toBe(false);
+    expect(commands.some((c) => /^cp -- .*\.upload-/.test(c))).toBe(true);
+    expect(commands.some((c) => /^mv -T --/.test(c))).toBe(true);
   });
 
   it('сбой передачи не выдаётся за успешную запись', async () => {

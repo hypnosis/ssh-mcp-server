@@ -27,6 +27,7 @@ const { OpenSshRunner, getOpenSshRunner, runnerKey, configFingerprint, resetRunn
 const { SSHAuthError, SSHCancelledError, SSHTimeoutError, SSHTransportError, SSHRunnerError } =
   await import('../../src/runner/errors.js');
 const { SSH_FAILURE_EXIT_CODE } = await import('../../src/runner/error-classifier.js');
+const { resetPassportCache } = await import('../../src/runner/passport.js');
 import type { RunnerConfig } from '../../src/runner/ssh-args.js';
 import type { SshRuntime } from '../../src/runner/runtime-check.js';
 
@@ -79,11 +80,28 @@ function makeRunner(config: RunnerConfig = CONFIG, runtime: SshRuntime = RUNTIME
   return new OpenSshRunner(config, runtime);
 }
 
+/** Ответ пробы паспорта: по умолчанию обычный сервер с bash и timeout */
+function passportLine(overrides: Record<string, string> = {}): string {
+  const fields: Record<string, string> = {
+    bash: '1',
+    sha256: 'sha256sum',
+    coreutils: 'coreutils',
+    rsync: '0',
+    timeout: '1',
+    install: '1',
+    os: 'Linux',
+    ...overrides,
+  };
+  const pairs = Object.entries(fields).map(([key, value]) => `${key}=${value}`);
+  return `SSH_MCP_PASSPORT ${pairs.join(' ')}\n`;
+}
+
 beforeEach(() => {
   runProcessMock.mockReset();
   detectRuntimeMock.mockReset();
   detectRuntimeMock.mockResolvedValue(RUNTIME);
   resetRunnerCache();
+  resetPassportCache();
 });
 
 describe('OpenSshRunner.exec', () => {
@@ -260,17 +278,17 @@ describe('OpenSshRunner multiplexing', () => {
 describe('OpenSshRunner remote timeout guard', () => {
   it('wraps the command when the server has a timeout utility', async () => {
     runProcessMock
-      .mockResolvedValueOnce(ok({ stdout: 'yes\n' }))
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
       .mockResolvedValueOnce(ok({ stdout: 'done' }));
 
     await makeRunner().exec('long-task', { timeoutMs: 30000 });
 
-    expect(remoteCommand(1)).toBe("timeout 35 sh -c 'long-task'");
+    expect(remoteCommand(1)).toBe("timeout 35 bash -c 'long-task'");
   });
 
   it('leaves the command alone when the server has no timeout utility', async () => {
     runProcessMock
-      .mockResolvedValueOnce(ok({ stdout: 'no\n' }))
+      .mockResolvedValueOnce(ok({ stdout: passportLine({ timeout: '0' }) }))
       .mockResolvedValueOnce(ok({ stdout: 'done' }));
 
     await makeRunner().exec('long-task', { timeoutMs: 30000 });
@@ -278,24 +296,65 @@ describe('OpenSshRunner remote timeout guard', () => {
     expect(remoteCommand(1)).toBe('long-task');
   });
 
+  it('speaks bash when the server has it — the same language both backends promise', async () => {
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine({ bash: '1' }) }))
+      .mockResolvedValueOnce(ok({ stdout: 'done' }));
+
+    await makeRunner().exec('[[ -d /tmp ]] && echo yes', { timeoutMs: 30000 });
+
+    expect(remoteCommand(1)).toContain("bash -c '");
+  });
+
+  it('falls back to sh where bash is missing — BusyBox and friends', async () => {
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine({ bash: '0' }) }))
+      .mockResolvedValueOnce(ok({ stdout: 'done' }));
+
+    await makeRunner().exec('long-task', { timeoutMs: 30000 });
+
+    expect(remoteCommand(1)).toBe("timeout 35 sh -c 'long-task'");
+  });
+
+  it('the passport probe itself is never wrapped — the language is what it is measuring', async () => {
+    runProcessMock.mockResolvedValue(ok({ stdout: passportLine() }));
+
+    await makeRunner().exec('long-task', { timeoutMs: 30000 });
+
+    // Обёртка сторожа всегда стоит в начале команды — её здесь быть не должно
+    expect(remoteCommand(0)).not.toMatch(/^timeout \d+ /);
+    expect(remoteCommand(0)).toMatch(/^sh -c /);
+    expect(remoteCommand(0)).toContain('SSH_MCP_PASSPORT');
+  });
+
   it('quotes the command so shell metacharacters survive the wrapper', async () => {
     runProcessMock
-      .mockResolvedValueOnce(ok({ stdout: 'yes\n' }))
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
       .mockResolvedValueOnce(ok({ stdout: 'done' }));
 
     await makeRunner().exec("echo 'it works'", { timeoutMs: 10000 });
 
-    expect(remoteCommand(1)).toBe(`timeout 15 sh -c 'echo '\\''it works'\\'''`);
+    expect(remoteCommand(1)).toBe(`timeout 15 bash -c 'echo '\\''it works'\\'''`);
   });
 
   it('probes the server only once', async () => {
-    runProcessMock.mockResolvedValue(ok({ stdout: 'yes\n' }));
+    runProcessMock.mockResolvedValue(ok({ stdout: passportLine() }));
     const runner = makeRunner();
 
     await runner.exec('first', { timeoutMs: 5000 });
     await runner.exec('second', { timeoutMs: 5000 });
 
     // Проба + две команды
+    expect(runProcessMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('two runners to the same destination share one probe', async () => {
+    runProcessMock.mockResolvedValue(ok({ stdout: passportLine() }));
+
+    await makeRunner().exec('first', { timeoutMs: 5000 });
+    await makeRunner().exec('second', { timeoutMs: 5000 });
+
+    // Паспорт живёт на назначение, а не на экземпляр транспорта
     expect(runProcessMock).toHaveBeenCalledTimes(3);
   });
 

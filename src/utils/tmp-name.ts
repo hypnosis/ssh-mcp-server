@@ -38,6 +38,27 @@ export function buildStagingDir(remoteDir: string): string {
 }
 
 /**
+ * Имя для отложенной старой копии рядом с целью.
+ *
+ * /var/www/app → /var/www/.bak-<rand>.app
+ *
+ * Случайный суффикс обязателен: с фиксированным `.bak` повторная установка
+ * при оставшейся с прошлой аварии копии перенесла бы боевой каталог внутрь
+ * неё, а следующий шаг штатно удалил бы всё вместе.
+ */
+export function buildBackupPath(path: string): string {
+  const rand = randomBytes(6).toString('hex');
+  const trimmed = path.replace(/\/+$/, '');
+  const lastSlash = trimmed.lastIndexOf('/');
+  if (lastSlash < 0) {
+    return `.bak-${rand}.${trimmed}`;
+  }
+  const parent = trimmed.slice(0, lastSlash);
+  const base = trimmed.slice(lastSlash + 1);
+  return `${parent}/.bak-${rand}.${base}`;
+}
+
+/**
  * Build a remote /tmp staging path used for sudo uploads
  * (sftp under user, then sudo install/move into the protected dir).
  */

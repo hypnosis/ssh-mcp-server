@@ -173,6 +173,17 @@ export class ConnectionPool {
           reject(new Error(`Failed to open SFTP channel: ${err.message}`));
           return;
         }
+
+        // Канал — обычный EventEmitter: событие `error` без единого слушателя
+        // Node превращает в необработанное исключение, то есть в смерть всего
+        // процесса. А приходит оно уже после открытия канала — при обрыве связи
+        // или упоре в лимит сессий сервера.
+        sftp.on('error', (channelError: Error) => {
+          logger.warn(
+            `[Connection Pool] SFTP channel error for profile "${profileName}": ${channelError.message}`
+          );
+        });
+
         resolve(sftp);
       });
     });

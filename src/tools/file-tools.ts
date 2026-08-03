@@ -14,12 +14,12 @@ import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { createPathValidator } from '../utils/path-validator.js';
-import {
-  sha256OfBuffer,
-  buildRemoteSha256Command,
-  parseRemoteSha256,
-} from '../utils/sha256.js';
-import { buildTempPath, shellQuote } from '../utils/tmp-name.js';
+import { sha256OfBuffer } from '../utils/sha256.js';
+import { verifyRemoteFiles } from '../managers/remote-verify.js';
+import { install } from '../managers/installer.js';
+import { remotePathOps } from '../managers/remote-path-ops.js';
+import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
+import { truncatedReadMessage, withTruncationNote } from '../utils/output-notes.js';
 
 /**
  * File Tools
@@ -249,6 +249,11 @@ export class FileTools {
         throw new Error(`Failed to read file: ${result.stderr || result.stdout}`);
       }
 
+      // Часть файла нельзя отдавать как файл: дальше её примут за содержимое
+      if (result.truncated) {
+        throw new Error(`Failed to read file: ${truncatedReadMessage(paths[0])}`);
+      }
+
       return {
         content: [{ type: 'text', text: result.stdout }],
       };
@@ -283,7 +288,15 @@ export class FileTools {
           idempotent: true,
         });
 
-        if (result.exitCode === 0) {
+        if (result.exitCode === 0 && result.truncated) {
+          results.push({
+            path,
+            content: '',
+            size: 0,
+            success: false,
+            error: truncatedReadMessage(path),
+          });
+        } else if (result.exitCode === 0) {
           results.push({
             path,
             content: result.stdout,
@@ -522,117 +535,77 @@ export class FileTools {
     writeFileSync(localFile, buf);
 
     const expectedHash = sha256OfBuffer(buf);
-    const atomic = file.atomic !== false && (file.atomic || file.verify);
-    // For sudo writes we always stage in /tmp, then `sudo install`. atomic flag
-    // is irrelevant in that path because install does an atomic rename itself.
-    const remoteTarget = file.sudo
-      ? `/tmp/.ssh-mcp-write-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      : atomic
-        ? buildTempPath(file.path)
-        : file.path;
+    const ops = remotePathOps({
+      executor: this.executor,
+      config: sshConfig,
+      profileName,
+      sudo: file.sudo,
+    });
 
     try {
-      // Ensure parent dir on remote (non-sudo path only)
-      if (!file.sudo) {
-        const parent = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
-        if (parent && parent !== '/') {
+      await install(ops, {
+        finalPath: file.path,
+        kind: 'file',
+        stage: async (staging) => {
+          const runner = await getRunner(sshConfig, profileName);
+
+          if (!file.sudo) {
+            await runner.upload(localFile, staging);
+            return;
+          }
+
+          // Под sudo передача идёт от имени пользователя в /tmp, а рядом с целью
+          // копия появляется уже с правами. `install` здесь не годится: он
+          // копирует поверх, то есть уничтожает старое содержимое до того, как
+          // записано новое, — ровно то, чего этот протокол не допускает
+          const handoff = buildSudoStagingPath();
+          await runner.upload(localFile, handoff);
+          try {
+            await this.executor.executeChecked(
+              sshConfig,
+              `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
+              { profileName, sudo: true }
+            );
+          } finally {
+            await this.executor
+              .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, { profileName })
+              .catch(() => undefined);
+          }
+        },
+        verify: async (staging) => {
+          if (!file.verify) return null;
+
+          const outcome = await verifyRemoteFiles(
+            this.executor,
+            sshConfig,
+            [{ path: staging, hash: expectedHash }],
+            { profileName, sudo: file.sudo }
+          );
+
+          if (outcome.status === 'mismatched') {
+            return `local=${expectedHash}, remote differs`;
+          }
+
+          // «Проверить нечем» — не то же самое, что испорченная запись:
+          // отказывать здесь значило бы рушить исправную запись на сервере
+          // без sha256sum и openssl
+          if (outcome.status === 'unavailable') {
+            logger.warn(`[file-tools] verification skipped: ${outcome.reason}`);
+          }
+
+          return null;
+        },
+        finalize: async (staging) => {
+          if (!file.mode) return;
           await this.executor.executeChecked(
             sshConfig,
-            `mkdir -p ${shellQuote(parent)}`,
-            { profileName }
+            `chmod ${file.mode} -- ${shellQuote(staging)}`,
+            { profileName, sudo: file.sudo }
           );
-        }
-      }
-
-      const runner = await getRunner(sshConfig, profileName);
-      await runner.upload(localFile, remoteTarget);
+        },
+      });
     } finally {
       try { rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
-    }
-
-    try {
-      if (file.verify) {
-        const cmd = buildRemoteSha256Command(shellQuote(remoteTarget));
-        const r = await this.executor.execute(sshConfig, cmd, {
-          profileName,
-          sudo: file.sudo,
-          idempotent: true,
-        });
-        if (r.stdout.includes('NO_SHA256_TOOL')) {
-          logger.warn(`[file-tools] sha256 tools not available on remote; verify skipped`);
-        } else if (r.exitCode !== 0) {
-          // Проверка не состоялась — это не то же самое, что испорченная запись
-          throw new Error(
-            `Failed to verify ${remoteTarget}: ${r.stderr.trim() || `exit code ${r.exitCode}`}`
-          );
-        } else {
-          const actual = parseRemoteSha256(r.stdout);
-          if (actual !== expectedHash) {
-            await this.executor
-              .execute(sshConfig, `rm -f ${shellQuote(remoteTarget)}`, {
-                profileName,
-                sudo: file.sudo,
-              })
-              .catch(() => undefined);
-            throw new Error(
-              `sha256 mismatch after write: local=${expectedHash}, remote differs`
-            );
-          }
-        }
-      }
-
-      if (file.sudo) {
-        // Move staged file into place
-        const flags: string[] = [];
-        if (file.mode) flags.push(`-m ${file.mode}`);
-        const parent = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
-        if (parent && parent !== '/') {
-          await this.executor.executeChecked(
-            sshConfig,
-            `mkdir -p ${shellQuote(parent)}`,
-            { profileName, sudo: true }
-          );
-        }
-        await this.executor.executeChecked(
-          sshConfig,
-          `install ${flags.join(' ')} ${shellQuote(remoteTarget)} ${shellQuote(file.path)}`,
-          { profileName, sudo: true }
-        );
-        await this.executor
-          .execute(sshConfig, `rm -f ${shellQuote(remoteTarget)}`, { profileName })
-          .catch(() => undefined);
-      } else if (atomic) {
-        await this.executor.executeChecked(
-          sshConfig,
-          `mv -f ${shellQuote(remoteTarget)} ${shellQuote(file.path)}`,
-          { profileName }
-        );
-        if (file.mode) {
-          await this.executor.executeChecked(
-            sshConfig,
-            `chmod ${file.mode} ${shellQuote(file.path)}`,
-            { profileName }
-          );
-        }
-      } else {
-        // Non-atomic, non-sudo: chmod final path if mode set
-        if (file.mode) {
-          await this.executor.executeChecked(
-            sshConfig,
-            `chmod ${file.mode} ${shellQuote(file.path)}`,
-            { profileName }
-          );
-        }
-      }
-    } catch (err) {
-      // best-effort cleanup of staged file
-      await this.executor
-        .execute(sshConfig, `rm -f ${shellQuote(remoteTarget)}`, {
-          profileName,
-          sudo: file.sudo,
-        })
-        .catch(() => undefined);
-      throw err;
     }
   }
 
@@ -708,9 +681,9 @@ export class FileTools {
     if (result.exitCode !== 0) {
       throw new Error(`Failed to list files: ${result.stderr || result.stdout}`);
     }
-    
+
     return {
-      content: [{ type: 'text', text: result.stdout }],
+      content: [{ type: 'text', text: withTruncationNote(result.stdout, result.truncated) }],
     };
   }
   

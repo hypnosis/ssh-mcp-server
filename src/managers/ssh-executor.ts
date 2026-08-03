@@ -7,10 +7,19 @@
  */
 
 import { getRunner } from '../runner/get-runner.js';
+import {
+  getServerPassport,
+  passportKey,
+  PASSPORT_PROBE_COMMAND,
+  type ServerPassport,
+} from '../runner/passport.js';
 import { logger } from '../utils/logger.js';
+import { exitCodeHint } from '../utils/output-notes.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
 const DEFAULT_TIMEOUT_MS = 30000;
+/** Сколько ждём ответа на пробу паспорта */
+const PASSPORT_PROBE_TIMEOUT_MS = 15000;
 
 export interface SSHExecuteOptions {
   /** Command execution timeout (ms) */
@@ -37,6 +46,11 @@ export interface SSHExecuteResult {
   stderr: string;
   /** Exit code */
   exitCode: number;
+  /**
+   * Вывод не поместился в буфер транспорта и показан частично.
+   * Отдавать такой ответ как полный нельзя — он выглядит достоверным.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -86,6 +100,7 @@ export class SSHExecutor {
       stdout: result.stdout,
       stderr: result.stderr,
       exitCode: result.exitCode,
+      truncated: result.truncated,
     };
   }
 
@@ -107,10 +122,34 @@ export class SSHExecutor {
     if (result.exitCode !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
       const shortCommand = command.length > 120 ? `${command.substring(0, 120)}…` : command;
-      throw new Error(`Command failed (exit ${result.exitCode}): ${shortCommand} — ${detail}`);
+      throw new Error(
+        `Command failed (exit ${result.exitCode}): ${shortCommand} — ${detail}` +
+        exitCodeHint(result.exitCode)
+      );
     }
 
     return result;
+  }
+
+  /**
+   * Паспорт сервера: что на нём есть из утилит.
+   *
+   * Проба идёт мимо `execute` прямо в транспорт и без удалённого сторожа.
+   * Иначе вышел бы замкнутый круг: сторож сам спрашивает паспорт, чтобы
+   * выбрать язык команд, и ждал бы пробу, которая ждёт сторожа.
+   *
+   * Ключ кэша общий с транспортом — проба на назначение одна.
+   */
+  async passport(config: SSHConfig, profileName = 'default'): Promise<ServerPassport> {
+    return getServerPassport(passportKey(config), async () => {
+      const runner = await getRunner(config, profileName);
+      const result = await runner.exec(PASSPORT_PROBE_COMMAND, {
+        timeoutMs: PASSPORT_PROBE_TIMEOUT_MS,
+        remoteTimeout: false,
+        idempotent: true,
+      });
+      return result.stdout;
+    });
   }
 
   /**

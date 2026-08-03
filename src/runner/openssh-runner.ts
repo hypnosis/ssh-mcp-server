@@ -18,6 +18,12 @@ import {
   SSHTimeoutError,
   isRetryable,
 } from './errors.js';
+import {
+  getServerPassport,
+  passportKey,
+  PASSPORT_PROBE_COMMAND,
+  type ServerPassport,
+} from './passport.js';
 import { runProcess } from './process.js';
 import {
   assertProfileSupported,
@@ -47,6 +53,8 @@ const DEFAULT_TRANSFER_TIMEOUT_MS = 300000;
 const DEFAULT_CONTROL_TIMEOUT_MS = 5000;
 /** Запас поверх локального таймаута для удалённого сторожа */
 const REMOTE_TIMEOUT_MARGIN_SEC = 5;
+/** Сколько ждём ответа на пробу паспорта */
+const PASSPORT_PROBE_TIMEOUT_MS = 15000;
 /** Пауза перед повтором транспортного сбоя */
 const RETRY_DELAY_MS = 1000;
 
@@ -68,9 +76,9 @@ export class OpenSshRunner implements CommandRunner {
   private lastError?: string;
   /** Первая команда поднимает master; остальные ждут её, чтобы не входить дважды */
   private firstCommandGate?: Promise<void>;
-  /** Есть ли на сервере утилита timeout (проверяется один раз) */
-  private remoteTimeoutAvailable?: boolean;
   private askpassScriptPath?: string;
+  /** Последний прочитанный паспорт — для сообщений, где ждать его нельзя */
+  private knownPassport?: ServerPassport;
 
   constructor(
     private readonly config: RunnerConfig,
@@ -276,7 +284,7 @@ export class OpenSshRunner implements CommandRunner {
     }
 
     if (outcome.timedOut) {
-      const remoteNote = this.remoteTimeoutAvailable
+      const remoteNote = this.knownPassport?.remoteTimeout
         ? ''
         : ' The remote process may still be running: the server has no `timeout` utility ' +
           'to stop it, and closing the channel does not always terminate the command.';
@@ -312,6 +320,11 @@ export class OpenSshRunner implements CommandRunner {
    *
    * Убийство локального ssh закрывает канал, но не обязательно завершает
    * процесс на сервере. Утилита `timeout` доводит дело до конца.
+   *
+   * Язык команд объявлен: bash при его наличии, иначе sh. Раньше здесь всегда
+   * стоял `sh`, а на Debian и Ubuntu это dash — команды с конструкциями bash,
+   * годами работавшие в login-shell, ломались бы после переключения бэкенда,
+   * причём только на части серверов.
    */
   private async applyRemoteTimeout(
     command: string,
@@ -319,36 +332,35 @@ export class OpenSshRunner implements CommandRunner {
     timeoutMs: number
   ): Promise<string> {
     if (options.remoteTimeout === false || !timeoutMs) return command;
-    if (!(await this.hasRemoteTimeout())) return command;
+
+    const passport = await this.passport();
+    if (!passport.remoteTimeout) return command;
 
     const seconds = Math.ceil(timeoutMs / 1000) + REMOTE_TIMEOUT_MARGIN_SEC;
-    return `timeout ${seconds} sh -c ${shellQuote(command)}`;
+    const shell = passport.bash ? 'bash' : 'sh';
+    return `timeout ${seconds} ${shell} -c ${shellQuote(command)}`;
   }
 
-  /** Есть ли на сервере утилита timeout (проверяется один раз за жизнь раннера) */
-  private async hasRemoteTimeout(): Promise<boolean> {
-    if (this.remoteTimeoutAvailable !== undefined) {
-      return this.remoteTimeoutAvailable;
-    }
-
-    try {
+  /**
+   * Паспорт сервера: одна проба за сессию на назначение.
+   *
+   * Сама проба идёт без сторожа — иначе получилась бы курица и яйцо, ведь
+   * язык команд как раз ею и выясняется.
+   */
+  private async passport(): Promise<ServerPassport> {
+    const passport = await getServerPassport(passportKey(this.config), async () => {
       const result = await this.execOnce(
-        'command -v timeout > /dev/null 2>&1 && echo yes || echo no',
-        { timeoutMs: 15000, remoteTimeout: false },
+        PASSPORT_PROBE_COMMAND,
+        { timeoutMs: PASSPORT_PROBE_TIMEOUT_MS, remoteTimeout: false },
         { disableMux: false }
       );
-      this.remoteTimeoutAvailable = result.stdout.trim() === 'yes';
-    } catch {
-      // Проверка — удобство, а не необходимость: её сбой не должен
-      // мешать выполнить саму команду
-      this.remoteTimeoutAvailable = false;
-    }
+      return result.stdout;
+    });
 
-    logger.debug(
-      `[Runner] ${this.destination}: remote timeout utility ` +
-      `${this.remoteTimeoutAvailable ? 'available' : 'not available'}`
-    );
-    return this.remoteTimeoutAvailable;
+    // Запоминаем и у себя: тексту ошибки таймаута паспорт нужен синхронно,
+    // а ждать его там нельзя — сбой мог произойти как раз внутри самой пробы
+    this.knownPassport = passport;
+    return passport;
   }
 
   private async transfer(

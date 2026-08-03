@@ -14,6 +14,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { logger } from './utils/logger.js';
+import { installProcessGuards } from './utils/process-guards.js';
 import { getAvailableProfiles, getDefaultProfile } from './utils/profile-resolver.js';
 import { ExecTool } from './tools/exec-tool.js';
 import { FileTools } from './tools/file-tools.js';
@@ -25,6 +26,9 @@ import { AuditTool } from './tools/audit-tool.js';
 import { ConnectionPool } from './managers/connection-pool.js';
 
 async function main() {
+  // Одна сорвавшаяся операция не должна уносить весь сервер
+  installProcessGuards();
+
   // Get version from package.json
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);

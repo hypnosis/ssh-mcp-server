@@ -8,6 +8,7 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
+import { exitCodeHint, TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
 
 /**
  * Dangerous command patterns
@@ -158,11 +159,19 @@ export class ExecTool {
         
         // Add exit code if not 0
         if (result.exitCode !== 0) {
-          output += `\n\nExit code: ${result.exitCode}`;
+          output += `\n\nExit code: ${result.exitCode}${exitCodeHint(result.exitCode)}`;
         }
-        
+
         return {
-          content: [{ type: 'text', text: output || '(command executed successfully, no output)' }],
+          content: [
+            {
+              type: 'text',
+              text: withTruncationNote(
+                output || '(command executed successfully, no output)',
+                result.truncated
+              ),
+            },
+          ],
         };
       }
       
@@ -172,6 +181,7 @@ export class ExecTool {
         stdout: string;
         stderr: string;
         exitCode: number;
+        truncated: boolean;
       }> = [];
       
       for (const cmd of commands) {
@@ -187,6 +197,7 @@ export class ExecTool {
           stdout: result.stdout,
           stderr: result.stderr,
           exitCode: result.exitCode,
+          truncated: result.truncated,
         });
       }
       
@@ -214,7 +225,13 @@ export class ExecTool {
           output += `STDERR: ${result.stderr}\n`;
         }
         
-        output += `Exit code: ${result.exitCode}\n\n`;
+        output += `Exit code: ${result.exitCode}${exitCodeHint(result.exitCode)}\n`;
+
+        if (result.truncated) {
+          output += `${TRUNCATED_OUTPUT_NOTE}\n`;
+        }
+
+        output += '\n';
       }
       
       return {

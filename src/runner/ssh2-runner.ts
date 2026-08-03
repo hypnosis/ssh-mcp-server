@@ -476,7 +476,17 @@ export class Ssh2Runner implements CommandRunner {
           settled = true;
           clearTimeout(timer);
           options.signal?.removeEventListener('abort', onAbort);
+          sftp.removeListener('error', onChannelError);
           settle();
+        };
+
+        // Обрыв связи посреди передачи приходит событием на канале, и колбэка
+        // fastPut/fastGet после этого может не быть вовсе: без этой ветки
+        // операция ждала бы таймаут целиком, а сам обрыв — при отсутствии
+        // слушателя — унёс бы весь процесс
+        const onChannelError = (error: Error): void => {
+          this.lastError = error.message;
+          finish(() => reject(new SSHRunnerError(`Failed to ${label}: ${error.message}`)));
         };
 
         const timer = setTimeout(() => {
@@ -499,6 +509,7 @@ export class Ssh2Runner implements CommandRunner {
           return;
         }
         options.signal?.addEventListener('abort', onAbort, { once: true });
+        sftp.on('error', onChannelError);
 
         operation(sftp).then(
           () => finish(resolve),

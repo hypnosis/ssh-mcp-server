@@ -9,6 +9,7 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { createPathValidator } from '../utils/path-validator.js';
+import { TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
 
 /**
  * Log Tools
@@ -166,16 +167,19 @@ export class LogTools {
       }
       
       return {
-        content: [{ type: 'text', text: result.stdout || '(empty log)' }],
+        content: [
+          { type: 'text', text: withTruncationNote(result.stdout || '(empty log)', result.truncated) },
+        ],
       };
     }
-    
+
     // Множественные логи - структурированный результат
     const results: Array<{
       path: string;
       lines: string[];
       totalLines: number;
       success: boolean;
+      truncated?: boolean;
       error?: string;
     }> = [];
     
@@ -192,6 +196,7 @@ export class LogTools {
             lines: logLines,
             totalLines: logLines.length,
             success: true,
+            truncated: result.truncated,
           });
         } else {
           results.push({
@@ -219,7 +224,9 @@ export class LogTools {
     for (const result of results) {
       if (result.success) {
         output += `=== ${result.path} (${result.totalLines} lines) ===\n`;
-        output += result.lines.join('\n') + '\n\n';
+        output += result.lines.join('\n') + '\n';
+        if (result.truncated) output += `${TRUNCATED_OUTPUT_NOTE}\n`;
+        output += '\n';
       } else {
         output += `=== ${result.path} (ERROR) ===\n`;
         output += `Error: ${result.error}\n\n`;
@@ -288,16 +295,17 @@ export class LogTools {
       }
       
       return {
-        content: [{ type: 'text', text: result.stdout }],
+        content: [{ type: 'text', text: withTruncationNote(result.stdout, result.truncated) }],
       };
     }
-    
+
     // Множественные логи - структурированный результат
     const results: Array<{
       path: string;
       matches: string;
       matchCount: number;
       success: boolean;
+      truncated?: boolean;
       error?: string;
     }> = [];
     
@@ -315,6 +323,7 @@ export class LogTools {
             matches: result.stdout || '(no matches)',
             matchCount,
             success: true,
+            truncated: result.truncated,
           });
         } else {
           results.push({
@@ -342,7 +351,9 @@ export class LogTools {
     for (const result of results) {
       if (result.success) {
         output += `=== ${result.path} (${result.matchCount} matches) ===\n`;
-        output += result.matches + '\n\n';
+        output += result.matches + '\n';
+        if (result.truncated) output += `${TRUNCATED_OUTPUT_NOTE}\n`;
+        output += '\n';
       } else {
         output += `=== ${result.path} (ERROR) ===\n`;
         output += `Error: ${result.error}\n\n`;

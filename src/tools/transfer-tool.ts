@@ -18,14 +18,11 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
-import {
-  sha256OfFile,
-  buildRemoteSha256Command,
-  parseRemoteSha256,
-  buildSha256Manifest,
-  parseSha256CheckFailures,
-  SHA256_BATCH_CHECK_COMMAND,
-} from '../utils/sha256.js';
+import { sha256OfFile } from '../utils/sha256.js';
+import { verifyRemoteFiles, type VerifyEntry } from '../managers/remote-verify.js';
+import { install } from '../managers/installer.js';
+import { localPathOps } from '../managers/local-path-ops.js';
+import { remotePathOps } from '../managers/remote-path-ops.js';
 import {
   buildTempPath,
   buildStagingDir,
@@ -39,12 +36,26 @@ interface UploadFileResult {
   bytes: number;
   sha256?: string;
   verified: boolean;
+  /** Почему сверка не состоялась — если она не состоялась */
+  verifyNote?: string;
   atomic: boolean;
   sudo: boolean;
+  /** Что случилось уже после того, как данные встали на место */
+  warnings?: string[];
 }
 
 interface UploadDirResult extends UploadFileResult {
   files_uploaded: number;
+}
+
+/**
+ * Дописать к ответу то, что случилось уже после успешной замены.
+ *
+ * Такие вещи нельзя ни выдавать за ошибку (данные на месте), ни глотать:
+ * неубранная старая копия занимает диск, а неприменённые права меняют доступ.
+ */
+function formatWarnings(warnings: string[]): string {
+  return warnings.length > 0 ? `\n  warnings:\n${warnings.map((w) => `    - ${w}`).join('\n')}` : '';
 }
 
 export class TransferTool {
@@ -252,7 +263,7 @@ export class TransferTool {
     }
     lines.push(`  bytes: ${r.bytes}`);
     if (!r.verified) {
-      lines.push(`  sha256: skipped`);
+      lines.push(r.verifyNote ? `  sha256: skipped — ${r.verifyNote}` : `  sha256: skipped`);
     } else if (r.sha256) {
       lines.push(`  sha256: ${r.sha256} (verified)`);
     } else {
@@ -305,85 +316,66 @@ export class TransferTool {
           .execute(sshConfig, `rm -f ${shellQuote(stage)}`, { profileName })
           .catch(() => undefined);
       }
-      const verified = opts.verify
-        ? await this.verifySha256(
+      const verdict = opts.verify
+        ? await this.verify(
             sshConfig,
             profileName,
-            remotePath,
-            await localHashPromise!,
-            true // sudo for read
+            [{ path: remotePath, hash: await localHashPromise! }],
+            'upload',
+            true // читать установленный файл приходится под sudo
           )
-        : false;
+        : { verified: false };
+
       return {
         remote_path: remotePath,
         bytes: localStats.size,
         sha256: opts.verify ? await localHashPromise! : undefined,
-        verified,
+        ...verdict,
         atomic: opts.atomic, // install copies, semantically atomic per file
         sudo: true,
       };
     }
 
-    // Non-sudo path: SFTP directly, optional atomic rename
-    const target = opts.atomic ? buildTempPath(remotePath) : remotePath;
+    // Non-sudo path: через установщик — он же ловит случай «на месте цели
+    // каталог», где прежний `mv -f` молча клал файл внутрь и рапортовал успех
+    const ops = remotePathOps({ executor: this.executor, config: sshConfig, profileName });
+    let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
-    try {
-      await this.putFile(sshConfig, profileName, localPath, target);
-
-      if (opts.verify) {
-        const localHash = await localHashPromise!;
-        const ok = await this.verifySha256(
+    const outcome = await install(ops, {
+      finalPath: remotePath,
+      kind: 'file',
+      stage: async (staging) => {
+        await this.putFile(sshConfig, profileName, localPath, staging);
+      },
+      verify: async (staging) => {
+        if (!opts.verify) return null;
+        verdict = await this.verify(
           sshConfig,
           profileName,
-          target,
-          localHash,
-          false
+          [{ path: staging, hash: await localHashPromise! }],
+          'upload'
         );
-        if (!ok) {
-          // best-effort cleanup
-          await this.executor
-            .execute(sshConfig, `rm -f ${shellQuote(target)}`, { profileName })
-            .catch(() => undefined);
-          throw new Error(
-            `sha256 mismatch after upload: local=${localHash}, remote differs`
-          );
-        }
-      }
-
-      if (opts.atomic) {
-        // atomic rename on the same FS
+        return null;
+      },
+      finalize: async (staging) => {
+        if (!opts.mode) return;
         await this.executor.executeChecked(
           sshConfig,
-          `mv -f ${shellQuote(target)} ${shellQuote(remotePath)}`,
+          `chmod ${opts.mode} -- ${shellQuote(staging)}`,
           { profileName }
         );
-      }
+      },
+    });
 
-      if (opts.mode) {
-        await this.executor.executeChecked(
-          sshConfig,
-          `chmod ${opts.mode} ${shellQuote(remotePath)}`,
-          { profileName }
-        );
-      }
-
-      return {
-        remote_path: remotePath,
-        bytes: localStats.size,
-        sha256: opts.verify ? await localHashPromise! : undefined,
-        verified: opts.verify,
-        atomic: opts.atomic,
-        sudo: false,
-      };
-    } catch (err) {
-      // Cleanup any temp file
-      if (opts.atomic) {
-        await this.executor
-          .execute(sshConfig, `rm -f ${shellQuote(target)}`, { profileName })
-          .catch(() => undefined);
-      }
-      throw err;
-    }
+    return {
+      remote_path: remotePath,
+      bytes: localStats.size,
+      sha256: opts.verify ? await localHashPromise! : undefined,
+      ...verdict,
+      atomic: true,
+      sudo: false,
+      warnings: outcome.warnings,
+    };
   }
 
   /**
@@ -457,71 +449,37 @@ export class TransferTool {
     }
   }
 
-  private async verifySha256(
+  /**
+   * Сверить переданное с исходником.
+   *
+   * Три исхода различаются по-разному: несовпадение — провал передачи (бросаем),
+   * «проверить нечем» — успех с пометкой. Смешивать их нельзя: раньше сервер без
+   * sha256sum давал ту же реакцию, что испорченный файл, и обработчик ошибки шёл
+   * удалять только что записанное.
+   */
+  private async verify(
     sshConfig: any,
     profileName: string,
-    remotePath: string,
-    expected: string,
-    sudo: boolean
-  ): Promise<boolean> {
-    const cmd = buildRemoteSha256Command(shellQuote(remotePath));
-    const r = await this.executor.execute(sshConfig, cmd, {
+    entries: VerifyEntry[],
+    label: string,
+    sudo = false
+  ): Promise<{ verified: boolean; verifyNote?: string }> {
+    const outcome = await verifyRemoteFiles(this.executor, sshConfig, entries, {
       profileName,
       sudo,
-      idempotent: true,
-    });
-    if (r.stdout.includes('NO_SHA256_TOOL')) {
-      logger.warn(
-        `[Transfer] Neither sha256sum nor openssl found on remote — verify skipped`
-      );
-      return false;
-    }
-    // Несостоявшаяся проверка и несовпадение хэшей — разные вещи:
-    // без этой ветки нечитаемый файл выглядел бы как испорченная передача
-    if (r.exitCode !== 0) {
-      throw new Error(
-        `Failed to verify ${remotePath}: ${r.stderr.trim() || `exit code ${r.exitCode}`}`
-      );
-    }
-    const actual = parseRemoteSha256(r.stdout);
-    return actual === expected.toLowerCase();
-  }
-
-  /**
-   * Проверить пачку файлов одной командой.
-   *
-   * Возвращает false, если на сервере нечем считать хэши, и бросает, если
-   * хотя бы один файл не сошёлся — с перечислением, какие именно.
-   */
-  private async verifyBatch(
-    sshConfig: any,
-    profileName: string,
-    entries: Array<{ hash: string; path: string }>
-  ): Promise<boolean> {
-    if (entries.length === 0) return false;
-
-    const r = await this.executor.execute(sshConfig, SHA256_BATCH_CHECK_COMMAND, {
-      profileName,
-      stdin: buildSha256Manifest(entries),
-      idempotent: true,
     });
 
-    if (r.stdout.includes('NO_SHA256_TOOL')) {
-      logger.warn(`[Transfer] sha256sum not found on remote — verify skipped`);
-      return false;
-    }
+    if (outcome.status === 'matched') return { verified: true };
 
-    if (r.exitCode !== 0) {
-      const failed = parseSha256CheckFailures(r.stdout);
-      if (failed.length > 0) {
-        throw new Error(`sha256 mismatch for ${failed.length} file(s): ${failed.join(', ')}`);
-      }
+    if (outcome.status === 'mismatched') {
       throw new Error(
-        `Failed to verify ${entries.length} file(s): ${r.stderr.trim() || `exit code ${r.exitCode}`}`
+        `sha256 mismatch after ${label}: ${outcome.paths.length} file(s) differ — ` +
+        outcome.paths.slice(0, 5).join(', ')
       );
     }
 
-    return true;
+    logger.warn(`[Transfer] verification skipped: ${outcome.reason}`);
+    return { verified: false, verifyNote: outcome.reason };
   }
 
   // ---------------------------------------------------------------------------
@@ -549,7 +507,6 @@ export class TransferTool {
       );
     }
 
-    const stagingDir = opts.atomic ? buildStagingDir(remoteDir) : remoteDir;
     const finalDir = remoteDir;
 
     if (!opts.overwrite) {
@@ -567,78 +524,63 @@ export class TransferTool {
       throw new Error(`local directory is empty: ${localDir}`);
     }
 
-    // Prepare staging dir
-    await this.executor.executeChecked(
-      sshConfig,
-      `mkdir -p ${shellQuote(stagingDir)}`,
-      { profileName }
-    );
-
     let totalBytes = 0;
-    let verified = false;
-    try {
-      for (const rel of files) {
-        totalBytes += (await stat(join(localDir, rel))).size;
-      }
+    for (const rel of files) {
+      totalBytes += (await stat(join(localDir, rel))).size;
+    }
 
-      // Дерево уезжает целиком: подкаталоги создаёт транспорт
-      const runner = await getRunner(sshConfig, profileName);
-      await runner.upload(localDir, stagingDir, { recursive: true });
+    const ops = remotePathOps({ executor: this.executor, config: sshConfig, profileName });
+    let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
-      if (opts.verify) {
-        verified = await this.verifyBatch(
+    // Каталог заменяется только целиком и только через установщик. Раньше здесь
+    // стоял `rm -rf` по боевому пути, а следом отдельной командой `mv`: обрыв
+    // между ними не оставлял на сервере ничего, и обработчик ошибки добивал
+    // остатки. Теперь старое отводится в сторону и удаляется лишь после того,
+    // как новое встало на место.
+    const outcome = await install(ops, {
+      finalPath: finalDir,
+      kind: 'directory',
+      stage: async (staging) => {
+        // Дерево уезжает целиком: подкаталоги создаёт транспорт
+        const runner = await getRunner(sshConfig, profileName);
+        await runner.upload(localDir, staging, { recursive: true });
+      },
+      verify: async (staging) => {
+        if (!opts.verify) return null;
+        verdict = await this.verify(
           sshConfig,
           profileName,
           await Promise.all(
             files.map(async (rel) => ({
               hash: await sha256OfFile(join(localDir, rel)),
-              path: posixPath.join(stagingDir, rel),
+              path: posixPath.join(staging, rel),
             }))
-          )
+          ),
+          'upload'
         );
-      }
-
-      // Replace target dir atomically (best-effort)
-      if (opts.atomic) {
-        // Remove old final if exists, then rename staging
-        const existsCmd = `if [ -e ${shellQuote(finalDir)} ]; then rm -rf ${shellQuote(finalDir)}; fi`;
-        // Уборка обязана удаться: иначе `mv` не заменит каталог,
-        // а вложит перенесённый внутрь существующего
-        await this.executor.executeChecked(sshConfig, existsCmd, { profileName });
+        return null;
+      },
+      finalize: async (staging) => {
+        if (!opts.mode) return;
+        // Права ставятся до замены: иначе дерево какое-то время живёт на
+        // боевом пути с чужим доступом
         await this.executor.executeChecked(
           sshConfig,
-          `mv -f ${shellQuote(stagingDir)} ${shellQuote(finalDir)}`,
+          `chmod -R ${opts.mode} -- ${shellQuote(staging)}`,
           { profileName }
         );
-      }
+      },
+    });
 
-      if (opts.mode) {
-        await this.executor.executeChecked(
-          sshConfig,
-          `chmod -R ${opts.mode} ${shellQuote(finalDir)}`,
-          { profileName }
-        );
-      }
-
-      return {
-        remote_path: finalDir,
-        bytes: totalBytes,
-        verified,
-        atomic: opts.atomic,
-        sudo: false,
-        files_uploaded: files.length,
-      };
-    } catch (err) {
-      // best-effort cleanup
-      if (opts.atomic) {
-        await this.executor
-          .execute(sshConfig, `rm -rf ${shellQuote(stagingDir)}`, {
-            profileName,
-          })
-          .catch(() => undefined);
-      }
-      throw err;
-    }
+    return {
+      remote_path: finalDir,
+      bytes: totalBytes,
+      ...verdict,
+      atomic: true,
+      sudo: false,
+      files_uploaded: files.length,
+      warnings: outcome.warnings,
+    };
   }
 
   private async walkLocalDir(root: string): Promise<string[]> {
@@ -690,31 +632,42 @@ export class TransferTool {
       );
       const verdict = result.verified
         ? `verified (${result.files} files)`
-        : 'skipped';
+        : result.verifyNote
+          ? `skipped — ${result.verifyNote}`
+          : 'skipped';
       return {
         content: [
           {
             type: 'text',
             text:
               `✓ Downloaded directory: ${args.remote_path} -> ${args.local_path}\n` +
-              `  files: ${result.files}\n  sha256: ${verdict}`,
+              `  files: ${result.files}\n  sha256: ${verdict}` +
+              formatWarnings(result.warnings),
           },
         ],
       };
     }
 
-    const bytes = await this.downloadFile(
+    const file = await this.downloadFile(
       sshConfig,
       profileName,
       args.remote_path,
       args.local_path,
       { verify: args.verify !== false }
     );
+    const fileVerdict = file.verified
+      ? 'verified'
+      : file.verifyNote
+        ? `skipped — ${file.verifyNote}`
+        : 'skipped';
     return {
       content: [
         {
           type: 'text',
-          text: `✓ Downloaded file: ${args.remote_path} -> ${args.local_path}\n  bytes: ${bytes}`,
+          text:
+            `✓ Downloaded file: ${args.remote_path} -> ${args.local_path}\n` +
+            `  bytes: ${file.bytes}\n  sha256: ${fileVerdict}` +
+            formatWarnings(file.warnings),
         },
       ],
     };
@@ -739,28 +692,33 @@ export class TransferTool {
     remotePath: string,
     localPath: string,
     opts: { verify: boolean }
-  ): Promise<number> {
+  ): Promise<{ bytes: number; verified: boolean; verifyNote?: string; warnings: string[] }> {
     const runner = await getRunner(sshConfig, profileName);
-    await runner.download(remotePath, localPath, {});
+    let bytes = 0;
+    let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
-    const localStats = await stat(localPath);
-    const bytes = localStats.size;
+    // Файл пользователя заменяется только целым: раньше скачивание писало
+    // прямо в конечный путь, и обрыв оставлял от старого файла огрызок
+    const outcome = await install(localPathOps, {
+      finalPath: localPath,
+      kind: 'file',
+      stage: async (staging) => {
+        await runner.download(remotePath, staging, {});
+        bytes = (await stat(staging)).size;
+      },
+      verify: async (staging) => {
+        if (!opts.verify) return null;
+        verdict = await this.verify(
+          sshConfig,
+          profileName,
+          [{ path: remotePath, hash: await sha256OfFile(staging) }],
+          'download'
+        );
+        return null;
+      },
+    });
 
-    if (opts.verify) {
-      const localHash = await sha256OfFile(localPath);
-      const ok = await this.verifySha256(
-        sshConfig,
-        profileName,
-        remotePath,
-        localHash,
-        false
-      );
-      if (!ok) {
-        throw new Error(`sha256 mismatch after download: ${remotePath}`);
-      }
-    }
-
-    return bytes;
+    return { bytes, ...verdict, warnings: outcome.warnings };
   }
 
   /**
@@ -776,25 +734,35 @@ export class TransferTool {
     remoteDir: string,
     localDir: string,
     opts: { verify: boolean }
-  ): Promise<{ files: number; verified: boolean }> {
+  ): Promise<{ files: number; verified: boolean; verifyNote?: string; warnings: string[] }> {
     const runner = await getRunner(sshConfig, profileName);
-    await runner.download(remoteDir, localDir, { recursive: true });
+    let files: string[] = [];
+    let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
-    const files = await this.walkLocalDir(localDir);
-
-    const verified = opts.verify
-      ? await this.verifyBatch(
+    const outcome = await install(localPathOps, {
+      finalPath: localDir,
+      kind: 'directory',
+      stage: async (staging) => {
+        await runner.download(remoteDir, staging, { recursive: true });
+        files = await this.walkLocalDir(staging);
+      },
+      verify: async (staging) => {
+        if (!opts.verify) return null;
+        verdict = await this.verify(
           sshConfig,
           profileName,
           await Promise.all(
             files.map(async (rel) => ({
-              hash: await sha256OfFile(join(localDir, rel)),
+              hash: await sha256OfFile(join(staging, rel)),
               path: posixPath.join(remoteDir, rel),
             }))
-          )
-        )
-      : false;
+          ),
+          'download'
+        );
+        return null;
+      },
+    });
 
-    return { files: files.length, verified };
+    return { files: files.length, ...verdict, warnings: outcome.warnings };
   }
 }

@@ -96,7 +96,15 @@ describe('SSHExecutor: результат', () => {
 
     const executed = await new SSHExecutor().execute(CONFIG, 'ls /missing');
 
-    expect(executed).toEqual({ stdout: 'out', stderr: 'warn', exitCode: 3 });
+    expect(executed).toEqual({ stdout: 'out', stderr: 'warn', exitCode: 3, truncated: false });
+  });
+
+  it('пометку об обрезке вывода передаёт дальше, а не съедает', async () => {
+    execMock.mockResolvedValue(result({ stdout: 'первая часть', truncated: true }));
+
+    await expect(new SSHExecutor().execute(CONFIG, 'du -a /')).resolves.toMatchObject({
+      truncated: true,
+    });
   });
 
   it('ненулевой код возврата не превращается в исключение', async () => {
@@ -131,6 +139,14 @@ describe('SSHExecutor.executeChecked: шаг, который обязан уда
     execMock.mockResolvedValue(result({ exitCode: 2 }));
 
     await expect(new SSHExecutor().executeChecked(CONFIG, 'false')).rejects.toThrow(/exit code 2/);
+  });
+
+  it('код 124 объясняет словами: команду убил сторож на сервере', async () => {
+    execMock.mockResolvedValue(result({ exitCode: 124 }));
+
+    await expect(new SSHExecutor().executeChecked(CONFIG, 'rsync -a /srv /backup')).rejects.toThrow(
+      /timeout/i
+    );
   });
 });
 

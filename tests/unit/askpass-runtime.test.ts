@@ -123,9 +123,38 @@ describe('computeRuntime', () => {
     expect(runtime.askpassForce).toBe(expected);
   });
 
+  /**
+   * С OpenSSH 9.0 scp гоняет файлы поверх SFTP, и от этого зависит судьба
+   * удалённого пути: в классическом протоколе его разбирает shell сервера,
+   * в SFTP-режиме путь-приёмник берётся буквально.
+   */
+  it.each([
+    [9, 0, true],
+    [8, 9, false],
+    [10, 2, true],
+    [7, 4, false],
+  ])('reports scpOverSftp for OpenSSH %i.%i as %s', (major, minor, expected) => {
+    const runtime = computeRuntime({
+      platform: 'linux',
+      version: { major, minor, raw: `OpenSSH_${major}.${minor}p1` },
+      controlDir,
+    });
+    expect(runtime.scpOverSftp).toBe(expected);
+  });
+
   it('exposes capabilities in the shape argument building expects', () => {
-    const caps = toCapabilities(runtimeWith());
-    expect(caps).toEqual({ multiplexing: true, controlDir: '/home/user/.ssh/ssh-mcp' });
+    const caps = toCapabilities(
+      computeRuntime({
+        platform: 'darwin',
+        version: { major: 10, minor: 2, raw: 'OpenSSH_10.2p1' },
+        controlDir,
+      })
+    );
+    expect(caps).toEqual({
+      multiplexing: true,
+      controlDir: '/home/user/.ssh/ssh-mcp',
+      scpOverSftp: true,
+    });
   });
 });
 

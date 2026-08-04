@@ -30,6 +30,12 @@ export interface SshCapabilities {
   multiplexing: boolean;
   /** Каталог для управляющих сокетов (права 0700) */
   controlDir: string;
+  /**
+   * Гоняет ли scp файлы поверх SFTP (клиент 9.0+). От этого зависит судьба
+   * удалённого пути: в классическом протоколе его разбирает shell сервера,
+   * в SFTP-режиме путь-приёмник берётся буквально.
+   */
+  scpOverSftp: boolean;
 }
 
 /**
@@ -195,6 +201,55 @@ export function buildControlArgs(
 }
 
 /**
+ * Что происходит с удалённым путём по дороге к серверу.
+ *
+ * Замерено на одном клиенте (OpenSSH 10.2) в обоих режимах:
+ * - `literal` — цель загрузки в SFTP-режиме. Путь уходит как есть, и обратный
+ *   слэш стал бы частью имени: файл лёг бы под именем `a\ b.txt`, а следом
+ *   развалились бы сверка, переименование и уборка — они ищут путь без него.
+ * - `glob` — источник скачивания. Шаблоны раскрывает клиент, и `star*name.txt`
+ *   тащит три посторонних файла; обратный слэш это чинит.
+ * - `shell` — классический протокол (клиенты до 9.0). Путь разбирает shell
+ *   сервера: пробел рвёт его на два аргумента, а `$(id)` исполняется.
+ */
+export type RemotePathUse = 'literal' | 'glob' | 'shell';
+
+/**
+ * Подготовить удалённый путь к передаче.
+ *
+ * Экранирование обратным слэшем — единственное, что работает: одинарные кавычки
+ * в SFTP-режиме становятся частью имени, а в классическом дают `protocol error`.
+ *
+ * Не трогаем разделитель пути, безопасную латиницу с цифрами, тильду и всё, что
+ * вне ASCII. Тильду — потому что её раскрывает сервер, и `\~/app.conf` уехал бы
+ * в несуществующий каталог с именем `~` (замерено). Кириллицу — потому что она
+ * работает и без экранирования.
+ *
+ * Перевод строки и возврат каретки не экранируются: `\` перед переводом строки
+ * означает продолжение строки, символ исчезает, и имя становится другим. В
+ * SFTP-режиме такой путь работает как есть, а в классическом остаток строки
+ * выполняется на сервере как команда — поэтому там он отклоняется.
+ */
+export function prepareRemotePath(remotePath: string, use: RemotePathUse): string {
+  if (use === 'literal') return remotePath;
+
+  if (use === 'shell' && /[\n\r]/.test(remotePath)) {
+    throw new Error(
+      `Invalid remote path ${JSON.stringify(remotePath)}: a newline cannot be passed safely ` +
+        'to the classic scp protocol (OpenSSH before 9.0) — the rest of the line would run ' +
+        'on the server as a command'
+    );
+  }
+
+  return escapeRemotePath(remotePath);
+}
+
+/** Экранировать всё, что удалённая сторона прочтёт как разметку, а не как имя */
+export function escapeRemotePath(remotePath: string): string {
+  return remotePath.replace(/[^A-Za-z0-9._/~\n\r\u0080-\uFFFF-]/g, (char) => `\\${char}`);
+}
+
+/**
  * Удалённый путь в формате scp.
  *
  * IPv6-адрес заключается в скобки, иначе двоеточия внутри адреса
@@ -248,7 +303,10 @@ export function buildScpArgs(
   }
 
   const localSpec = normalizeLocalSpec(localPath);
-  const remoteSpec = buildRemoteSpec(config.host, remotePath);
+  // Цель загрузки в SFTP-режиме — единственный путь, который уходит буквально:
+  // экранирование сделало бы обратный слэш частью имени (замерено)
+  const use: RemotePathUse = !caps.scpOverSftp ? 'shell' : direction === 'upload' ? 'literal' : 'glob';
+  const remoteSpec = buildRemoteSpec(config.host, prepareRemotePath(remotePath, use));
 
   if (direction === 'upload') {
     args.push(localSpec, remoteSpec);

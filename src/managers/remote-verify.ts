@@ -23,6 +23,23 @@ const MAX_PATHS_PER_COMMAND = 100;
 const MAX_COMMAND_LENGTH = 32 * 1024;
 /** Код возврата shell, когда программы нет на месте */
 const COMMAND_NOT_FOUND = 127;
+/**
+ * Команду убил сторож времени, и ответ неполный.
+ *
+ * Замерено: coreutils возвращает 124, BusyBox — 143 (это 128 + SIGTERM), и
+ * работу убивают оба. Без этой проверки недосчитанные хэши читались как
+ * расхождение, а по расхождению установщик сносит уже уехавшее дерево.
+ */
+const GUARD_KILLED_EXIT_CODES = [124, 143];
+/**
+ * Имена, которые разбор по строкам не восстановит.
+ *
+ * BusyBox печатает имя как есть, поэтому перевод строки внутри имени разрывает
+ * строку вывода пополам и путь теряется (замерено на обоих серверах: дерево с
+ * таким файлом объявлялось испорченным и сносилось). Такие файлы спрашиваем по
+ * одному — тогда имя разбирать не нужно, оно известно нам заранее.
+ */
+const NAME_BREAKS_LINES = /[\n\r]/;
 
 export interface VerifyEntry {
   path: string;
@@ -76,6 +93,10 @@ export async function verifyRemoteFiles(
 
   const remoteHashes = await collectRemoteHashes(executor, config, entries, passport.sha256, options);
 
+  if (remoteHashes === 'truncated' || remoteHashes === 'guard-killed') {
+    return { status: 'unavailable', reason: incompleteReason(remoteHashes) };
+  }
+
   if (remoteHashes === 'tool-missing') {
     // Паспорт обещал утилиту, а её нет: сервер изменился под нами.
     // Забываем запись и спрашиваем заново — вдруг остался openssl.
@@ -90,10 +111,25 @@ export async function verifyRemoteFiles(
     if (retried === 'tool-missing') {
       return { status: 'unavailable', reason: `${refreshed.sha256} is not available on the server` };
     }
+    if (retried === 'truncated' || retried === 'guard-killed') {
+      return { status: 'unavailable', reason: incompleteReason(retried) };
+    }
     return compare(entries, retried);
   }
 
   return compare(entries, remoteHashes);
+}
+
+/**
+ * Почему ответ сервера неполон.
+ *
+ * Неполный ответ обязан читаться как «проверить нечем»: иначе недостающие
+ * хэши выглядят как испорченные файлы, и установщик сносит целые данные.
+ */
+function incompleteReason(outcome: 'truncated' | 'guard-killed'): string {
+  return outcome === 'truncated'
+    ? 'the hashing output did not fit the transport buffer'
+    : 'hashing was killed by the timeout guard on the server';
 }
 
 /** Спросить у сервера хэши всех файлов, разбив список на посильные команды */
@@ -103,26 +139,46 @@ async function collectRemoteHashes(
   entries: VerifyEntry[],
   tool: Exclude<Sha256Tool, 'none'>,
   options: VerifyOptions
-): Promise<Map<string, string> | 'tool-missing'> {
+): Promise<Map<string, string> | 'tool-missing' | 'truncated' | 'guard-killed'> {
   const hashes = new Map<string, string>();
+  const paths = entries.map((entry) => entry.path);
 
-  for (const chunk of splitIntoCommands(entries.map((entry) => entry.path))) {
-    const result = await executor.execute(config, buildHashCommand(tool, chunk), {
+  const ask = (chunk: string[]) =>
+    executor.execute(config, buildHashCommand(tool, chunk), {
       profileName: options.profileName,
       sudo: options.sudo,
       idempotent: true,
       timeout: options.timeoutMs ?? 0,
     });
 
-    if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';
+  /** Ненулевой код — норма: нечитаемый файл не отменяет остальные хэши */
+  const note = (exitCode: number, stderr: string) => {
+    if (exitCode !== 0) logger.debug(`[Verify] hashing reported exit ${exitCode}: ${stderr.trim()}`);
+  };
 
-    // Ненулевой код здесь — норма: нечитаемый файл в пачке не отменяет
-    // остальные хэши, он просто не попадёт в разбор и не сойдётся
-    if (result.exitCode !== 0) {
-      logger.debug(`[Verify] hashing reported exit ${result.exitCode}: ${result.stderr.trim()}`);
-    }
+  for (const chunk of splitIntoCommands(paths.filter((path) => !NAME_BREAKS_LINES.test(path)))) {
+    const result = await ask(chunk);
+
+    if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';
+    if (GUARD_KILLED_EXIT_CODES.includes(result.exitCode)) return 'guard-killed';
+    // Буфер транспорта режет хвост вывода: недостающие хэши выглядели бы как
+    // расхождение, а по расхождению установщик сносит уже уехавшее дерево
+    if (result.truncated) return 'truncated';
+    note(result.exitCode, result.stderr);
 
     for (const [path, hash] of parseHashOutput(result.stdout)) hashes.set(path, hash);
+  }
+
+  for (const path of paths.filter((entry) => NAME_BREAKS_LINES.test(entry))) {
+    const result = await ask([path]);
+
+    if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';
+    if (GUARD_KILLED_EXIT_CODES.includes(result.exitCode)) return 'guard-killed';
+    if (result.truncated) return 'truncated';
+    note(result.exitCode, result.stderr);
+
+    const hash = hashOfSingleOutput(result.stdout, tool);
+    if (hash) hashes.set(path, hash);
   }
 
   return hashes;
@@ -146,9 +202,9 @@ function parseHashOutput(stdout: string): Map<string, string> {
   const hashes = new Map<string, string>();
 
   for (const line of stdout.split('\n')) {
-    const plain = /^([0-9a-fA-F]{64})[ \t][ *](.*)$/.exec(line);
+    const plain = /^(\\?)([0-9a-fA-F]{64})[ \t][ *](.*)$/.exec(line);
     if (plain) {
-      hashes.set(plain[2], plain[1].toLowerCase());
+      hashes.set(plain[1] ? unescapeName(plain[3]) : plain[3], plain[2].toLowerCase());
       continue;
     }
 
@@ -157,6 +213,46 @@ function parseHashOutput(stdout: string): Map<string, string> {
   }
 
   return hashes;
+}
+
+/**
+ * Вернуть имени исходный вид.
+ *
+ * coreutils, встретив в имени обратный слэш, перевод строки или возврат
+ * каретки, ставит перед хэшем `\` и экранирует внутри ровно эти три символа
+ * (замерено: остальные — кавычка, апостроф, табуляция, звёздочка — идут как
+ * есть). Без обратного разбора файл `a\b.txt` не находился в ответе сервера,
+ * сверка объявляла расхождение и установщик сносил уже уехавшее дерево.
+ *
+ * Здесь встречается только обратный слэш: имена с переводом строки и возвратом
+ * каретки до общего разбора не доходят — их спрашивают по одному.
+ */
+function unescapeName(name: string): string {
+  return name.replace(/\\\\/g, '\\');
+}
+
+/**
+ * Хэш из ответа на команду про один-единственный файл.
+ *
+ * Имя здесь не разбирается вовсе — оно известно вызывающему, а в выводе может
+ * быть разорвано переводом строки. Зато важно, чем считали: имя файла способно
+ * повторять форму чужой утилиты. Проверено — при разборе «сначала sha256sum,
+ * потом openssl» файл с именем `x⏎<64 знака>␣␣y.txt` на сервере с одним openssl
+ * объявлялся сошедшимся по хэшу, взятому из собственного имени.
+ *
+ * У sha256sum хэш открывает вывод, у openssl — закрывает строку, поэтому берём
+ * первое и последнее вхождение соответственно.
+ */
+function hashOfSingleOutput(stdout: string, tool: Exclude<Sha256Tool, 'none'>): string | null {
+  if (tool === 'openssl') {
+    const openssl = /\)= ([0-9a-fA-F]{64})\s*$/.exec(stdout);
+    return openssl ? openssl[1].toLowerCase() : null;
+  }
+
+  // Файл ровно один, значит хэш открывает вывод. Без якоря ответом сошла бы
+  // любая похожая строка ниже — например, кусок имени самого файла
+  const sum = /^\\?([0-9a-fA-F]{64})[ \t][ *]/.exec(stdout);
+  return sum ? sum[1].toLowerCase() : null;
 }
 
 /** Сверить ожидаемое с полученным; молчание сервера о файле — тоже несовпадение */

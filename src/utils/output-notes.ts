@@ -10,8 +10,14 @@
 /** Лимит буфера вывода в транспорте (см. DEFAULT_MAX_OUTPUT_BYTES) */
 const OUTPUT_LIMIT_LABEL = '10 MiB';
 
-/** Код возврата утилиты `timeout`, когда она убивает затянувшуюся команду */
-const TIMEOUT_GUARD_EXIT_CODE = 124;
+/**
+ * Коды, которыми удалённый сторож сообщает, что убил затянувшуюся команду.
+ *
+ * Замерено на живых серверах: coreutils возвращает 124, BusyBox — 143
+ * (это 128 + SIGTERM). Работу убивают оба, но голое «143» без пояснения
+ * читается как отказ самой команды.
+ */
+const TIMEOUT_GUARD_EXIT_CODES = [124, 143];
 
 export const TRUNCATED_OUTPUT_NOTE =
   `⚠️ Output truncated at the transport buffer limit (${OUTPUT_LIMIT_LABEL}) — ` +
@@ -40,7 +46,7 @@ export function truncatedReadMessage(path: string): string {
 
 /** Пояснение к коду возврата, если голое число вводит в заблуждение */
 export function exitCodeHint(exitCode: number): string {
-  if (exitCode === TIMEOUT_GUARD_EXIT_CODE) {
+  if (TIMEOUT_GUARD_EXIT_CODES.includes(exitCode)) {
     return ' (killed by the timeout guard on the server — it ran past the allowed time)';
   }
   return '';

@@ -18,6 +18,7 @@
  * снаружи: на сервере это команды через транспорт, локально — обычный fs.
  */
 
+import { logger } from '../utils/logger.js';
 import { buildBackupPath, buildTempPath, isArtifactOf } from '../utils/tmp-name.js';
 
 export type PathKind = 'file' | 'directory' | 'symlink' | 'missing';
@@ -306,9 +307,16 @@ function describeLeftovers(leftovers: string[], finalPath: string, existing: Pat
   );
 }
 
-/** Убрать временный путь; неудача уборки операцию не меняет */
+/**
+ * Убрать временный путь; неудача уборки операцию не меняет.
+ *
+ * След в журнале всё же оставляем: раньше ошибка исчезала бесследно, и путь,
+ * который мы объявили убранным, мог остаться на сервере.
+ */
 async function discard(ops: PathOps, staging: string): Promise<void> {
-  await ops.removeTree(staging).catch(() => undefined);
+  await ops.removeTree(staging).catch((error: unknown) => {
+    logger.warn(`[Installer] could not remove the temporary path ${staging}: ${message(error)}`);
+  });
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

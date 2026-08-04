@@ -14,6 +14,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { PathKind, PathOps } from '../../src/managers/installer.js';
+import { logger } from '../../src/utils/logger.js';
 
 const { install, InstallError } = await import('../../src/managers/installer.js');
 
@@ -25,6 +26,7 @@ class FakeFs implements PathOps {
   entries = new Map<string, { kind: PathKind; content: string }>();
   removed: string[] = [];
   failRename?: (from: string, to: string) => boolean;
+  failRemove?: (path: string) => boolean;
   /** Путь, который лежит на отдельной файловой системе (точка монтирования) */
   separateFilesystem?: string;
 
@@ -58,6 +60,7 @@ class FakeFs implements PathOps {
   }
 
   async removeTree(path: string): Promise<void> {
+    if (this.failRemove?.(path)) throw new Error(`remove refused: ${path}`);
     this.removed.push(path);
     this.entries.delete(path);
   }
@@ -154,6 +157,18 @@ describe('сбой до замены: последняя копия не тро�
 
     expect(fs.removed).toHaveLength(1);
     expect(fs.removed[0]).toMatch(/\.upload-/);
+  });
+
+  it('неудачная уборка оставляет след в журнале, а не исчезает', async () => {
+    // Иначе путь, объявленный убранным, молча остаётся на сервере
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    fs.put(FINAL, 'file', 'старое содержимое');
+    fs.failRemove = (path) => path.includes('.upload-');
+
+    await install(fs, plan({ verify: async () => 'sha256 mismatch' })).catch(() => undefined);
+
+    expect(warn.mock.calls.map(String).join('\n')).toMatch(/\.upload-/);
+    warn.mockRestore();
   });
 
   it('несостоявшаяся замена — цель остаётся прежней', async () => {

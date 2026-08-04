@@ -32,6 +32,12 @@ export interface SshRuntime {
   multiplexingDisabledReason?: string;
   /** Поддерживается ли SSH_ASKPASS_REQUIRE=force — без него нельзя подать пароль */
   askpassForce: boolean;
+  /**
+   * Идёт ли передача файлов поверх SFTP, а не классическим протоколом scp.
+   * От этого зависит судьба удалённого пути: в классическом протоколе его
+   * разбирает shell сервера, в SFTP-режиме путь-приёмник берётся буквально.
+   */
+  scpOverSftp: boolean;
   /** Каталог для управляющих сокетов и askpass-скрипта */
   controlDir: string;
 }
@@ -40,6 +46,8 @@ export interface SshRuntime {
 const MIN_MULTIPLEXING_VERSION = { major: 5, minor: 6 };
 /** SSH_ASKPASS_REQUIRE появился в OpenSSH 8.4 */
 const MIN_ASKPASS_FORCE_VERSION = { major: 8, minor: 4 };
+/** С OpenSSH 9.0 scp по умолчанию гоняет файлы поверх SFTP */
+const MIN_SFTP_TRANSFER_VERSION = { major: 9, minor: 0 };
 
 let cachedRuntime: SshRuntime | undefined;
 
@@ -84,6 +92,7 @@ export function computeRuntime(input: {
       multiplexing: false,
       multiplexingDisabledReason: 'ssh not found',
       askpassForce: false,
+      scpOverSftp: false,
       controlDir,
     };
   }
@@ -98,6 +107,7 @@ export function computeRuntime(input: {
       multiplexing: false,
       multiplexingDisabledReason: 'connection multiplexing is not supported by OpenSSH on Windows',
       askpassForce: false,
+      scpOverSftp: isAtLeast(version, MIN_SFTP_TRANSFER_VERSION),
       controlDir,
     };
   }
@@ -112,6 +122,7 @@ export function computeRuntime(input: {
       ? undefined
       : `ControlPersist requires OpenSSH 5.6+, found ${version.raw}`,
     askpassForce: isAtLeast(version, MIN_ASKPASS_FORCE_VERSION),
+    scpOverSftp: isAtLeast(version, MIN_SFTP_TRANSFER_VERSION),
     controlDir,
   };
 }
@@ -184,6 +195,7 @@ export function toCapabilities(runtime: SshRuntime): SshCapabilities {
   return {
     multiplexing: runtime.multiplexing,
     controlDir: runtime.controlDir,
+    scpOverSftp: runtime.scpOverSftp,
   };
 }
 

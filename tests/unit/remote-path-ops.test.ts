@@ -102,6 +102,16 @@ describe('права доступа', () => {
   });
 });
 
+describe('уборка временного пути', () => {
+  it('идёт без потолка времени: его задаёт объём данных, а не сеть', async () => {
+    // На флеш-памяти роутера уборка дерева в общие тридцать секунд может не
+    // уложиться, и временный путь молча останется на сервере
+    await ops().removeTree('/srv/.upload-abc.app');
+
+    expect(executeCheckedMock.mock.calls[0][2]).toMatchObject({ timeout: 0 });
+  });
+});
+
 describe('точка монтирования', () => {
   it('распознаётся по разным номерам устройств у пути и родителя', async () => {
     executeMock.mockResolvedValue({ stdout: '2049\n64768\n', stderr: '', exitCode: 0 });

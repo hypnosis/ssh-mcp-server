@@ -18,7 +18,7 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
-import { sha256OfFile } from '../utils/sha256.js';
+import { sha256OfFile, sha256OfFiles } from '../utils/sha256.js';
 import { listTreeFiles } from '../utils/local-tree.js';
 import { verifyRemoteFiles, type VerifyEntry } from '../managers/remote-verify.js';
 import { install } from '../managers/installer.js';
@@ -627,12 +627,10 @@ export class TransferTool {
         verdict = await this.verify(
           sshConfig,
           profileName,
-          await Promise.all(
-            files.map(async (rel) => ({
-              hash: await sha256OfFile(join(localDir, rel)),
-              path: posixPath.join(staging, rel),
-            }))
-          ),
+          (await sha256OfFiles(files.map((rel) => join(localDir, rel)))).map((hash, i) => ({
+            hash,
+            path: posixPath.join(staging, files[i]),
+          })),
           'upload',
           { timeoutMs: opts.timeoutMs }
         );
@@ -813,12 +811,10 @@ export class TransferTool {
         verdict = await this.verify(
           sshConfig,
           profileName,
-          await Promise.all(
-            files.map(async (rel) => ({
-              hash: await sha256OfFile(join(staging, rel)),
-              path: posixPath.join(remoteDir, rel),
-            }))
-          ),
+          (await sha256OfFiles(files.map((rel) => join(staging, rel)))).map((hash, i) => ({
+            hash,
+            path: posixPath.join(remoteDir, files[i]),
+          })),
           'download',
           { timeoutMs: opts.timeoutMs }
         );

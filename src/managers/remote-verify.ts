@@ -29,6 +29,18 @@ export interface VerifyEntry {
   hash: string;
 }
 
+export interface VerifyOptions {
+  profileName: string;
+  sudo?: boolean;
+  /**
+   * Потолок на хеширование, миллисекунды. Ноль — потолка нет, и это здесь
+   * значение по умолчанию: время сверки задаёт объём данных, а не сеть.
+   * Общие для команд 30 секунд обрывали бы дерево на несколько гигабайт —
+   * причём уже после успешной передачи.
+   */
+  timeoutMs?: number;
+}
+
 export type VerifyOutcome =
   | { status: 'matched' }
   | { status: 'mismatched'; paths: string[] }
@@ -45,7 +57,7 @@ export async function verifyRemoteFiles(
   executor: SSHExecutor,
   config: SSHConfig,
   entries: VerifyEntry[],
-  options: { profileName: string; sudo?: boolean }
+  options: VerifyOptions
 ): Promise<VerifyOutcome> {
   if (entries.length === 0) {
     // Пустой список — это не «всё сошлось»: скорее всего файлы не нашлись
@@ -90,7 +102,7 @@ async function collectRemoteHashes(
   config: SSHConfig,
   entries: VerifyEntry[],
   tool: Exclude<Sha256Tool, 'none'>,
-  options: { profileName: string; sudo?: boolean }
+  options: VerifyOptions
 ): Promise<Map<string, string> | 'tool-missing'> {
   const hashes = new Map<string, string>();
 
@@ -99,6 +111,7 @@ async function collectRemoteHashes(
       profileName: options.profileName,
       sudo: options.sudo,
       idempotent: true,
+      timeout: options.timeoutMs ?? 0,
     });
 
     if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';

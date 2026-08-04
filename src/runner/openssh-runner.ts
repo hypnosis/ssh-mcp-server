@@ -49,7 +49,6 @@ import type {
 } from './types.js';
 
 const DEFAULT_EXEC_TIMEOUT_MS = 30000;
-const DEFAULT_TRANSFER_TIMEOUT_MS = 300000;
 const DEFAULT_CONTROL_TIMEOUT_MS = 5000;
 /** Запас поверх локального таймаута для удалённого сторожа */
 const REMOTE_TIMEOUT_MARGIN_SEC = 5;
@@ -371,7 +370,11 @@ export class OpenSshRunner implements CommandRunner {
   ): Promise<void> {
     assertProfileSupported(this.config, this.runtime);
 
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TRANSFER_TIMEOUT_MS;
+    // Своего потолка у передачи нет: не назвали таймаут — она идёт столько,
+    // сколько нужно. Прежний общий потолок в 300 секунд обрывал большое
+    // дерево и медленный канал, а от зависания не защищал: молчащий канал
+    // рвёт сам ssh за минуту силами ServerAliveInterval (замерено).
+    const timeoutMs = options.timeoutMs;
     const outcome = await runProcess({
       file: 'scp',
       args: buildScpArgs(this.config, this.capabilities(), direction, localPath, remotePath, {

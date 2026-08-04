@@ -22,7 +22,11 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const PASSPORT_PROBE_TIMEOUT_MS = 15000;
 
 export interface SSHExecuteOptions {
-  /** Command execution timeout (ms) */
+  /**
+   * Command execution timeout (ms). Ноль означает «потолка нет»: так зовут
+   * команды, длительность которых задаёт объём данных, — сверка хэшей дерева
+   * на гигабайты не обязана укладываться в общие 30 секунд.
+   */
   timeout?: number;
   /** Working directory */
   cwd?: string;
@@ -97,7 +101,7 @@ export class SSHExecutor {
 
     const runner = await getRunner(config, options.profileName || 'default');
     const result = await runner.exec(finalCommand, {
-      timeoutMs: options.timeout || DEFAULT_TIMEOUT_MS,
+      timeoutMs: options.timeout ?? DEFAULT_TIMEOUT_MS,
       idempotent: options.idempotent,
       stdin: options.stdin,
     });

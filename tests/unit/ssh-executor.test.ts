@@ -210,6 +210,17 @@ describe('SSHExecutor: передача опций транспорту', () => 
     expect(sentOptions().timeoutMs).toBe(30000);
   });
 
+  /**
+   * Ноль означает «потолка нет», а не «ноль миллисекунд». Так зовут команды,
+   * длительность которых задаёт объём данных: сверка хэшей дерева на
+   * гигабайты не обязана укладываться в общие 30 секунд.
+   */
+  it('ноль означает отсутствие потолка, а не мгновенный обрыв', async () => {
+    await new SSHExecutor().execute(CONFIG, 'sha256sum -- /srv/app/big.bin', { timeout: 0 });
+
+    expect(sentOptions().timeoutMs).toBe(0);
+  });
+
   it('прокидывает пометку об идемпотентности', async () => {
     await new SSHExecutor().execute(CONFIG, 'cat /etc/hostname', { idempotent: true });
 

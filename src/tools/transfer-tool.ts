@@ -60,6 +60,46 @@ function formatWarnings(warnings: string[]): string {
   return warnings.length > 0 ? `\n  warnings:\n${warnings.map((w) => `    - ${w}`).join('\n')}` : '';
 }
 
+/**
+ * Наибольший таймаут, который умеет ждать таймер Node (~24.8 суток).
+ * Всё, что больше, срабатывает у него немедленно — это уже не «подольше»,
+ * а мгновенный обрыв, поэтому такие значения читаются как «без потолка».
+ */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Потолок передачи, названный вызывающим.
+ *
+ * Не назвали — потолка нет. Назвали мусор — отказ до первой команды на
+ * сервере: тип из схемы ничего не гарантирует, `arguments` приходят как есть.
+ * Число строкой принимается: так его шлёт часть клиентов, и отвергать
+ * рабочую форму ввода незачем.
+ *
+ * Ноль отклоняется, хотя внутри он и означает «без потолка»: у соседнего
+ * `ssh_exec` тот же ноль читается как «значение по умолчанию», и два
+ * противоположных смысла одного значения в одном сервере — ловушка.
+ * Способ сказать «не ограничивай» ровно один: не называть параметр.
+ *
+ * Бесконечность и всё сверх предела таймера — тоже «не ограничивай»:
+ * такое значение таймер отрабатывает немедленно, то есть буквальное
+ * прочтение дало бы мгновенный обрыв вместо запрошенного «подольше».
+ */
+function parseTimeoutMs(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+
+  const parsed = typeof value === 'string' ? Number(value.trim()) : value;
+  if (typeof parsed !== 'number' || Number.isNaN(parsed) || parsed <= 0) {
+    throw new Error(
+      `timeout must be a positive number of milliseconds, got ${JSON.stringify(value)}. ` +
+      'Omit the parameter to run without a limit.'
+    );
+  }
+
+  if (parsed > MAX_TIMEOUT_MS) return undefined;
+
+  return parsed;
+}
+
 export class TransferTool {
   private executor: SSHExecutor;
 
@@ -128,6 +168,11 @@ export class TransferTool {
               description: 'Parallel SFTP chunk concurrency. Default: 4.',
               default: 4,
             },
+            timeout: {
+              type: 'number',
+              description:
+                'Give up after this many milliseconds. By default there is no limit: the transfer runs as long as it takes, and a stalled connection is dropped by the transport itself.',
+            },
           },
           required: ['local_path', 'remote_path'],
         },
@@ -156,6 +201,11 @@ export class TransferTool {
               type: 'number',
               description: 'Parallel SFTP chunk concurrency. Default: 4.',
               default: 4,
+            },
+            timeout: {
+              type: 'number',
+              description:
+                'Give up after this many milliseconds. By default there is no limit: the transfer runs as long as it takes, and a stalled connection is dropped by the transport itself.',
             },
           },
           required: ['remote_path', 'local_path'],
@@ -201,6 +251,7 @@ export class TransferTool {
     // команду отдельными словами, где кавычки их не удержат
     const mode = args.mode ? shellMode(args.mode, 'mode') : undefined;
     const owner = args.owner ? shellOwner(args.owner, 'owner') : undefined;
+    const timeoutMs = parseTimeoutMs(args.timeout);
 
     const localStat = await stat(args.local_path);
     const isDir = args.recursive ?? localStat.isDirectory();
@@ -225,6 +276,7 @@ export class TransferTool {
           owner,
           overwrite: args.overwrite !== false,
           concurrency: args.concurrency || 4,
+          timeoutMs,
         }
       );
       return {
@@ -250,6 +302,7 @@ export class TransferTool {
         owner,
         overwrite: args.overwrite !== false,
         concurrency: args.concurrency || 4,
+        timeoutMs,
       }
     );
     return {
@@ -299,6 +352,8 @@ export class TransferTool {
       owner?: string;
       overwrite: boolean;
       concurrency: number;
+      /** Потолок передачи; без него она идёт столько, сколько нужно */
+      timeoutMs?: number;
     }
   ): Promise<UploadFileResult> {
     const localStats = await stat(localPath);
@@ -314,7 +369,7 @@ export class TransferTool {
     // sudo path: SFTP into /tmp, then `sudo install` into place
     if (opts.sudo) {
       const stage = buildSudoStagingPath();
-      await this.putFile(sshConfig, profileName, localPath, stage);
+      await this.putFile(sshConfig, profileName, localPath, stage, opts.timeoutMs);
       try {
         await this.sudoInstallFile(sshConfig, profileName, stage, remotePath, opts);
       } finally {
@@ -329,7 +384,8 @@ export class TransferTool {
             profileName,
             [{ path: remotePath, hash: await localHashPromise! }],
             'upload',
-            true // читать установленный файл приходится под sudo
+            // читать установленный файл приходится под sudo
+            { sudo: true, timeoutMs: opts.timeoutMs }
           )
         : { verified: false };
 
@@ -352,7 +408,7 @@ export class TransferTool {
       finalPath: remotePath,
       kind: 'file',
       stage: async (staging) => {
-        await this.putFile(sshConfig, profileName, localPath, staging);
+        await this.putFile(sshConfig, profileName, localPath, staging, opts.timeoutMs);
       },
       verify: async (staging) => {
         if (!opts.verify) return null;
@@ -360,7 +416,8 @@ export class TransferTool {
           sshConfig,
           profileName,
           [{ path: staging, hash: await localHashPromise! }],
-          'upload'
+          'upload',
+          { timeoutMs: opts.timeoutMs }
         );
         return null;
       },
@@ -395,7 +452,8 @@ export class TransferTool {
     sshConfig: any,
     profileName: string,
     localPath: string,
-    remotePath: string
+    remotePath: string,
+    timeoutMs?: number
   ): Promise<void> {
     const parent = posixPath.dirname(remotePath);
     if (parent && parent !== '/' && parent !== '.') {
@@ -407,7 +465,7 @@ export class TransferTool {
     }
 
     const runner = await getRunner(sshConfig, profileName);
-    await runner.upload(localPath, remotePath);
+    await runner.upload(localPath, remotePath, { timeoutMs });
   }
 
   private async sudoInstallFile(
@@ -415,7 +473,7 @@ export class TransferTool {
     profileName: string,
     stage: string,
     target: string,
-    opts: { mode?: string; owner?: string }
+    opts: { mode?: string; owner?: string; timeoutMs?: number }
   ): Promise<void> {
     const flags: string[] = [];
     if (opts.mode) flags.push(`-m ${opts.mode}`);
@@ -432,10 +490,14 @@ export class TransferTool {
         { profileName, sudo: true }
       );
     }
+    // Названный таймаут доходит и сюда — `install` копирует файл целиком, его
+    // время задаёт размер. Но потолок здесь не снимается: это единственная
+    // запись под root, и брошенный без срока `install` дописывал бы боевой
+    // путь уже после того, как вызывающий получил ошибку и начался откат
     await this.executor.executeChecked(
       sshConfig,
       `install ${flags.join(' ')} ${shellQuote(stage)} ${shellQuote(target)}`,
-      { profileName, sudo: true }
+      { profileName, sudo: true, timeout: opts.timeoutMs }
     );
   }
 
@@ -469,11 +531,15 @@ export class TransferTool {
     profileName: string,
     entries: VerifyEntry[],
     label: string,
-    sudo = false
+    opts: { sudo?: boolean; timeoutMs?: number } = {}
   ): Promise<{ verified: boolean; verifyNote?: string }> {
+    const { sudo = false, timeoutMs } = opts;
+    // Потолок стоит на всей операции, а не на одной её части: иначе дерево на
+    // гигабайты доедет и упрётся в общие для команд 30 секунд уже здесь
     const outcome = await verifyRemoteFiles(this.executor, sshConfig, entries, {
       profileName,
       sudo,
+      timeoutMs: timeoutMs ?? 0,
     });
 
     if (outcome.status === 'matched') return { verified: true };
@@ -506,6 +572,8 @@ export class TransferTool {
       owner?: string;
       overwrite: boolean;
       concurrency: number;
+      /** Потолок передачи; без него она идёт столько, сколько нужно */
+      timeoutMs?: number;
     }
   ): Promise<UploadDirResult> {
     if (opts.sudo) {
@@ -552,7 +620,7 @@ export class TransferTool {
       stage: async (staging) => {
         // Дерево уезжает целиком: подкаталоги создаёт транспорт
         const runner = await getRunner(sshConfig, profileName);
-        await runner.upload(localDir, staging, { recursive: true });
+        await runner.upload(localDir, staging, { recursive: true, timeoutMs: opts.timeoutMs });
       },
       verify: async (staging) => {
         if (!opts.verify) return null;
@@ -565,18 +633,20 @@ export class TransferTool {
               path: posixPath.join(staging, rel),
             }))
           ),
-          'upload'
+          'upload',
+          { timeoutMs: opts.timeoutMs }
         );
         return null;
       },
       finalize: async (staging) => {
         if (!opts.mode) return;
         // Права ставятся до замены: иначе дерево какое-то время живёт на
-        // боевом пути с чужим доступом
+        // боевом пути с чужим доступом. Обход дерева тоже соразмерен его
+        // размеру, поэтому потолок здесь тот же, что у передачи
         await this.executor.executeChecked(
           sshConfig,
           `chmod -R ${opts.mode} -- ${shellQuote(staging)}`,
-          { profileName }
+          { profileName, timeout: opts.timeoutMs ?? 0 }
         );
       },
     });
@@ -607,6 +677,8 @@ export class TransferTool {
       if (!v.valid) throw new Error(`Path validation failed: ${v.error}`);
     }
 
+    const timeoutMs = parseTimeoutMs(args.timeout);
+
     const isDir =
       args.recursive ??
       (await this.isRemoteDir(sshConfig, profileName, args.remote_path));
@@ -617,7 +689,7 @@ export class TransferTool {
         profileName,
         args.remote_path,
         args.local_path,
-        { verify: args.verify !== false }
+        { verify: args.verify !== false, timeoutMs }
       );
       const verdict = result.verified
         ? `verified (${result.files} files)`
@@ -642,7 +714,7 @@ export class TransferTool {
       profileName,
       args.remote_path,
       args.local_path,
-      { verify: args.verify !== false }
+      { verify: args.verify !== false, timeoutMs }
     );
     const fileVerdict = file.verified
       ? 'verified'
@@ -680,7 +752,7 @@ export class TransferTool {
     profileName: string,
     remotePath: string,
     localPath: string,
-    opts: { verify: boolean }
+    opts: { verify: boolean; timeoutMs?: number }
   ): Promise<{ bytes: number; verified: boolean; verifyNote?: string; warnings: string[] }> {
     const runner = await getRunner(sshConfig, profileName);
     let bytes = 0;
@@ -692,7 +764,7 @@ export class TransferTool {
       finalPath: localPath,
       kind: 'file',
       stage: async (staging) => {
-        await runner.download(remotePath, staging, {});
+        await runner.download(remotePath, staging, { timeoutMs: opts.timeoutMs });
         bytes = (await stat(staging)).size;
       },
       verify: async (staging) => {
@@ -701,7 +773,8 @@ export class TransferTool {
           sshConfig,
           profileName,
           [{ path: remotePath, hash: await sha256OfFile(staging) }],
-          'download'
+          'download',
+          { timeoutMs: opts.timeoutMs }
         );
         return null;
       },
@@ -722,7 +795,7 @@ export class TransferTool {
     profileName: string,
     remoteDir: string,
     localDir: string,
-    opts: { verify: boolean }
+    opts: { verify: boolean; timeoutMs?: number }
   ): Promise<{ files: number; verified: boolean; verifyNote?: string; warnings: string[] }> {
     const runner = await getRunner(sshConfig, profileName);
     let files: string[] = [];
@@ -732,7 +805,7 @@ export class TransferTool {
       finalPath: localDir,
       kind: 'directory',
       stage: async (staging) => {
-        await runner.download(remoteDir, staging, { recursive: true });
+        await runner.download(remoteDir, staging, { recursive: true, timeoutMs: opts.timeoutMs });
         files = await listTreeFiles(staging);
       },
       verify: async (staging) => {
@@ -746,7 +819,8 @@ export class TransferTool {
               path: posixPath.join(remoteDir, rel),
             }))
           ),
-          'download'
+          'download',
+          { timeoutMs: opts.timeoutMs }
         );
         return null;
       },

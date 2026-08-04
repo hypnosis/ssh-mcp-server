@@ -3,8 +3,7 @@ name: Unit Tests
 on:
   push:
     branches:
-      - main
-      - develop
+      - '**'
   pull_request:
     branches:
       - main
@@ -25,6 +24,11 @@ jobs:
       
       - name: Install dependencies
         run: npm ci
-      
+
+      # Отдельным шагом, хотя tsc уже отработал внутри npm ci через prepare:
+      # там ошибка типов выглядит как сбой установки зависимостей.
+      - name: Type check
+        run: npx tsc --noEmit
+
       - name: Run unit tests
         run: npm run test:unit

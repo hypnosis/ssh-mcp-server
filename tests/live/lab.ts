@@ -41,12 +41,35 @@ export const LAB_REQUIRED = process.env.SSH_MCP_LIVE === '1';
  */
 export const LAB_CONTROL_DIR = '/tmp/mcp-lab-ctl';
 
+/**
+ * Пароль пользователя `pwuser`. То же значение задаёт scripts/lab-up.sh —
+ * оно живёт в двух языках сразу, поэтому меняется в двух местах.
+ */
+export const LAB_PASSWORD = 'lab-pwd-9c4e1a';
+
 export function labConfig(server: LabServer, username = 'root'): SSHConfig {
   return {
     host: '127.0.0.1',
     port: server.port,
     username,
     privateKeyPath: LAB_KEY,
+    strictHostKeyChecking: 'no',
+    ignoreUserConfig: true,
+  };
+}
+
+/**
+ * Профиль, который входит по паролю.
+ *
+ * Ключа у него нет намеренно: с ключом клиент вошёл бы по нему, и парольная
+ * ветка (askpass) осталась бы непроверенной.
+ */
+export function labPasswordConfig(server: LabServer, password = LAB_PASSWORD): SSHConfig {
+  return {
+    host: '127.0.0.1',
+    port: server.port,
+    username: 'pwuser',
+    password,
     strictHostKeyChecking: 'no',
     ignoreUserConfig: true,
   };

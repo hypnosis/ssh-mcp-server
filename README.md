@@ -832,6 +832,14 @@ src/
 - ✅ Audit tools — `ssh_audit_baseline`, `ssh_tls_check`, `ssh_disk_breakdown`, `ssh_service_status`
 - ✅ Tool count: 8 → 14
 
+### v2.0.0 (in progress) 🚧
+- ✅ Transport moved to the system OpenSSH client with connection multiplexing
+- ✅ Malformed tool arguments are rejected before the first command runs
+- ✅ Password profiles verified live: no secret in `ps`, none on disk, one prompt
+      per `ControlPersist` window (requires a local OpenSSH client 8.4+)
+- ✅ The sudo path is verified live on both BusyBox and coreutils servers
+- 🚧 Default backend flip and removal of the bundled ssh2 backend
+
 ### Future (Planned)
 - 📋 Recursive sudo upload (one-shot, without staging workaround)
 - 📋 Extended snapshot (custom checks)

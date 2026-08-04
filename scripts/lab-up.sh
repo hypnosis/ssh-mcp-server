@@ -17,6 +17,10 @@ KEY="$LAB_DIR/key"
 ALPINE_PORT=2231
 DEBIAN_PORT=2232
 
+# Пароль лабораторного пользователя pwuser. Дублируется в tests/live/lab.ts —
+# одно значение на shell и на тесты, поэтому меняется в двух местах сразу.
+export LAB_PASSWORD='lab-pwd-9c4e1a'
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker не найден — лабораторию поднять нечем" >&2
   exit 1
@@ -37,9 +41,16 @@ probe() {
 }
 
 # Пользователь без привилегий с NOPASSWD-sudo — на нём проверяется поведение под sudo
+#
+# Про строку с shadow. Пользователь без пароля заводится с «!» в /etc/shadow, и это
+# не пустой пароль, а запертая учётка. Alpine это уважает и не пускает даже по ключу
+# («Permission denied (publickey)»), Debian — пускает. Полгода расхождение выглядело
+# как «sudo проверен на обоих», хотя весь sudo-путь живьём видел только coreutils.
+# «*» означает «паролем не входить», но учётку не запирает — вход по ключу работает.
 ensure_deploy() {
   docker exec "$1" sh -c '
     id deploy >/dev/null 2>&1 || adduser -D deploy 2>/dev/null || useradd -m -s /bin/sh deploy
+    sed -i "s/^deploy:!:/deploy:*:/" /etc/shadow
     mkdir -p /home/deploy/.ssh
     cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
     chown -R deploy:deploy /home/deploy/.ssh
@@ -50,10 +61,40 @@ ensure_deploy() {
   ' >/dev/null
 }
 
+# Пользователь, который входит по паролю, а не по ключу — на нём проверяется
+# доставка секрета через askpass. Ключа у него нет намеренно: с ключом ssh
+# вошёл бы по нему и парольная ветка осталась бы непроверенной.
+#
+# Значение пароля едет в контейнер переменной окружения, а не словом в команде:
+# в argv оно было бы видно всей системе через ps — ровно то, что проверяет
+# живой тест. Правки sshd не нужны: PasswordAuthentication на обоих образах
+# включён по умолчанию (замерено через `sshd -T`).
+ensure_pwuser() {
+  docker exec -e LAB_PASSWORD "$1" sh -c '
+    id pwuser >/dev/null 2>&1 || adduser -D pwuser >/dev/null 2>&1 || useradd -m -s /bin/sh pwuser
+    # Alpine рапортует об успехе в stderr, Debian молчит — глушим только этот шум
+    echo "pwuser:$LAB_PASSWORD" | chpasswd 2>/dev/null
+  ' >/dev/null
+}
+
+# Оба лабораторных пользователя. Заводятся и на свежем контейнере, и на уже
+# поднятом: иначе после правки скрипта пришлось бы сносить лабораторию руками.
+ensure_users() {
+  ensure_deploy "$1"
+  ensure_pwuser "$1"
+}
+
 start() {
   local name="$1" image="$2" port="$3" boot="$4"
 
   docker rm -f "$name" >/dev/null 2>&1 || true
+
+  # Новый контейнер — новый ключ хоста, а в known_hosts остаётся прежний.
+  # Само по себе это не чинится профилем: StrictHostKeyChecking=no пропускает
+  # незнакомый ключ, но не изменившийся, а отказ от ~/.ssh/config known_hosts
+  # не отключает. Без этой строки живая сетка падает после каждого пересоздания
+  # лаборатории с «REMOTE HOST IDENTIFICATION HAS CHANGED».
+  ssh-keygen -R "[127.0.0.1]:$port" >/dev/null 2>&1 || true
   docker run -d --name "$name" -p "$port:22" \
     -v "$KEY.pub:/tmp/authkey:ro" "$image" sh -c "$boot" >/dev/null
 
@@ -69,7 +110,7 @@ start() {
     sleep 1
   done
 
-  ensure_deploy "$name"
+  ensure_users "$name"
   echo "$name готов на порту $port"
 }
 
@@ -83,14 +124,14 @@ DEBIAN_BOOT='apt-get update -qq >/dev/null && apt-get install -y -qq openssh-ser
 
 if probe "$ALPINE_PORT"; then
   echo "mcp-alpine уже отвечает на порту $ALPINE_PORT"
-  ensure_deploy mcp-alpine
+  ensure_users mcp-alpine
 else
   start mcp-alpine alpine:3.20 "$ALPINE_PORT" "$ALPINE_BOOT"
 fi
 
 if probe "$DEBIAN_PORT"; then
   echo "mcp-debian уже отвечает на порту $DEBIAN_PORT"
-  ensure_deploy mcp-debian
+  ensure_users mcp-debian
 else
   start mcp-debian debian:12 "$DEBIAN_PORT" "$DEBIAN_BOOT"
 fi

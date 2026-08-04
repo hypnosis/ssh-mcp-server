@@ -122,10 +122,19 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
         .filter((line) => line.length > 0);
     },
 
+    /**
+     * Удалить путь целиком.
+     *
+     * Без потолка времени, как и другие шаги, длительность которых задаёт объём
+     * данных: на контейнере полсотни тысяч файлов убираются за секунду, но на
+     * флеш-памяти роутера или сетевом диске уборка в общие тридцать секунд может
+     * не уложиться — и тогда временный путь молча останется на сервере.
+     */
     async removeTree(path: string): Promise<void> {
       await executor.executeChecked(config, `rm -rf -- ${shellQuote(path)}`, {
         profileName,
         sudo,
+        timeout: 0,
       });
     },
   };

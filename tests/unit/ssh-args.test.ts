@@ -10,6 +10,8 @@ import {
   buildControlArgs,
   buildControlPath,
   buildRemoteSpec,
+  escapeRemotePath,
+  prepareRemotePath,
   normalizeLocalSpec,
   needsAskpass,
   type RunnerConfig,
@@ -19,11 +21,16 @@ import {
 const CAPS: SshCapabilities = {
   multiplexing: true,
   controlDir: '/home/user/.ssh/ssh-mcp',
+  scpOverSftp: true,
 };
+
+/** Клиент до 9.0: передача идёт классическим протоколом, путь читает shell сервера */
+const CAPS_CLASSIC_SCP: SshCapabilities = { ...CAPS, scpOverSftp: false };
 
 const CAPS_NO_MUX: SshCapabilities = {
   multiplexing: false,
   controlDir: '/home/user/.ssh/ssh-mcp',
+  scpOverSftp: true,
 };
 
 const KEY_PROFILE: RunnerConfig = {
@@ -274,9 +281,51 @@ describe('ssh-args', () => {
       ).toContain('-r');
     });
 
+    /**
+     * Единственное, что обрывает зависшую передачу: своего потолка у неё нет
+     * с тех пор, как его сняли (пункт 3.1). Если keepalive уйдёт из аргументов,
+     * молчащий канал будет держать передачу вечно — и заметить это будет негде.
+     */
+    it('keeps the keepalive that ends a silent transfer', () => {
+      const args = buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/etc/b');
+
+      expect(optionValue(args, 'ServerAliveInterval')).toBe('15');
+      expect(optionValue(args, 'ServerAliveCountMax')).toBe('3');
+    });
+
     it('reuses the same control socket as ssh', () => {
       const args = buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/etc/b');
       expect(optionValue(args, 'ControlPath')).toBe(buildControlPath(CAPS.controlDir));
+    });
+
+    /**
+     * Судьба удалённого пути зависит от направления и от клиента. Замерено на
+     * живом сервере: цель загрузки в SFTP-режиме берётся буквально, и файл
+     * `/tmp/a b.txt` лёг бы под именем `a\ b.txt` — после чего сверка, `mv` и
+     * уборка искали бы путь без слэша и не находили.
+     */
+    it('leaves the upload target unescaped on a modern client', () => {
+      const args = buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/srv/my app.txt');
+      expect(args[args.length - 1]).toBe('example.com:/srv/my app.txt');
+    });
+
+    it('escapes the download source on a modern client', () => {
+      const args = buildScpArgs(KEY_PROFILE, CAPS, 'download', '/tmp/a', '/srv/star*name.txt');
+      expect(args[args.length - 2]).toBe('example.com:/srv/star\\*name.txt');
+    });
+
+    it('escapes both directions on a classic client — the remote shell parses them', () => {
+      const upload = buildScpArgs(KEY_PROFILE, CAPS_CLASSIC_SCP, 'upload', '/tmp/a', '/srv/my app.txt');
+      const download = buildScpArgs(KEY_PROFILE, CAPS_CLASSIC_SCP, 'download', '/tmp/a', '/srv/my app.txt');
+
+      expect(upload[upload.length - 1]).toBe('example.com:/srv/my\\ app.txt');
+      expect(download[download.length - 2]).toBe('example.com:/srv/my\\ app.txt');
+    });
+
+    it('refuses a newline path on a classic client', () => {
+      expect(() =>
+        buildScpArgs(KEY_PROFILE, CAPS_CLASSIC_SCP, 'upload', '/tmp/a', '/srv/x\ntouch /tmp/pwned')
+      ).toThrow(/newline/);
     });
   });
 
@@ -287,6 +336,75 @@ describe('ssh-args', () => {
 
     it('leaves hostnames alone', () => {
       expect(buildRemoteSpec('example.com', '/etc/hosts')).toBe('example.com:/etc/hosts');
+    });
+
+    /**
+     * Удалённый путь не остаётся у клиента: в классическом протоколе его
+     * разбирает shell сервера, в современном шаблоны раскрывает сам клиент.
+     * Замерено на живых серверах в обоих режимах: `star*name.txt` тащит три
+     * посторонних файла везде, а `$(id)` в классическом исполняется.
+     */
+    it.each([
+      ['пробел', '/tmp/sp ace.txt', '/tmp/sp\\ ace.txt'],
+      ['звёздочка', '/tmp/star*name.txt', '/tmp/star\\*name.txt'],
+      ['подстановка команды', '/tmp/$(id).txt', '/tmp/\\$\\(id\\).txt'],
+      ['точка с запятой', '/tmp/a;rm -rf /.txt', '/tmp/a\\;rm\\ -rf\\ /.txt'],
+      ['апостроф', "/tmp/it's.txt", "/tmp/it\\'s.txt"],
+      ['обратный слэш', '/tmp/a\\b.txt', '/tmp/a\\\\b.txt'],
+      ['вопросительный знак', '/tmp/a?.txt', '/tmp/a\\?.txt'],
+    ])('escapes %s in the remote path', (_name, path, escaped) => {
+      expect(escapeRemotePath(path)).toBe(escaped);
+    });
+
+    it('leaves ordinary paths untouched', () => {
+      expect(escapeRemotePath('/var/www/app-1.2_3/index.html')).toBe('/var/www/app-1.2_3/index.html');
+    });
+
+    it('leaves non-ASCII names as they are', () => {
+      // Кириллица в именах работает и без экранирования — менять её форму незачем
+      expect(escapeRemotePath('/tmp/отчёт.txt')).toBe('/tmp/отчёт.txt');
+    });
+
+    it('leaves newlines alone: a backslash before one would swallow it', () => {
+      // Замерено: в классическом режиме `\` + перевод строки означает
+      // продолжение строки, и символ исчезает — имя становится другим
+      expect(escapeRemotePath('/tmp/a\nb.txt')).toBe('/tmp/a\nb.txt');
+    });
+
+    it('leaves the tilde alone: the server expands it', () => {
+      // `\~/app.conf` уехал бы в каталог с именем `~`, а не в домашний
+      expect(escapeRemotePath('~/app.conf')).toBe('~/app.conf');
+    });
+
+    /**
+     * У scp путь-источник и путь-приёмник живут по разным правилам. Замерено:
+     * цель загрузки в SFTP-режиме берётся буквально, и экранирование сделало бы
+     * обратный слэш частью имени — файл лёг бы под именем `a\ b.txt`.
+     */
+    it('leaves an upload target as it is: SFTP takes it literally', () => {
+      expect(prepareRemotePath('/tmp/a b.txt', 'literal')).toBe('/tmp/a b.txt');
+    });
+
+    it('escapes a download source: the client expands globs in it', () => {
+      expect(prepareRemotePath('/tmp/star*name.txt', 'glob')).toBe('/tmp/star\\*name.txt');
+    });
+
+    it('escapes a path parsed by the remote shell', () => {
+      expect(prepareRemotePath('/tmp/$(id).txt', 'shell')).toBe('/tmp/\\$\\(id\\).txt');
+    });
+
+    it('rejects a newline for the classic protocol — it would run as a command', () => {
+      expect(() => prepareRemotePath('/tmp/a\ntouch /tmp/pwned', 'shell')).toThrow(/newline/);
+    });
+
+    it('accepts a newline where the path is not parsed', () => {
+      // В SFTP-режиме такое имя работает, и отказ отнял бы работающее
+      expect(prepareRemotePath('/tmp/a\nb.txt', 'literal')).toBe('/tmp/a\nb.txt');
+      expect(prepareRemotePath('/tmp/a\nb.txt', 'glob')).toBe('/tmp/a\nb.txt');
+    });
+
+    it('keeps the remote spec free of escaping decisions', () => {
+      expect(buildRemoteSpec('example.com', '/tmp/a b')).toBe('example.com:/tmp/a b');
     });
 
     it('disambiguates a local path that looks remote', () => {

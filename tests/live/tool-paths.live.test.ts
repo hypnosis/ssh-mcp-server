@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm } from 'fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { LAB_CONTROL_DIR, LAB_KEY, LAB_REQUIRED, LAB_SERVERS, labUnavailableReason } from './lab.js';
@@ -166,6 +166,107 @@ if (unavailable && LAB_REQUIRED) {
         });
 
         expect(await localManifest(target)).toBe(expected);
+      });
+
+      /**
+       * Удалённый путь не остаётся у клиента: в классическом протоколе его
+       * разбирает shell сервера, в современном шаблоны раскрывает сам клиент.
+       * Замерено в обоих режимах: `star*name.txt` тащит три посторонних файла
+       * везде, а `$(id)` в классическом исполняется на сервере.
+       */
+      describe('метасимволы в удалённом пути', () => {
+        const globDir = `${remoteDir}-glob`;
+
+        beforeAll(async () => {
+          await executor.execute(
+            config,
+            `rm -rf '${globDir}' && mkdir -p '${globDir}' && ` +
+              `echo сосед > '${globDir}/star1name.txt' && ` +
+              `echo сосед > '${globDir}/star2name.txt' && ` +
+              `printf %s настоящий > '${globDir}/star*name.txt' && ` +
+              `printf %s подстановка > '${globDir}/$(id).txt'`,
+            { profileName: server.name }
+          );
+        });
+
+        afterAll(async () => {
+          await executor
+            .execute(config, `rm -rf '${globDir}'`, { profileName: server.name })
+            .catch(() => undefined);
+        });
+
+        /**
+         * Обратная сторона той же задачи: цель загрузки в этом режиме уходит
+         * буквально, и экранирование сделало бы обратный слэш частью имени —
+         * файл лёг бы как `a\ b.txt`, а сверка, переименование и уборка искали
+         * бы его без слэша. Замерено: так и было, пока правка экранировала оба
+         * направления одинаково.
+         */
+        it('файл уезжает в путь с пробелом, а не в путь с обратным слэшем', async () => {
+          const answer = await call('ssh_upload', {
+            profile: server.name,
+            local_path: join(source, 'index.js'),
+            remote_path: `${globDir}/ц ель.txt`,
+            verify: true,
+          });
+
+          expect(answer.content[0].text).toContain('verified');
+          const listing = await executor.execute(
+            config,
+            `ls -a '${globDir}' | grep -c 'ц ель.txt'`,
+            { profileName: server.name }
+          );
+          expect(listing.stdout.trim()).toBe('1');
+        });
+
+        it('каталог уезжает в путь с пробелом целиком', async () => {
+          const answer = await call('ssh_upload', {
+            profile: server.name,
+            local_path: source,
+            remote_path: `${globDir}/моё приложение`,
+            recursive: true,
+            verify: true,
+          });
+
+          expect(answer.content[0].text).toContain('verified');
+          const listing = await executor.execute(
+            config,
+            `ls '${globDir}/моё приложение' | sort | tr '\\n' ' '`,
+            { profileName: server.name }
+          );
+          expect(listing.stdout.trim()).toBe('conf index.js');
+        });
+
+        it('звёздочка в имени берёт один файл, а не всё похожее рядом', async () => {
+          const target = join(workDir, `glob-${server.port}`);
+
+          await call('ssh_download', {
+            profile: server.name,
+            remote_path: `${globDir}/star*name.txt`,
+            local_path: target,
+          });
+
+          expect(await readFile(target, 'utf8')).toBe('настоящий');
+        });
+
+        /**
+         * Здесь проверяется только то, что экранирование не испортило такое
+         * имя: клиент лаборатории один (10.2, передача поверх SFTP), и в этом
+         * режиме `$(id)` не исполняется и без экранирования — негативный
+         * контроль теста красным не становится. Исполнение замерено отдельно,
+         * на том же клиенте с флагом классического протокола.
+         */
+        it('имя с подстановкой команды доезжает как имя', async () => {
+          const target = join(workDir, `subst-${server.port}`);
+
+          await call('ssh_download', {
+            profile: server.name,
+            remote_path: `${globDir}/$(id).txt`,
+            local_path: target,
+          });
+
+          expect(await readFile(target, 'utf8')).toBe('подстановка');
+        });
       });
     });
   }

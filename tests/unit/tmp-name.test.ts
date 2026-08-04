@@ -3,12 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import {
-  buildTempPath,
-  buildStagingDir,
-  buildSudoStagingPath,
-  shellQuote,
-} from '../../src/utils/tmp-name.js';
+import { buildTempPath, buildSudoStagingPath, shellQuote } from '../../src/utils/tmp-name.js';
 
 describe('tmp-name helpers', () => {
   describe('buildTempPath', () => {
@@ -26,18 +21,6 @@ describe('tmp-name helpers', () => {
       const a = buildTempPath('/x/y');
       const b = buildTempPath('/x/y');
       expect(a).not.toBe(b);
-    });
-  });
-
-  describe('buildStagingDir', () => {
-    it('builds staging next to remote dir', () => {
-      const s = buildStagingDir('/var/www/app');
-      expect(s).toMatch(/^\/var\/www\/\.upload-[0-9a-f]{12}\.app$/);
-    });
-
-    it('handles trailing slash', () => {
-      const s = buildStagingDir('/var/www/app/');
-      expect(s).toMatch(/^\/var\/www\/\.upload-[0-9a-f]{12}\.app$/);
     });
   });
 

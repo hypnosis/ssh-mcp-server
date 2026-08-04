@@ -268,6 +268,73 @@ if (unavailable && LAB_REQUIRED) {
           expect(await readFile(target, 'utf8')).toBe('подстановка');
         });
       });
+
+      /**
+       * Тильда в удалённом пути.
+       *
+       * Передачу делает scp: он отдаёт путь shell-у сервера и `~` раскрывает.
+       * Всё остальное — сверка, уборка, создание каталога — шлёт путь в
+       * одинарных кавычках, где `~` остаётся буквой. Пока эти две стороны
+       * расходились, скачивание со сверкой (а она включена по умолчанию)
+       * привозило файл и тут же его выбрасывало: сверка не находила на сервере
+       * файл с именем «~» и объявляла расхождение.
+       */
+      describe('тильда в удалённом пути', () => {
+        const homeFile = 'tool-paths-tilde.txt';
+
+        beforeAll(async () => {
+          await executor.execute(config, `printf %s ЭТАЛОН > ~/'${homeFile}'`, {
+            profileName: server.name,
+          });
+        });
+
+        afterAll(async () => {
+          await executor
+            .execute(config, `rm -rf ~/'${homeFile}' ~/'${homeFile}.up' ~/.upload-* './~'`, {
+              profileName: server.name,
+            })
+            .catch(() => undefined);
+        });
+
+        it('скачивание со сверкой привозит файл, а не уносит его', async () => {
+          const target = join(workDir, `tilde-down-${server.port}`);
+
+          const answer = await call('ssh_download', {
+            profile: server.name,
+            remote_path: `~/${homeFile}`,
+            local_path: target,
+            verify: true,
+          });
+
+          expect(answer.content[0].text).toContain('verified');
+          expect(await readFile(target, 'utf8')).toBe('ЭТАЛОН');
+        });
+
+        it('загрузка кладёт файл в дом и не оставляет рядом следов', async () => {
+          const answer = await call('ssh_upload', {
+            profile: server.name,
+            local_path: join(source, 'index.js'),
+            remote_path: `~/${homeFile}.up`,
+            verify: true,
+          });
+
+          expect(answer.content[0].text).toContain('verified');
+
+          // Файл лежит в доме целым
+          const content = await executor.execute(config, `cat ~/'${homeFile}.up'`, {
+            profileName: server.name,
+          });
+          expect(content.stdout).toBe('новая версия\n');
+
+          // Ни каталога с именем «~», ни брошенного временного пути
+          const traces = await executor.execute(
+            config,
+            `ls -a ~ | grep -c -e '^~$' -e '^\\.upload-' || true`,
+            { profileName: server.name }
+          );
+          expect(traces.stdout.trim()).toBe('0');
+        });
+      });
     });
   }
 

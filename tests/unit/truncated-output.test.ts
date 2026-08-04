@@ -85,12 +85,20 @@ describe('ssh_exec: обрезанный вывод помечен', () => {
 });
 
 describe('ssh_exec: убитая сторожем команда объясняется словами', () => {
-  it('код 124 сопровождается пояснением про таймаут на сервере', async () => {
-    respondWith([[/^sleep /, { exitCode: 124 }]]);
+  /**
+   * Кодов у сторожа два: coreutils отвечает 124, BusyBox — 143 (128 + SIGTERM).
+   * Проверяются оба — лаборатория стоит на BusyBox, и пока в наборе был только
+   * 124, выпадение 143 из списка не замечал ни один тест.
+   */
+  it.each([
+    ['coreutils', 124],
+    ['BusyBox', 143],
+  ])('код сторожа %s (%i) сопровождается пояснением про таймаут', async (_name, exitCode) => {
+    respondWith([[/^sleep /, { exitCode }]]);
 
     const response = await new ExecTool().handleCall(call('ssh_exec', { command: 'sleep 600' }));
 
-    expect(response.content[0].text).toContain('124');
+    expect(response.content[0].text).toContain(String(exitCode));
     expect(response.content[0].text).toMatch(/timeout/i);
   });
 

@@ -22,22 +22,6 @@ export function buildTempPath(remotePath: string): string {
 }
 
 /**
- * Build a staging directory for a recursive upload, next to the target dir.
- * /var/www/app → /var/www/.upload-<rand>.app/
- */
-export function buildStagingDir(remoteDir: string): string {
-  const rand = randomBytes(6).toString('hex');
-  const trimmed = remoteDir.replace(/\/+$/, '');
-  const lastSlash = trimmed.lastIndexOf('/');
-  if (lastSlash < 0) {
-    return `.upload-${rand}.${trimmed}`;
-  }
-  const parent = trimmed.slice(0, lastSlash);
-  const base = trimmed.slice(lastSlash + 1);
-  return `${parent}/.upload-${rand}.${base}`;
-}
-
-/**
  * Имя для отложенной старой копии рядом с целью.
  *
  * /var/www/app → /var/www/.bak-<rand>.app

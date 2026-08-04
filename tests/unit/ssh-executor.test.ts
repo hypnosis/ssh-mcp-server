@@ -188,11 +188,28 @@ describe('SSHExecutor.executeChecked: шаг, который обязан уда
     await expect(new SSHExecutor().executeChecked(CONFIG, 'false')).rejects.toThrow(/exit code 2/);
   });
 
-  it('код 124 объясняет словами: команду убил сторож на сервере', async () => {
-    execMock.mockResolvedValue(result({ exitCode: 124 }));
+  /**
+   * Сторож времени на сервере убивает команду разными кодами: coreutils
+   * возвращает 124, BusyBox — 143 (это 128 + SIGTERM). Замерено на обоих
+   * серверах лаборатории. Голое «143» читается как отказ самой команды,
+   * поэтому пояснение обязано быть у каждого из кодов, а не у одного.
+   */
+  it.each([
+    ['coreutils', 124],
+    ['BusyBox', 143],
+  ])('код сторожа %s (%i) объясняется словами, а не остаётся числом', async (_name, exitCode) => {
+    execMock.mockResolvedValue(result({ exitCode }));
 
     await expect(new SSHExecutor().executeChecked(CONFIG, 'rsync -a /srv /backup')).rejects.toThrow(
       /timeout/i
+    );
+  });
+
+  it('обычный ненулевой код пояснения про сторож не получает', async () => {
+    execMock.mockResolvedValue(result({ exitCode: 1 }));
+
+    await expect(new SSHExecutor().executeChecked(CONFIG, 'grep x file')).rejects.toThrow(
+      /^(?!.*timeout).*$/i
     );
   });
 });

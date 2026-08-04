@@ -673,7 +673,6 @@ This pipeline covers ~80% of a typical server audit without touching `ssh_exec`.
 ### Optional (Logging)
 - `SSH_MCP_LOG_LEVEL` - Log level: `debug`, `info`, `warn`, `error` (default: `info`)
 - `SSH_MCP_LOG_TIMESTAMP` - Show timestamps in logs: `true`, `false` (default: `true`)
-- `SSH_MCP_LOG_COLORS` - Enable colors in logs: `true`, `false` (default: `false`)
 
 ### Optional (Connection Pool)
 - `SSH_MCP_POOL_IDLE_TIMEOUT` - Idle timeout for connections in ms (default: `30000`)

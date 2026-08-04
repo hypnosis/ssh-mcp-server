@@ -6,7 +6,7 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { readFile } from 'fs/promises';
-import { join, posix as posixPath } from 'path';
+import { join } from 'path';
 import { tmpdir } from 'os';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';

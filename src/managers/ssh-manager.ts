@@ -48,8 +48,7 @@ export class SSHManager {
   ): Promise<string> {
     const pool = ConnectionPool.getInstance();
     const profileName = options.profileName || 'default';
-    const timeout = options.timeout || 30000;
-    
+
     // Get client from pool
     const client = await pool.getClient(profileName, config);
     

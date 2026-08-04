@@ -24,9 +24,8 @@ import { verifyRemoteFiles, type VerifyEntry } from '../managers/remote-verify.j
 import { install } from '../managers/installer.js';
 import { localPathOps } from '../managers/local-path-ops.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
-import { expandRemoteHome } from '../managers/remote-home.js';
+import { resolveRemotePath } from '../managers/remote-home.js';
 import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
-import { createPathValidator } from '../utils/path-validator.js';
 import { shellMode, shellOwner } from '../utils/shell-arg.js';
 
 interface UploadFileResult {
@@ -236,13 +235,6 @@ export class TransferTool {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
-    // Path-security validation
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      const v = pathValidator.validate(args.remote_path);
-      if (!v.valid) throw new Error(`Path validation failed: ${v.error}`);
-    }
-
     // Права и владелец проверяются до первого касания сервера: оба уезжают в
     // команду отдельными словами, где кавычки их не удержат
     const mode = args.mode ? shellMode(args.mode, 'mode') : undefined;
@@ -254,8 +246,9 @@ export class TransferTool {
     // (scp отдаёт путь shell-у), а сверка, уборка и создание каталога — нет.
     // Замерено: файл уезжал в дом, сверка его там не находила, ответ врал
     // расхождением, staging оставался на сервере, а рядом появлялся каталог
-    // с именем «~».
-    const target = await expandRemoteHome(this.executor, sshConfig, args.remote_path, {
+    // с именем «~». Правила доступа применяются здесь же — к раскрытому пути,
+    // то есть к тому, куда запись пойдёт на самом деле.
+    const target = await resolveRemotePath(this.executor, sshConfig, args.remote_path, {
       profileName,
       sudo: !!args.sudo,
     });
@@ -678,19 +671,15 @@ export class TransferTool {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      const v = pathValidator.validate(args.remote_path);
-      if (!v.valid) throw new Error(`Path validation failed: ${v.error}`);
-    }
-
     const timeoutMs = parseTimeoutMs(args.timeout);
 
     // Тильду раскрываем до первой команды. Без этого передача её раскрывала
     // (файл приезжал), а сверка искала файл с именем «~» и не находила —
     // расхождение уносило уже скачанное, и у человека не оставалось ничего.
     // Замерено на обоих серверах: с `verify: false` тот же вызов проходил.
-    const source = await expandRemoteHome(this.executor, sshConfig, args.remote_path, {
+    // Правила доступа проверяются по раскрытому пути — по тому, откуда файл
+    // будет прочитан на самом деле.
+    const source = await resolveRemotePath(this.executor, sshConfig, args.remote_path, {
       profileName,
     });
 

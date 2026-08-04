@@ -232,6 +232,7 @@ function toSSHConfig(profileData: SSHProfileData): SSHConfig {
     password: profileData.password,
     strictHostKeyChecking: profileData.strictHostKeyChecking,
     ignoreUserConfig: profileData.ignoreUserConfig,
+    pathSecurity: profileData.pathSecurity,
   };
 }
 

@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { loadProfilesFile } from '../../src/utils/profiles-file.js';
+import { reloadProfiles, resolveSSHConfig } from '../../src/utils/profile-resolver.js';
 
 const tempDirs: string[] = [];
 
@@ -71,5 +72,95 @@ describe('profiles file: transport options', () => {
     const { errors } = loadProfilesFile(path);
 
     expect(errors.join(' ')).toMatch(/strictHostKeyChecking/);
+  });
+});
+
+/**
+ * Ограничения на пути.
+ *
+ * README обещает их с давних пор, но поле терялось дважды: загрузчик собирал
+ * профиль по одному полю и про него не знал, а сборщик конфигурации не
+ * переносил его дальше. Валидатор из-за этого не создавался ни разу — замерено
+ * на живых серверах: запись в запрещённый каталог проходила успешно.
+ */
+describe('profiles file: ограничения на пути', () => {
+  it('правила доезжают из файла до профиля', () => {
+    const path = writeProfiles({
+      production: {
+        host: 'example.com',
+        username: 'deploy',
+        pathSecurity: { deniedPaths: ['/root'], allowedPaths: ['/var/www'] },
+      },
+    });
+
+    const { config, errors } = loadProfilesFile(path);
+
+    expect(errors).toEqual([]);
+    expect(config?.profiles.production.pathSecurity).toEqual({
+      deniedPaths: ['/root'],
+      allowedPaths: ['/var/www'],
+    });
+  });
+
+  it('профиль без ограничений остаётся без них', () => {
+    const path = writeProfiles({ production: { host: 'example.com', username: 'deploy' } });
+
+    expect(loadProfilesFile(path).config?.profiles.production.pathSecurity).toBeUndefined();
+  });
+
+  /**
+   * Испорченная запись обязана быть ошибкой: молча забытое правило выглядит
+   * как включённая защита, которой на самом деле нет.
+   */
+  it.each([
+    ['список вместо объекта', ['/root']],
+    ['строка вместо списка путей', { deniedPaths: '/root' }],
+    ['пустая строка в списке', { deniedPaths: ['/root', '  '] }],
+    ['число в списке путей', { allowedPaths: [42] }],
+    ['нечисловая длина пути', { maxPathLength: 'много' }],
+    ['нелогическое allowTraversal', { allowTraversal: 'no' }],
+  ])('испорченные правила (%s) не проходят молча', (_name, pathSecurity) => {
+    const path = writeProfiles({
+      production: { host: 'example.com', username: 'deploy', pathSecurity },
+    });
+
+    const { config, errors } = loadProfilesFile(path);
+
+    expect(errors.join(' ')).toMatch(/pathSecurity/);
+    expect(config?.profiles.production).toBeUndefined();
+  });
+
+  /**
+   * Второе звено той же цепочки: сборка конфигурации из профиля. Здесь поле
+   * терялось отдельно от загрузчика, поэтому проверяется весь путь целиком —
+   * от файла до того объекта, у которого инструменты спрашивают правила.
+   */
+  it('правила доходят до конфигурации, с которой работают инструменты', () => {
+    const path = writeProfiles({
+      production: {
+        host: 'example.com',
+        username: 'deploy',
+        pathSecurity: { deniedPaths: ['/root'] },
+      },
+    });
+
+    const previous = process.env.SSH_PROFILES_FILE;
+    process.env.SSH_PROFILES_FILE = path;
+    try {
+      reloadProfiles();
+      const config = resolveSSHConfig({ profile: 'production' });
+
+      expect(config.pathSecurity).toEqual({ deniedPaths: ['/root'] });
+    } finally {
+      // Возвращаем окружение как было; без файла профилей перезагрузка
+      // законно отказывается — соседние тесты от этого страдать не должны
+      if (previous === undefined) delete process.env.SSH_PROFILES_FILE;
+      else process.env.SSH_PROFILES_FILE = previous;
+      try {
+        reloadProfiles();
+      } catch {
+        /* профилей больше нет — так и было до теста */
+      }
+    }
   });
 });

@@ -11,6 +11,43 @@ import {
   type SSHConfig,
   type StrictHostKeyChecking,
 } from './ssh-config.js';
+import type { PathSecurityConfig } from './path-validator.js';
+
+/**
+ * Что не так с записью об ограничении путей, или null если всё в порядке.
+ *
+ * Проверяется форма, а не содержимое: список путей обязан быть списком строк,
+ * иначе валидатор получит мусор и пропустит всё подряд — то есть защита будет
+ * числиться включённой, ничего не запрещая.
+ */
+function describePathSecurityProblem(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'it must be an object';
+  }
+
+  const record = value as Record<string, unknown>;
+
+  for (const key of ['allowedPaths', 'deniedPaths']) {
+    const list = record[key];
+    if (list === undefined) continue;
+    if (!Array.isArray(list) || list.some((item) => typeof item !== 'string' || !item.trim())) {
+      return `${key} must be a list of non-empty strings`;
+    }
+  }
+
+  if (record.allowTraversal !== undefined && typeof record.allowTraversal !== 'boolean') {
+    return 'allowTraversal must be true or false';
+  }
+
+  if (
+    record.maxPathLength !== undefined &&
+    (typeof record.maxPathLength !== 'number' || !Number.isFinite(record.maxPathLength) || record.maxPathLength <= 0)
+  ) {
+    return 'maxPathLength must be a positive number';
+  }
+
+  return null;
+}
 
 /**
  * Profiles configuration file structure
@@ -42,6 +79,8 @@ export interface SSHProfileData {
   strictHostKeyChecking?: StrictHostKeyChecking;
   /** Ignore the user's ~/.ssh/config for this profile */
   ignoreUserConfig?: boolean;
+  /** Ограничения на пути: белый и чёрный списки каталогов */
+  pathSecurity?: PathSecurityConfig;
 }
 
 /**
@@ -211,6 +250,21 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       if (profile.ignoreUserConfig === true) {
         profileData.ignoreUserConfig = true;
         logger.debug(`[Profiles File] Profile "${name}" ignores the user's ~/.ssh/config`);
+      }
+
+      // Ограничения на пути. Испорченная запись — ошибка профиля, а не тихий
+      // пропуск: молча забытое правило выглядит как включённая защита, которой
+      // на самом деле нет
+      if (profile.pathSecurity !== undefined) {
+        const problem = describePathSecurityProblem(profile.pathSecurity);
+        if (problem) {
+          logger.error(`[Profiles File] ❌ Profile "${name}" has invalid pathSecurity: ${problem}`);
+          errors.push(`Profile "${name}" has invalid pathSecurity: ${problem}`);
+          errorCount++;
+          continue;
+        }
+        profileData.pathSecurity = profile.pathSecurity as PathSecurityConfig;
+        logger.debug(`[Profiles File] Profile "${name}" restricts paths`);
       }
 
       profiles[name] = profileData;

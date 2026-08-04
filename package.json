@@ -25,6 +25,7 @@
     "lab:up": "bash scripts/lab-up.sh",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "mutate": "node scripts/mutate-changed.mjs",
     "prepublishOnly": "npm run build && npm run test:unit",
     "publish:dry": "npm pack --dry-run",
     "publish:check": "npm pack && tar -tzf *.tgz | head -20 && rm -f *.tgz",
@@ -35,6 +36,8 @@
     "ssh2": "^1.15.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^20.11.0",
     "@types/ssh2": "^1.15.0",
     "@vitest/coverage-v8": "^4.0.16",

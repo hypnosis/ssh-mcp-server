@@ -9,7 +9,7 @@
 
 import { createHash } from 'crypto';
 import { logger } from '../utils/logger.js';
-import { buildRunnerEnv, ensureAskpassScript, redactSecret, selectSecret } from './askpass.js';
+import { buildRunnerEnv, ensureAskpassScript } from './askpass.js';
 import { classifySpawnOutcome } from './error-classifier.js';
 import {
   SSHCancelledError,
@@ -271,9 +271,13 @@ export class OpenSshRunner implements CommandRunner {
 
     this.commandCount++;
 
-    const secret = selectSecret(this.config);
-    const stdout = redactSecret(outcome.stdout, secret);
-    const stderr = redactSecret(outcome.stderr, secret);
+    // Ответ сервера отдаём как есть. Раньше из него вырезался секрет профиля,
+    // и пароль вида `root` превращал `/etc/passwd` в `***:x:0:0:***:/***`.
+    // Скрывать там нечего: секрет на сервер не уезжает (замерено — в окружении
+    // удалённой сессии его нет), так что совпадение всегда случайное, а порча
+    // молчаливая: прочитанный так конфиг легко записать обратно уже сломанным.
+    const stdout = outcome.stdout;
+    const stderr = outcome.stderr;
 
     if (outcome.aborted) {
       throw new SSHCancelledError(`Command cancelled on ${this.destination}`, {
@@ -387,8 +391,7 @@ export class OpenSshRunner implements CommandRunner {
 
     this.transferCount++;
 
-    const secret = selectSecret(this.config);
-    const stderr = redactSecret(outcome.stderr, secret);
+    const stderr = outcome.stderr;
 
     if (outcome.aborted) {
       throw new SSHCancelledError(`Transfer cancelled on ${this.destination}`);

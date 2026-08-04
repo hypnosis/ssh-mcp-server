@@ -5,7 +5,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import { logger } from './logger.js';
+import { logger, hideFromLogs } from './logger.js';
 import {
   STRICT_HOST_KEY_CHECKING_VALUES,
   type SSHConfig,
@@ -122,6 +122,12 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       }
 
       const profile = data as any;
+
+      // Секреты прячем от лога до всех проверок: профиль могут отсеять как
+      // непригодный для SSH (нет host, чужой mode, плохой порт), но пароль в
+      // нём настоящий, и в лог ему нельзя ни при каком исходе разбора
+      hideFromLogs(typeof profile.password === 'string' ? profile.password : undefined);
+      hideFromLogs(typeof profile.passphrase === 'string' ? profile.passphrase : undefined);
 
       // Пропускаем профили с mode: "local" - они для Docker локального режима, SSH не использует
       if (profile.mode === 'local') {

@@ -10,7 +10,6 @@ import {
   ensureAskpassScript,
   selectSecret,
   buildRunnerEnv,
-  redactSecret,
   SECRET_ENV_VAR,
   ASKPASS_SCRIPT_NAME,
 } from '../../src/runner/askpass.js';
@@ -258,19 +257,5 @@ describe('buildRunnerEnv', () => {
       baseEnv: { DISPLAY: ':1' },
     });
     expect(env.DISPLAY).toBe(':1');
-  });
-});
-
-describe('redactSecret', () => {
-  it('replaces every occurrence of the secret', () => {
-    expect(redactSecret('login hunter2 then hunter2', 'hunter2')).toBe('login *** then ***');
-  });
-
-  it('leaves text untouched when there is no secret', () => {
-    expect(redactSecret('nothing to hide', undefined)).toBe('nothing to hide');
-  });
-
-  it('ignores an empty secret rather than exploding the string', () => {
-    expect(redactSecret('abc', '')).toBe('abc');
   });
 });

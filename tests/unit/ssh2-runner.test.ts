@@ -147,6 +147,34 @@ describe('Ssh2Runner: специфика бэкенда', () => {
     expect(lastChannel?.closed).toBe(true);
   });
 
+  /**
+   * Отсутствие потолка (ноль) этот бэкенд не поддерживает: keepalive у него
+   * нет, и бессрочная команда висела бы вечно — а он пока дефолтный. Ноль
+   * читается как «значение по умолчанию», и молчащий канал всё равно
+   * обрывается. Проверка держится на времени срабатывания: без него зелёным
+   * останется и мгновенный таймер, и вовсе отсутствующий.
+   */
+  it('отсутствие потолка не поддерживает: ноль читается как значение по умолчанию', async () => {
+    vi.useFakeTimers();
+    try {
+      const runner = new Ssh2Runner(CONFIG, 'production');
+      scenarios.push({ kind: 'timeout' });
+
+      const pending = runner.exec('sha256sum -- /srv/app/big.bin', { timeoutMs: 0 });
+      const settled = vi.fn();
+      pending.catch(settled);
+
+      // Мгновенный таймер сработал бы здесь — а его быть не должно
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(pending).rejects.toThrow(/timed out after 30000ms/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('обрезает вывод по лимиту и помечает результат', async () => {
     const runner = new Ssh2Runner(CONFIG, 'production');
     scenarios.push({ kind: 'success', stdout: 'x'.repeat(100) });

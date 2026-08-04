@@ -166,6 +166,21 @@ describe('OpenSshRunner timeouts and cancellation', () => {
     );
   });
 
+  /**
+   * Ноль означает «потолка нет»: ни локального таймера, ни удалённого сторожа.
+   * Так зовутся команды, длительность которых задаёт объём данных, — сверка
+   * хэшей большого дерева не обязана укладываться в общие 30 секунд.
+   */
+  it('treats a zero timeout as no limit at all', async () => {
+    runProcessMock.mockResolvedValue(ok());
+
+    await makeRunner().exec('sha256sum -- /srv/app/big.bin', { timeoutMs: 0 });
+
+    expect((runProcessMock.mock.calls[0][0] as ProcessRunOptions).timeoutMs).toBe(0);
+    // Удалённый сторож `timeout N sh -c` тоже не ставится: сроку нет
+    expect(remoteCommand(0)).not.toMatch(/^timeout /);
+  });
+
   it('distinguishes cancellation from a timeout', async () => {
     runProcessMock.mockResolvedValue(ok({ aborted: true, exitCode: null }));
 
@@ -450,6 +465,36 @@ describe('OpenSshRunner transfers', () => {
     const args = callArgs(0);
     expect(args[args.length - 2]).toBe('example.com:/etc/hosts');
     expect(args[args.length - 1]).toBe('/tmp/hosts');
+  });
+
+  /**
+   * Прежде здесь стоял потолок в 300 секунд, и переопределить его было нечем:
+   * каталог на гигабайты или медленный канал обрывались на 301-й секунде,
+   * а вызывающий не мог попросить больше. От зависшего канала это не защищало:
+   * молчание рвёт сам ssh за ~минуту силами ServerAliveInterval (замерено).
+   */
+  it('does not cap a transfer the caller did not limit', async () => {
+    runProcessMock.mockResolvedValue(ok());
+
+    await makeRunner().upload('/tmp/huge', '/srv/huge');
+
+    expect((runProcessMock.mock.calls[0][0] as ProcessRunOptions).timeoutMs).toBeUndefined();
+  });
+
+  it('passes the caller timeout to the process', async () => {
+    runProcessMock.mockResolvedValue(ok());
+
+    await makeRunner().upload('/tmp/a', '/tmp/b', { timeoutMs: 7000 });
+
+    expect((runProcessMock.mock.calls[0][0] as ProcessRunOptions).timeoutMs).toBe(7000);
+  });
+
+  it('names the caller timeout in the error, not a hidden default', async () => {
+    runProcessMock.mockResolvedValue(ok({ timedOut: true, exitCode: null }));
+
+    await expect(
+      makeRunner().upload('/tmp/a', '/tmp/b', { timeoutMs: 7000 })
+    ).rejects.toThrow(/timed out after 7000ms/);
   });
 });
 

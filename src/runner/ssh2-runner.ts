@@ -334,7 +334,11 @@ export class Ssh2Runner implements CommandRunner {
     options: ExecOptions,
     startedAt: number
   ): Promise<ExecResult> {
-    const timeoutMs = options.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
+    // Отсутствие потолка (ноль) этот бэкенд не поддерживает намеренно:
+    // keepalive у него нет, и команда без срока висела бы вечно. Он пока
+    // дефолтный, поэтому здесь всё остаётся как было — 30 секунд.
+    // Уйдёт вместе с бэкендом (пункт 5.3).
+    const timeoutMs = options.timeoutMs || DEFAULT_EXEC_TIMEOUT_MS;
     const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
     return new Promise<ExecResult>((resolve, reject) => {

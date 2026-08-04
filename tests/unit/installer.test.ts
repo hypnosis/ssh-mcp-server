@@ -285,20 +285,6 @@ describe('опасная цель — отказ до любых изменен�
   });
 });
 
-describe('отмена', () => {
-  it('до замены отмена возможна и цель не тронута', async () => {
-    fs.put(FINAL, 'file', 'старое содержимое');
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(install(fs, plan(), { signal: controller.signal })).rejects.toBeInstanceOf(
-      InstallError
-    );
-
-    expect(fs.content(FINAL)).toBe('старое содержимое');
-  });
-});
-
 describe('имена временных путей', () => {
   it('staging лежит рядом с целью — переименование не уедет между дисками', async () => {
     const staged: string[] = [];

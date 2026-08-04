@@ -94,13 +94,8 @@ export class InstallError extends Error {
  * применились» — это другой ответ, чем «всё получилось», и другой, чем
  * «операция провалилась».
  */
-export async function install(
-  ops: PathOps,
-  plan: InstallPlan,
-  options: { signal?: AbortSignal } = {}
-): Promise<InstallOutcome> {
+export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallOutcome> {
   const warnings: string[] = [];
-  throwIfAborted(options.signal);
 
   // prepare: разведка цели. Всё, что здесь не так, — отказ до единого
   // изменения на диске
@@ -144,19 +139,14 @@ export async function install(
   // Права ставятся до замены — иначе на боевом пути возникло бы окно, в котором
   // данные уже живут, а доступ к ним ещё чужой
   try {
-    throwIfAborted(options.signal);
     await plan.stage(staging);
 
-    throwIfAborted(options.signal);
     if (plan.verify) {
       const reason = await plan.verify(staging);
       if (reason) throw new InstallError(`verification failed for ${plan.finalPath}: ${reason}`);
     }
 
-    throwIfAborted(options.signal);
     if (plan.finalize) await plan.finalize(staging);
-
-    throwIfAborted(options.signal);
   } catch (error) {
     await discard(ops, staging);
     throw warnings.length > 0
@@ -317,10 +307,6 @@ async function discard(ops: PathOps, staging: string): Promise<void> {
   await ops.removeTree(staging).catch((error: unknown) => {
     logger.warn(`[Installer] could not remove the temporary path ${staging}: ${message(error)}`);
   });
-}
-
-function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new InstallError('installation cancelled');
 }
 
 function toError(error: unknown): Error {

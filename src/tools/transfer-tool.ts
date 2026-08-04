@@ -24,12 +24,8 @@ import { verifyRemoteFiles, type VerifyEntry } from '../managers/remote-verify.j
 import { install } from '../managers/installer.js';
 import { localPathOps } from '../managers/local-path-ops.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
-import {
-  buildTempPath,
-  buildStagingDir,
-  buildSudoStagingPath,
-  shellQuote,
-} from '../utils/tmp-name.js';
+import { expandRemoteHome } from '../managers/remote-home.js';
+import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
 import { createPathValidator } from '../utils/path-validator.js';
 import { shellMode, shellOwner } from '../utils/shell-arg.js';
 
@@ -253,6 +249,17 @@ export class TransferTool {
     const owner = args.owner ? shellOwner(args.owner, 'owner') : undefined;
     const timeoutMs = parseTimeoutMs(args.timeout);
 
+    // Тильду раскрываем у себя, до первой команды. Дальше путь едет только в
+    // одинарных кавычках, где `~` — обычная буква: сама передача её раскрывала
+    // (scp отдаёт путь shell-у), а сверка, уборка и создание каталога — нет.
+    // Замерено: файл уезжал в дом, сверка его там не находила, ответ врал
+    // расхождением, staging оставался на сервере, а рядом появлялся каталог
+    // с именем «~».
+    const target = await expandRemoteHome(this.executor, sshConfig, args.remote_path, {
+      profileName,
+      sudo: !!args.sudo,
+    });
+
     const localStat = await stat(args.local_path);
     const isDir = args.recursive ?? localStat.isDirectory();
 
@@ -267,7 +274,7 @@ export class TransferTool {
         sshConfig,
         profileName,
         args.local_path,
-        args.remote_path,
+        target.path,
         {
           mode,
           atomic: args.atomic !== false,
@@ -283,7 +290,7 @@ export class TransferTool {
         content: [
           {
             type: 'text',
-            text: this.formatUploadResult(result, true),
+            text: this.formatUploadResult(result, true, target.warnings),
           },
         ],
       };
@@ -293,7 +300,7 @@ export class TransferTool {
       sshConfig,
       profileName,
       args.local_path,
-      args.remote_path,
+      target.path,
       {
         mode,
         atomic: args.atomic !== false,
@@ -307,14 +314,23 @@ export class TransferTool {
     );
     return {
       content: [
-        { type: 'text', text: this.formatUploadResult(result, false) },
+        { type: 'text', text: this.formatUploadResult(result, false, target.warnings) },
       ],
     };
   }
 
+  /**
+   * Ответ о загрузке.
+   *
+   * Печатается путь, по которому файл лёг на самом деле: при `~` он отличается
+   * от запрошенного. Предупреждения идут туда же — и те, что накопил
+   * установщик (неубранная старая копия), и те, что появились при раскрытии
+   * пути; раньше они просто пропадали.
+   */
   private formatUploadResult(
     r: UploadFileResult | UploadDirResult,
-    isDir: boolean
+    isDir: boolean,
+    pathWarnings: string[] = []
   ): string {
     const lines: string[] = [];
     lines.push(`✓ Upload OK: ${r.remote_path}`);
@@ -332,7 +348,7 @@ export class TransferTool {
     }
     lines.push(`  atomic: ${r.atomic}`);
     lines.push(`  sudo: ${r.sudo}`);
-    return lines.join('\n');
+    return lines.join('\n') + formatWarnings([...pathWarnings, ...(r.warnings ?? [])]);
   }
 
   /**
@@ -445,8 +461,10 @@ export class TransferTool {
   /**
    * Положить один файл на сервер.
    *
-   * Родительский каталог создаётся заранее и обязан создаться: раньше неудача
-   * здесь молчала, и передача падала дальше на невнятном «No such file».
+   * Родительский каталог здесь не создаётся: временный путь всегда лежит рядом
+   * с целью, а его каталог установщик создал до начала передачи. На пути под
+   * sudo это и вовсе `/tmp`. Лишняя команда стоила по одному обращению к
+   * серверу на каждую загрузку — замерено на обоих контейнерах.
    */
   private async putFile(
     sshConfig: any,
@@ -455,15 +473,6 @@ export class TransferTool {
     remotePath: string,
     timeoutMs?: number
   ): Promise<void> {
-    const parent = posixPath.dirname(remotePath);
-    if (parent && parent !== '/' && parent !== '.') {
-      await this.executor.executeChecked(
-        sshConfig,
-        `mkdir -p ${shellQuote(parent)}`,
-        { profileName }
-      );
-    }
-
     const runner = await getRunner(sshConfig, profileName);
     await runner.upload(localPath, remotePath, { timeoutMs });
   }
@@ -677,15 +686,22 @@ export class TransferTool {
 
     const timeoutMs = parseTimeoutMs(args.timeout);
 
+    // Тильду раскрываем до первой команды. Без этого передача её раскрывала
+    // (файл приезжал), а сверка искала файл с именем «~» и не находила —
+    // расхождение уносило уже скачанное, и у человека не оставалось ничего.
+    // Замерено на обоих серверах: с `verify: false` тот же вызов проходил.
+    const source = await expandRemoteHome(this.executor, sshConfig, args.remote_path, {
+      profileName,
+    });
+
     const isDir =
-      args.recursive ??
-      (await this.isRemoteDir(sshConfig, profileName, args.remote_path));
+      args.recursive ?? (await this.isRemoteDir(sshConfig, profileName, source.path));
 
     if (isDir) {
       const result = await this.downloadDirectory(
         sshConfig,
         profileName,
-        args.remote_path,
+        source.path,
         args.local_path,
         { verify: args.verify !== false, timeoutMs }
       );
@@ -699,9 +715,9 @@ export class TransferTool {
           {
             type: 'text',
             text:
-              `✓ Downloaded directory: ${args.remote_path} -> ${args.local_path}\n` +
+              `✓ Downloaded directory: ${source.path} -> ${args.local_path}\n` +
               `  files: ${result.files}\n  sha256: ${verdict}` +
-              formatWarnings(result.warnings),
+              formatWarnings([...source.warnings, ...result.warnings]),
           },
         ],
       };
@@ -710,7 +726,7 @@ export class TransferTool {
     const file = await this.downloadFile(
       sshConfig,
       profileName,
-      args.remote_path,
+      source.path,
       args.local_path,
       { verify: args.verify !== false, timeoutMs }
     );
@@ -724,9 +740,9 @@ export class TransferTool {
         {
           type: 'text',
           text:
-            `✓ Downloaded file: ${args.remote_path} -> ${args.local_path}\n` +
+            `✓ Downloaded file: ${source.path} -> ${args.local_path}\n` +
             `  bytes: ${file.bytes}\n  sha256: ${fileVerdict}` +
-            formatWarnings(file.warnings),
+            formatWarnings([...source.warnings, ...file.warnings]),
         },
       ],
     };

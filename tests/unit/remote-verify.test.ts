@@ -449,4 +449,50 @@ describe('сверка: сервер печатает имя не букваль
 
     expect(outcome.status).toBe('unavailable');
   });
+
+  /**
+   * Трудные имена спрашиваются вторым проходом, по одному файлу за команду, —
+   * и у этого прохода те же способы остаться без ответа, что у общего:
+   * сторож времени и обрезка буфера. Удавшийся первый проход не делает ответ
+   * полным: недосчитанный хэш выглядит как расхождение, а по расхождению
+   * установщик сносит уже уехавшее дерево.
+   */
+  it.each([
+    ['coreutils', 124, ''],
+    ['BusyBox', 143, 'Terminated'],
+  ])('сторож (%s, %i) на трудном имени — «нечем», а не «не сошлось»', async (_n, exitCode, stderr) => {
+    executeMock
+      .mockResolvedValueOnce(reply(`${HASH_ONE}  /srv/plain.txt\n`))
+      .mockResolvedValue(reply('', { exitCode, stderr }));
+
+    const outcome = await verifyRemoteFiles(
+      executor(),
+      CONFIG,
+      [
+        { path: '/srv/plain.txt', hash: HASH_ONE },
+        { path: '/srv/a\nb.txt', hash: HASH_TWO },
+      ],
+      { profileName: 'production' }
+    );
+
+    expect(outcome.status).toBe('unavailable');
+  });
+
+  it('обрезанный ответ на трудном имени — «нечем», а не «не сошлось»', async () => {
+    executeMock
+      .mockResolvedValueOnce(reply(`${HASH_ONE}  /srv/plain.txt\n`))
+      .mockResolvedValue(reply('', { truncated: true }));
+
+    const outcome = await verifyRemoteFiles(
+      executor(),
+      CONFIG,
+      [
+        { path: '/srv/plain.txt', hash: HASH_ONE },
+        { path: '/srv/a\nb.txt', hash: HASH_TWO },
+      ],
+      { profileName: 'production' }
+    );
+
+    expect(outcome.status).toBe('unavailable');
+  });
 });

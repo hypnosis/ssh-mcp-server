@@ -4,6 +4,7 @@
  */
 
 import { logger } from './logger.js';
+import type { PathSecurityConfig } from './path-validator.js';
 
 /**
  * Политика проверки ключа хоста.
@@ -33,6 +34,16 @@ export interface SSHConfig {
   strictHostKeyChecking?: StrictHostKeyChecking;
   /** Игнорировать пользовательский ~/.ssh/config (только бэкенд openssh) */
   ignoreUserConfig?: boolean;
+  /**
+   * Ограничения на пути: белый и чёрный списки каталогов.
+   *
+   * Поле задаётся в профиле и обязано доехать сюда: инструменты берут правила
+   * только отсюда. Пока его здесь не было, `pathSecurity` из файла профилей
+   * молча терялся при сборке конфига — README обещал защиту, а валидатор ни
+   * разу не создавался (замерено на живых серверах: запись в запрещённый
+   * каталог проходила).
+   */
+  pathSecurity?: PathSecurityConfig;
 }
 
 

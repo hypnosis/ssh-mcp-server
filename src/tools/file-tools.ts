@@ -13,12 +13,11 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
-import { createPathValidator } from '../utils/path-validator.js';
 import { sha256OfBuffer } from '../utils/sha256.js';
 import { verifyRemoteFiles } from '../managers/remote-verify.js';
 import { install } from '../managers/installer.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
-import { expandRemoteHome } from '../managers/remote-home.js';
+import { resolveRemotePath, type ExpandedPath } from '../managers/remote-home.js';
 import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
 import { shellGlob, shellMode } from '../utils/shell-arg.js';
 import { truncatedReadMessage, withTruncationNote } from '../utils/output-notes.js';
@@ -225,29 +224,28 @@ export class FileTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
-    const paths = Array.isArray(args.path) ? args.path : [args.path];
+    const requested = Array.isArray(args.path) ? args.path : [args.path];
     const binary = args.binary === true;
     const encoding = binary ? 'base64' : (args.encoding || 'utf8');
     const sudo = args.sudo || false;
-    
-    // Validate paths against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      for (const path of paths) {
-        const pathValidation = pathValidator.validate(path);
-        if (!pathValidation.valid) {
-          throw new Error(`Path validation failed: ${pathValidation.error}`);
-        }
-      }
+
+    // Пути раскрываются и проверяются правилами до первой команды — весь
+    // список сразу, как и раньше: отказ на пятом файле не должен приходить
+    // после того, как первые четыре уже прочитаны
+    const paths: string[] = [];
+    for (const path of requested) {
+      const target = await resolveRemotePath(this.executor, sshConfig, path, { profileName, sudo });
+      for (const warning of target.warnings) logger.warn(`[file-tools] ${warning}`);
+      paths.push(target.path);
     }
-    
+
     // Single file - simple result
     if (paths.length === 1) {
       if (binary) {
         const b64 = await this.readFileBinary(sshConfig, paths[0], profileName);
         return { content: [{ type: 'text', text: b64 }] };
       }
-      const command = await this.buildReadCommand(sshConfig, profileName, paths[0], encoding, sudo);
+      const command = this.buildReadCommand(paths[0], encoding);
 
       const result = await this.executor.execute(sshConfig, command, {
         sudo,
@@ -290,7 +288,7 @@ export class FileTools {
           });
           continue;
         }
-        const command = await this.buildReadCommand(sshConfig, profileName, path, encoding, sudo);
+        const command = this.buildReadCommand(path, encoding);
 
         const result = await this.executor.execute(sshConfig, command, {
           sudo,
@@ -360,23 +358,26 @@ export class FileTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const files = Array.isArray(args.files) ? args.files : [args.files];
-    
-    // Validate paths against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      for (const file of files) {
-        const pathValidation = pathValidator.validate(file.path);
-        if (!pathValidation.valid) {
-          throw new Error(`Path validation failed: ${pathValidation.error}`);
-        }
-      }
+    const requested = Array.isArray(args.files) ? args.files : [args.files];
+
+    // Пути раскрываются и проверяются правилами до первой записи — весь список
+    // сразу: отказ на пятом файле не должен приходить после того, как первые
+    // четыре уже легли на сервер
+    const files: Array<{ file: any; target: ExpandedPath }> = [];
+    for (const file of requested) {
+      files.push({
+        file,
+        target: await resolveRemotePath(this.executor, sshConfig, file.path, {
+          profileName,
+          sudo: file.sudo,
+        }),
+      });
     }
-    
+
     // Single file - simple result
     if (files.length === 1) {
-      const file = files[0];
-      const written = await this.writeFileRouted(sshConfig, file, profileName);
+      const { file, target } = files[0];
+      const written = await this.writeFileRouted(sshConfig, file, target, profileName);
 
       // Печатается путь, по которому файл оказался на самом деле: при `~` он
       // отличается от запрошенного, и человек должен видеть настоящий адрес
@@ -396,9 +397,9 @@ export class FileTools {
       error?: string;
     }> = [];
 
-    for (const file of files) {
+    for (const { file, target } of files) {
       try {
-        const written = await this.writeFileRouted(sshConfig, file, profileName);
+        const written = await this.writeFileRouted(sshConfig, file, target, profileName);
         results.push({
           path: written.path,
           success: true,
@@ -409,7 +410,7 @@ export class FileTools {
         });
       } catch (error: any) {
         results.push({
-          path: file.path,
+          path: target.path,
           success: false,
           bytesWritten: 0,
           error: error.message,
@@ -461,6 +462,8 @@ export class FileTools {
       atomic?: boolean;
       binary?: boolean;
     },
+    /** Раскрытый и уже проверенный правилами путь назначения */
+    target: ExpandedPath,
     profileName: string
   ): Promise<{ path: string; warnings: string[] }> {
     const buf = file.binary
@@ -471,10 +474,6 @@ export class FileTools {
     // себя временный путь и запись, которой не просили
     const mode = file.mode ? shellMode(file.mode, 'mode') : undefined;
 
-    const target = await expandRemoteHome(this.executor, sshConfig, file.path, {
-      profileName,
-      sudo: file.sudo,
-    });
     const expectedHash = sha256OfBuffer(buf);
     const ops = remotePathOps({
       executor: this.executor,
@@ -619,16 +618,7 @@ export class FileTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    // Validate path against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      const pathValidation = pathValidator.validate(args.path);
-      if (!pathValidation.valid) {
-        throw new Error(`Path validation failed: ${pathValidation.error}`);
-      }
-    }
-    
-    const target = await expandRemoteHome(this.executor, sshConfig, args.path, { profileName });
+    const target = await resolveRemotePath(this.executor, sshConfig, args.path, { profileName });
     const safePath = shellQuote(target.path);
 
     let command = 'ls -lah';
@@ -662,24 +652,10 @@ export class FileTools {
   /**
    * Команда чтения файла.
    *
-   * Путь раскрывается у нас и уезжает в одинарных кавычках — тем же способом,
-   * что и при записи. Под sudo `~` ведёт в дом логин-пользователя, и об этом
-   * говорится в журнале: подмешивать предупреждение в ответ нельзя, ответ здесь
-   * это содержимое файла.
+   * Путь приходит сюда уже раскрытым и уезжает в одинарных кавычках — тем же
+   * способом, что и при записи.
    */
-  private async buildReadCommand(
-    sshConfig: any,
-    profileName: string,
-    path: string,
-    encoding: string,
-    sudo: boolean
-  ): Promise<string> {
-    const target = await expandRemoteHome(this.executor, sshConfig, path, { profileName, sudo });
-
-    for (const warning of target.warnings) {
-      logger.warn(`[file-tools] ${warning}`);
-    }
-
-    return `${encoding === 'base64' ? 'base64' : 'cat'} ${shellQuote(target.path)}`;
+  private buildReadCommand(path: string, encoding: string): string {
+    return `${encoding === 'base64' ? 'base64' : 'cat'} ${shellQuote(path)}`;
   }
 }

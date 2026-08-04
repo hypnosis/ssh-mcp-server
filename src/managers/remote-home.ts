@@ -16,6 +16,7 @@
 import { posix as posixPath } from 'path';
 import type { SSHExecutor } from './ssh-executor.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
+import { createPathValidator } from '../utils/path-validator.js';
 
 export interface ExpandedPath {
   path: string;
@@ -65,4 +66,31 @@ export async function expandRemoteHome(
     : [];
 
   return { path: expanded, warnings };
+}
+
+/**
+ * Раскрыть путь и проверить его правилами доступа профиля.
+ *
+ * Порядок здесь и есть суть: правила применяются к тому пути, по которому
+ * операция пойдёт на самом деле. Раньше проверка шла до раскрытия, а `~/…`
+ * валидатор подменял на `/home/user/…` — путь, которого не существует. На
+ * сервере с входом под root запрет `deniedPaths: ['/root']` из-за этого не
+ * срабатывал вовсе, а разрешение `allowedPaths: ['/root']` наоборот
+ * отказывало в собственном каталоге.
+ */
+export async function resolveRemotePath(
+  executor: SSHExecutor,
+  config: SSHConfig,
+  path: string,
+  options: { profileName: string; sudo?: boolean }
+): Promise<ExpandedPath> {
+  const expanded = await expandRemoteHome(executor, config, path, options);
+
+  const validator = createPathValidator(config);
+  if (validator) {
+    const verdict = validator.validate(expanded.path);
+    if (!verdict.valid) throw new Error(`Path validation failed: ${verdict.error}`);
+  }
+
+  return expanded;
 }

@@ -20,6 +20,7 @@ import { remotePathOps } from '../managers/remote-path-ops.js';
 import { resolveRemotePath, type ExpandedPath } from '../managers/remote-home.js';
 import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
 import { shellGlob, shellMode } from '../utils/shell-arg.js';
+import { requireEntryList, requireText, requireTextList } from '../utils/tool-args.js';
 import { truncatedReadMessage, withTruncationNote } from '../utils/output-notes.js';
 
 /**
@@ -224,7 +225,7 @@ export class FileTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
-    const requested = Array.isArray(args.path) ? args.path : [args.path];
+    const requested = requireTextList(args.path, 'path', '"/etc/hosts"');
     const binary = args.binary === true;
     const encoding = binary ? 'base64' : (args.encoding || 'utf8');
     const sudo = args.sudo || false;
@@ -358,7 +359,11 @@ export class FileTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const requested = Array.isArray(args.files) ? args.files : [args.files];
+    // Форма проверяется целиком до первой записи: без этого отсутствующий
+    // `files` падал внутренним `Cannot read properties of undefined`, а
+    // `files: []` отвечал бодрым «Write 0 files» на невыполненную работу.
+    const requested = requireEntryList(args.files, 'files', ['path', 'content'],
+      '{"path": "/etc/app.conf", "content": "..."}');
 
     // Пути раскрываются и проверяются правилами до первой записи — весь список
     // сразу: отказ на пятом файле не должен приходить после того, как первые
@@ -369,7 +374,7 @@ export class FileTools {
         file,
         target: await resolveRemotePath(this.executor, sshConfig, file.path, {
           profileName,
-          sudo: file.sudo,
+          sudo: file.sudo === true,
         }),
       });
     }
@@ -618,7 +623,8 @@ export class FileTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const target = await resolveRemotePath(this.executor, sshConfig, args.path, { profileName });
+    const path = requireText(args.path, 'path', '"/var/log"');
+    const target = await resolveRemotePath(this.executor, sshConfig, path, { profileName });
     const safePath = shellQuote(target.path);
 
     let command = 'ls -lah';

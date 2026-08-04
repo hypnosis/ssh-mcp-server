@@ -65,10 +65,13 @@ For array of items, use DOUBLE QUOTES in JSON format:
 
 For single item, use string:
 ✅ Correct:   ${parameterName}: "item1"
-
-For bash tests (only for 'command' parameter), this validator won't trigger:
-✅ Correct:   command: "[[ -f file.txt ]] && echo exists"
-
+${
+  // Подсказка про bash-тест уместна только там, где значение — команда:
+  // в ответе про `path` она сбивала с толку, советуя чинить чужой параметр.
+  parameterName === 'command'
+    ? '\nBash tests are not affected by this check:\n✅ Correct:   command: "[[ -f file.txt ]] && echo exists"\n'
+    : ''
+}
 MCP tools require valid JSON syntax for arrays.`;
 }
 

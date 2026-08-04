@@ -130,8 +130,13 @@ You can add optional security rules to restrict file access per profile:
 
 - Path security is **optional**. If not configured, all paths are allowed.
 - Blacklist (`deniedPaths`) is checked before whitelist (`allowedPaths`)
-- These rules apply to: `ssh_file_read`, `ssh_file_write`, `ssh_file_list`, `ssh_log_tail`, `ssh_log_search`
-- Tilde (`~`) paths are supported and automatically expanded to `$HOME`
+- These rules apply to: `ssh_file_read`, `ssh_file_write`, `ssh_file_list`, `ssh_log_tail`,
+  `ssh_log_search`, `ssh_upload`, `ssh_download`
+- Tilde (`~`) paths are expanded **before** the rules are checked, using the home directory
+  reported by the server — so `deniedPaths: ["/root"]` also rejects `~/secret` when the
+  session user is `root`
+- A malformed `pathSecurity` block is a profile error, not a silently ignored setting:
+  a rule that quietly disappears looks like protection that is not there
 
 ### 2. Configure Cursor
 
@@ -866,9 +871,14 @@ SSH MCP Server uses a secure quoting strategy to prevent injection attacks:
 - ✅ Glob expansion (`*`, `?`)
 
 **Tilde Expansion:**
-- `~/file` → `$HOME/file` (automatic)
-- `~user/file` → shell expands `~user` (automatic)
-- Works in: `ssh_file_read`, `ssh_file_write`, `ssh_file_list`, `ssh_log_tail`, `ssh_log_search`
+- `~/file` → expanded on our side to the home directory reported by the SSH session
+  (probed once per session, then cached) — the path reaches the server fully quoted
+- `~user/file` → **rejected** with an explanation: writing to a guessed home directory is
+  worse than refusing
+- Under `sudo: true`, `~` still means the home of the **login** user, not root — the tool
+  says so in its answer
+- Works in: `ssh_file_read`, `ssh_file_write`, `ssh_file_list`, `ssh_log_tail`,
+  `ssh_log_search`, `ssh_upload`, `ssh_download`
 
 ### Path Security (Optional)
 

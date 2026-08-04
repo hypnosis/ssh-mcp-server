@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v2.0.0 (branch `feat/openssh-transport`)
+
+Transport moved from the in-process `ssh2` pool to the system OpenSSH client with
+ControlMaster multiplexing. Sprints CORE_08 → CORE_10; full record with measurements in
+`docs/sprints/planned/`. Not released yet — the default backend is still `ssh2` until the
+flip (CORE_10 step 5.2).
+
+### Fixed — data loss and false corruption reports
+- `~` in `remote_path` of `ssh_upload` / `ssh_download`. Download used to bring the file
+  and then delete it (the checksum was asked for a file literally named `~`); upload
+  created a directory called `~` next to the real home.
+- File names containing a backslash, newline or carriage return were reported as corrupted
+  after a correct transfer — and the installer removed the tree it had just delivered.
+- A transfer killed by the remote timeout watchdog was read as a checksum mismatch
+  (exit code 124 on coreutils, 143 on BusyBox), with the same removal as above.
+- Trees of ~1000 files failed to upload with `verify: true`: every file was opened at once
+  and the process ran out of descriptors. Hashing now runs through a pool of 16 readers.
+- Broken symlinks and symlink loops inside a tree are refused **before** the transfer
+  starts instead of leaving half a tree on the server.
+
+### Changed — behaviour
+- `pathSecurity` from the profile is now actually enforced, and also covers `ssh_upload` /
+  `ssh_download`. It never worked before: the field was lost between the profiles file and
+  the tool. Profiles that carry this block will start rejecting paths.
+- No default 300-second ceiling on transfers. `ssh_upload` / `ssh_download` accept an
+  optional `timeout` (ms) which also covers checksum verification, `chmod -R` and cleanup.
+- `~user/path` is rejected instead of being written to a guessed location; under
+  `sudo: true`, `~` means the login user's home and the answer says so.
+- `ssh_file_read` refuses truncated output instead of returning a partial file.
+
+### Security
+- Tool argument values (`mode`, `owner`, `pattern`, `lines`, `context`, `top_n`,
+  `log_lines`) are validated before reaching the command line — eight injection points in
+  four files. Working forms (`644`, `u+x`, `*.log`, names with spaces) are unchanged.
+- Passwords and passphrases are stripped from everything the server logs itself, at any
+  length. Server output is left untouched — masking it corrupted file contents.
+
 ## [1.3.2] - 2026-06-20
 
 ### Fixed

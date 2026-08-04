@@ -27,6 +27,7 @@ import { remotePathOps } from '../managers/remote-path-ops.js';
 import { resolveRemotePath } from '../managers/remote-home.js';
 import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
 import { shellMode, shellOwner } from '../utils/shell-arg.js';
+import { requireText } from '../utils/tool-args.js';
 
 interface UploadFileResult {
   remote_path: string;
@@ -160,8 +161,9 @@ export class TransferTool {
             },
             concurrency: {
               type: 'number',
-              description: 'Parallel SFTP chunk concurrency. Default: 4.',
-              default: 4,
+              description:
+                'Deprecated and ignored: the transfer goes through scp, which has no ' +
+                'chunk concurrency to tune. Kept so that existing callers do not break.',
             },
             timeout: {
               type: 'number',
@@ -194,8 +196,9 @@ export class TransferTool {
             },
             concurrency: {
               type: 'number',
-              description: 'Parallel SFTP chunk concurrency. Default: 4.',
-              default: 4,
+              description:
+                'Deprecated and ignored: the transfer goes through scp, which has no ' +
+                'chunk concurrency to tune. Kept so that existing callers do not break.',
             },
             timeout: {
               type: 'number',
@@ -248,17 +251,20 @@ export class TransferTool {
     // расхождением, staging оставался на сервере, а рядом появлялся каталог
     // с именем «~». Правила доступа применяются здесь же — к раскрытому пути,
     // то есть к тому, куда запись пойдёт на самом деле.
-    const target = await resolveRemotePath(this.executor, sshConfig, args.remote_path, {
+    const remotePath = requireText(args.remote_path, 'remote_path', '"/opt/app"');
+    const localPath = requireText(args.local_path, 'local_path', '"./dist"');
+
+    const target = await resolveRemotePath(this.executor, sshConfig, remotePath, {
       profileName,
       sudo: !!args.sudo,
     });
 
-    const localStat = await stat(args.local_path);
+    const localStat = await stat(localPath);
     const isDir = args.recursive ?? localStat.isDirectory();
 
     if (isDir && !localStat.isDirectory()) {
       throw new Error(
-        `local_path is not a directory but recursive=true: ${args.local_path}`
+        `local_path is not a directory but recursive=true: ${localPath}`
       );
     }
 
@@ -266,7 +272,7 @@ export class TransferTool {
       const result = await this.uploadDirectory(
         sshConfig,
         profileName,
-        args.local_path,
+        localPath,
         target.path,
         {
           mode,
@@ -275,7 +281,6 @@ export class TransferTool {
           sudo: !!args.sudo,
           owner,
           overwrite: args.overwrite !== false,
-          concurrency: args.concurrency || 4,
           timeoutMs,
         }
       );
@@ -292,7 +297,7 @@ export class TransferTool {
     const result = await this.uploadFile(
       sshConfig,
       profileName,
-      args.local_path,
+      localPath,
       target.path,
       {
         mode,
@@ -301,7 +306,6 @@ export class TransferTool {
         sudo: !!args.sudo,
         owner,
         overwrite: args.overwrite !== false,
-        concurrency: args.concurrency || 4,
         timeoutMs,
       }
     );
@@ -360,7 +364,6 @@ export class TransferTool {
       sudo: boolean;
       owner?: string;
       overwrite: boolean;
-      concurrency: number;
       /** Потолок передачи; без него она идёт столько, сколько нужно */
       timeoutMs?: number;
     }
@@ -573,7 +576,6 @@ export class TransferTool {
       sudo: boolean;
       owner?: string;
       overwrite: boolean;
-      concurrency: number;
       /** Потолок передачи; без него она идёт столько, сколько нужно */
       timeoutMs?: number;
     }
@@ -679,7 +681,10 @@ export class TransferTool {
     // Замерено на обоих серверах: с `verify: false` тот же вызов проходил.
     // Правила доступа проверяются по раскрытому пути — по тому, откуда файл
     // будет прочитан на самом деле.
-    const source = await resolveRemotePath(this.executor, sshConfig, args.remote_path, {
+    const remotePath = requireText(args.remote_path, 'remote_path', '"/opt/app/app.conf"');
+    const localPath = requireText(args.local_path, 'local_path', '"./app.conf"');
+
+    const source = await resolveRemotePath(this.executor, sshConfig, remotePath, {
       profileName,
     });
 
@@ -691,7 +696,7 @@ export class TransferTool {
         sshConfig,
         profileName,
         source.path,
-        args.local_path,
+        localPath,
         { verify: args.verify !== false, timeoutMs }
       );
       const verdict = result.verified
@@ -704,7 +709,7 @@ export class TransferTool {
           {
             type: 'text',
             text:
-              `✓ Downloaded directory: ${source.path} -> ${args.local_path}\n` +
+              `✓ Downloaded directory: ${source.path} -> ${localPath}\n` +
               `  files: ${result.files}\n  sha256: ${verdict}` +
               formatWarnings([...source.warnings, ...result.warnings]),
           },
@@ -716,7 +721,7 @@ export class TransferTool {
       sshConfig,
       profileName,
       source.path,
-      args.local_path,
+      localPath,
       { verify: args.verify !== false, timeoutMs }
     );
     const fileVerdict = file.verified
@@ -729,7 +734,7 @@ export class TransferTool {
         {
           type: 'text',
           text:
-            `✓ Downloaded file: ${source.path} -> ${args.local_path}\n` +
+            `✓ Downloaded file: ${source.path} -> ${localPath}\n` +
             `  bytes: ${file.bytes}\n  sha256: ${fileVerdict}` +
             formatWarnings([...source.warnings, ...file.warnings]),
         },

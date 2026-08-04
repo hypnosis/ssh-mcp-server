@@ -8,6 +8,7 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
+import { requireTextList } from '../utils/tool-args.js';
 import { exitCodeHint, TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
 
 /**
@@ -119,8 +120,11 @@ export class ExecTool {
       const profileName = args.profile || 'default';
       const sshConfig = resolveSSHConfig({ profile: args.profile });
       
-      // Determine command type (string or array)
-      const commands = Array.isArray(args.command) ? args.command : [args.command];
+      // Форма проверяется до первой команды: без этого отсутствующий или не
+      // строковый `command` доходил до executor и падал внутренним
+      // `finalCommand.substring is not a function` — из такого текста
+      // вызывающий не поймёт, что ошибся формой.
+      const commands = requireTextList(args.command, 'command', '"uptime"');
       
       // Check for dangerous commands
       const warnings: string[] = [];

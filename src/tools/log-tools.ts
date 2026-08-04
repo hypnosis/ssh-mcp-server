@@ -11,6 +11,7 @@ import { validateArrayParameter, createValidationErrorResponse } from '../utils/
 import { createPathValidator } from '../utils/path-validator.js';
 import { TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
 import { shellCount } from '../utils/shell-arg.js';
+import { requireText, requireTextList } from '../utils/tool-args.js';
 import { shellQuote } from '../utils/tmp-name.js';
 import { expandRemoteHome } from '../managers/remote-home.js';
 
@@ -144,7 +145,7 @@ export class LogTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const paths = Array.isArray(args.path) ? args.path : [args.path];
+    const paths = requireTextList(args.path, 'path', '"/var/log/syslog"');
     // Тип из схемы ничего не гарантирует: MCP отдаёт аргументы как есть
     const lines = shellCount(args.lines ?? 100, 'lines');
     const sudo = args.sudo || false;
@@ -257,8 +258,8 @@ export class LogTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const paths = Array.isArray(args.path) ? args.path : [args.path];
-    const query = args.query;
+    const paths = requireTextList(args.path, 'path', '"/var/log/syslog"');
+    const query = requireText(args.query, 'query', '"error"');
     const context = shellCount(args.context ?? 0, 'context');
     const caseSensitive = args.caseSensitive || false;
     const sudo = args.sudo || false;

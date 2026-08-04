@@ -8,27 +8,6 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 
-interface SystemSnapshot {
-  timestamp: string;
-  hostname: string;
-  uptime: string;
-  services: Array<{ name: string; status: string; uptime: string | null }>;
-  resources: {
-    cpu: { cores: number; usage: number; loadAvg: string };
-    memory: { total: string; used: string; free: string; percent: number };
-    disk: Array<{ mount: string; size: string; used: string; avail: string; percent: string }>;
-  };
-  docker?: {
-    containers: Array<{ id: string; name: string; status: string; uptime: string }>;
-    images: number;
-  };
-  network: {
-    listening: Array<{ port: string; service: string }>;
-    connections: number;
-  };
-  recentErrors: Array<{ source: string; message: string; time: string }>;
-}
-
 /**
  * Snapshot Tool
  */

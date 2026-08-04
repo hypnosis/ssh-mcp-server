@@ -5,7 +5,6 @@
  * ENV variables:
  * - SSH_MCP_LOG_LEVEL: debug, info, warn, error (default: info)
  * - SSH_MCP_LOG_TIMESTAMP: true, false (default: true)
- * - SSH_MCP_LOG_COLORS: true, false (default: false)
  */
 
 import { inspect } from 'util';
@@ -82,7 +81,6 @@ function scrub(value: unknown): unknown {
 class Logger {
   private level: LogLevel = 'info';
   private enableTimestamp: boolean = true;
-  private enableColors: boolean = false;
 
   constructor() {
     // Read from environment variables
@@ -90,7 +88,6 @@ class Logger {
                  (process.env.LOG_LEVEL as LogLevel) || 
                  'info';
     this.enableTimestamp = process.env.SSH_MCP_LOG_TIMESTAMP !== 'false';
-    this.enableColors = process.env.SSH_MCP_LOG_COLORS === 'true';
   }
 
   private shouldLog(level: LogLevel): boolean {

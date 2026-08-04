@@ -97,13 +97,3 @@ export function buildRunnerEnv(input: {
 
   return env;
 }
-
-/**
- * Замаскировать секрет в тексте перед выводом или логированием.
- *
- * Нужно там, где вывод команды может содержать эхо введённого секрета.
- */
-export function redactSecret(text: string, secret?: string): string {
-  if (!secret || secret.length === 0) return text;
-  return text.split(secret).join('***');
-}

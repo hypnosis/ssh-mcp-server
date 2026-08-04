@@ -407,12 +407,15 @@ describe('OpenSshRunner secret handling', () => {
     rmSync(controlDir, { recursive: true, force: true });
   });
 
-  it('masks the secret if it is echoed back in the output', async () => {
-    runProcessMock.mockResolvedValue(ok({ stdout: 'password is hunter2' }));
+  it('отдаёт ответ сервера нетронутым, даже если он совпал с паролем профиля', async () => {
+    // Пароль на сервер не уезжает, поэтому совпадение случайное. Вырезав его,
+    // мы испортили бы данные: прочитанный так конфиг записывается обратно
+    // сломанным. Секрет прячется там, где мы пишем его сами, — в логе
+    runProcessMock.mockResolvedValue(ok({ stdout: 'hunter2:x:0:0::/home/hunter2:/bin/sh' }));
 
     const result = await makeRunner(passwordConfig, runtime).exec('echo', { remoteTimeout: false });
 
-    expect(result.stdout).toBe('password is ***');
+    expect(result.stdout).toBe('hunter2:x:0:0::/home/hunter2:/bin/sh');
   });
 
   it('keeps the secret out of process arguments', async () => {

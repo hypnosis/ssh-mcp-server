@@ -17,7 +17,7 @@ import { sha256OfBuffer } from '../utils/sha256.js';
 import { verifyRemoteFiles } from '../managers/remote-verify.js';
 import { install } from '../managers/installer.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
-import { resolveRemotePath, type ExpandedPath } from '../managers/remote-home.js';
+import { resolveRemotePath, type ExpandedPath } from '../managers/path-guard.js';
 import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
 import { shellGlob, shellMode } from '../utils/shell-arg.js';
 import { requireEntryList, requireText, requireTextList } from '../utils/tool-args.js';

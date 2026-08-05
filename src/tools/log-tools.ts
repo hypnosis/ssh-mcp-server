@@ -8,12 +8,11 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
-import { createPathValidator } from '../utils/path-validator.js';
 import { TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
 import { shellCount } from '../utils/shell-arg.js';
 import { requireText, requireTextList } from '../utils/tool-args.js';
 import { shellQuote } from '../utils/tmp-name.js';
-import { expandRemoteHome } from '../managers/remote-home.js';
+import { resolveRemotePath } from '../managers/path-guard.js';
 
 /**
  * Log Tools
@@ -149,18 +148,9 @@ export class LogTools {
     // Тип из схемы ничего не гарантирует: MCP отдаёт аргументы как есть
     const lines = shellCount(args.lines ?? 100, 'lines');
     const sudo = args.sudo || false;
-    
-    // Validate paths against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      for (const path of paths) {
-        const pathValidation = pathValidator.validate(path);
-        if (!pathValidation.valid) {
-          throw new Error(`Path validation failed: ${pathValidation.error}`);
-        }
-      }
-    }
-    
+
+    // Правила профиля проверяет buildSafePath — уже на раскрытом пути
+
     // Single log - simple result
     if (paths.length === 1) {
       const safePath = await this.buildSafePath(sshConfig, profileName, paths[0], sudo);
@@ -263,18 +253,9 @@ export class LogTools {
     const context = shellCount(args.context ?? 0, 'context');
     const caseSensitive = args.caseSensitive || false;
     const sudo = args.sudo || false;
-    
-    // Validate paths against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      for (const path of paths) {
-        const pathValidation = pathValidator.validate(path);
-        if (!pathValidation.valid) {
-          throw new Error(`Path validation failed: ${pathValidation.error}`);
-        }
-      }
-    }
-    
+
+    // Правила профиля проверяет buildSafePath — уже на раскрытом пути
+
     // Build grep flags
     const grepFlags = [];
     grepFlags.push('-E'); // Extended regex
@@ -375,6 +356,11 @@ export class LogTools {
    *
    * `~` раскрывается у нас по домашнему каталогу из паспорта и уезжает в
    * одинарных кавычках — тем же способом, что в записи и чтении файлов.
+   *
+   * Правила профиля проверяются здесь же, после раскрытия. Раньше они стояли
+   * выше по коду и смотрели на сырой путь: `~/secret` валидатор подменял
+   * выдуманным `/home/user/secret`, и под root запрет `/root` не срабатывал —
+   * замер на обоих контейнерах отдавал содержимое запрещённого файла.
    */
   private async buildSafePath(
     sshConfig: any,
@@ -382,7 +368,7 @@ export class LogTools {
     path: string,
     sudo: boolean
   ): Promise<string> {
-    const target = await expandRemoteHome(this.executor, sshConfig, path, { profileName, sudo });
+    const target = await resolveRemotePath(this.executor, sshConfig, path, { profileName, sudo });
 
     for (const warning of target.warnings) {
       logger.warn(`[log-tools] ${warning}`);

@@ -46,6 +46,34 @@ export interface PathValidationResult {
 }
 
 /**
+ * Путь, о котором можно судить: абсолютный, без тильды, без `.` и `..`,
+ * без сдвоенных слэшей. Приводит к такому виду resolveRemotePath.
+ */
+export function isCanonical(path: string): boolean {
+  if (!path.startsWith('/')) return false;
+  if (path.includes('//')) return false;
+
+  return path.split('/').every((segment) => segment !== '.' && segment !== '..' && segment !== '~');
+}
+
+/**
+ * Лежит ли путь внутри каталога.
+ *
+ * Сравнение идёт по границе имени, иначе правило цепляет соседей: запрет
+ * `/root` отклонял бы `/rootkit`, а разрешение `/var/log` пропускало бы
+ * `/var/logs-of-someone-else` — другой каталог с похожим именем.
+ */
+export function isUnder(path: string, directory: string): boolean {
+  const base = directory.length > 1 && directory.endsWith('/')
+    ? directory.slice(0, -1)
+    : directory;
+
+  if (base === '/') return path.startsWith('/');
+
+  return path === base || path.startsWith(`${base}/`);
+}
+
+/**
  * PathValidator
  * Validates file paths against security rules
  * 
@@ -111,27 +139,37 @@ export class PathValidator {
       };
     }
     
-    // 3. Normalize path for checks
-    const normalized = this.normalizePath(path);
-    
+    // 3. Правила сравнивают путь с каталогами, поэтому судить можно только
+    // канонический абсолютный путь. `~`, `logs/app.log`, `../x` ведут неизвестно
+    // куда: дом бывает и /root, и /home/deploy, рабочий каталог тоже не виден
+    // отсюда. Приведением занимается resolveRemotePath — здесь честнее
+    // отказаться судить, чем угадать
+    if (!this.hasRules()) {
+      return { valid: true };
+    }
+
+    if (!isCanonical(path)) {
+      return {
+        valid: false,
+        error: `Path is not canonical: "${path}". Rules apply to absolute paths ` +
+          'with no "~", "." or ".." — resolve it before validating'
+      };
+    }
+
     // 4. Check denied paths (blacklist) - takes priority
-    if (this.config.deniedPaths && this.config.deniedPaths.length > 0) {
-      for (const denied of this.config.deniedPaths) {
-        if (normalized.startsWith(denied)) {
-          return {
-            valid: false,
-            error: `Access denied to path: ${denied}`
-          };
-        }
+    for (const denied of this.config.deniedPaths ?? []) {
+      if (isUnder(path, denied)) {
+        return {
+          valid: false,
+          error: `Access denied to path: ${denied}`
+        };
       }
     }
-    
+
     // 5. Check allowed paths (whitelist)
     if (this.config.allowedPaths && this.config.allowedPaths.length > 0) {
-      const isAllowed = this.config.allowedPaths.some(allowed =>
-        normalized.startsWith(allowed)
-      );
-      
+      const isAllowed = this.config.allowedPaths.some(allowed => isUnder(path, allowed));
+
       if (!isAllowed) {
         return {
           valid: false,
@@ -139,36 +177,15 @@ export class PathValidator {
         };
       }
     }
-    
+
     return { valid: true };
   }
-  
-  /**
-   * Normalize path for comparison
-   * Converts tilde and relative paths to absolute-like paths
-   * 
-   * Note: This is a best-effort normalization for validation purposes
-   * The actual path expansion happens on the remote server
-   */
-  private normalizePath(path: string): string {
-    // ~/path → /home/user/path (approximate)
-    // We can't know the actual home directory, so we use a placeholder
-    if (path.startsWith('~/')) {
-      return '/home/user/' + path.substring(2);
-    }
-    
-    // ~ alone → /home/user
-    if (path === '~') {
-      return '/home/user';
-    }
-    
-    // ./path → path (remove leading ./)
-    if (path.startsWith('./')) {
-      return path.substring(2);
-    }
-    
-    // Absolute path or ~user/path → return as-is
-    return path;
+
+  /** Есть ли правила, которые сравнивают путь с каталогами */
+  private hasRules(): boolean {
+    return (
+      (this.config?.deniedPaths?.length ?? 0) > 0 || (this.config?.allowedPaths?.length ?? 0) > 0
+    );
   }
   
   /**

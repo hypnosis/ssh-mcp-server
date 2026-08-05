@@ -243,7 +243,7 @@ export class FileTools {
     // Single file - simple result
     if (paths.length === 1) {
       if (binary) {
-        const b64 = await this.readFileBinary(sshConfig, paths[0], profileName);
+        const b64 = await this.readFileBinary(sshConfig, paths[0]);
         return { content: [{ type: 'text', text: b64 }] };
       }
       const command = this.buildReadCommand(paths[0], encoding);
@@ -280,7 +280,7 @@ export class FileTools {
     for (const path of paths) {
       try {
         if (binary) {
-          const b64 = await this.readFileBinary(sshConfig, path, profileName);
+          const b64 = await this.readFileBinary(sshConfig, path);
           results.push({
             path,
             content: b64,
@@ -564,7 +564,7 @@ export class FileTools {
     writeFileSync(localFile, content);
 
     try {
-      const runner = await getRunner(sshConfig, profileName);
+      const runner = await getRunner(sshConfig);
 
       if (!sudo) {
         await runner.upload(localFile, staging);
@@ -599,13 +599,12 @@ export class FileTools {
    */
   private async readFileBinary(
     sshConfig: any,
-    remotePath: string,
-    profileName: string
+    remotePath: string
   ): Promise<string> {
     const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-read-'));
     const localFile = join(localDir, 'payload.bin');
     try {
-      const runner = await getRunner(sshConfig, profileName);
+      const runner = await getRunner(sshConfig);
       await runner.download(remotePath, localFile);
 
       const data = await readFile(localFile);

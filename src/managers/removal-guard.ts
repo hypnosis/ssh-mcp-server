@@ -39,7 +39,7 @@ export async function resolveRemovalTargets(
 ): Promise<ResolutionVerdict> {
   if (targets.length === 0) return { blocked: false };
 
-  const passport = await executor.passport(config, options.profileName);
+  const passport = await executor.passport(config);
 
   // Пути идут по одному на строку, порядок сохраняется — по нему и сверяем
   const probes = targets

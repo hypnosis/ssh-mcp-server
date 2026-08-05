@@ -258,16 +258,10 @@ describe('SSHExecutor: передача опций транспорту', () => 
     expect(sentOptions().stdin).toBe('abc123  /srv/app/file\n');
   });
 
-  it('передаёт имя профиля в фабрику транспорта', async () => {
-    await new SSHExecutor().execute(CONFIG, 'ls', { profileName: 'production' });
-
-    expect(getRunnerMock).toHaveBeenCalledWith(CONFIG, 'production');
-  });
-
-  it('без имени профиля использует профиль по умолчанию', async () => {
+  it('берёт транспорт по конфигурации соединения', async () => {
     await new SSHExecutor().execute(CONFIG, 'ls');
 
-    expect(getRunnerMock).toHaveBeenCalledWith(CONFIG, 'default');
+    expect(getRunnerMock).toHaveBeenCalledWith(CONFIG);
   });
 });
 
@@ -280,7 +274,7 @@ describe('SSHExecutor: ошибки и проверка связи', () => {
   });
 
   it('проверка связи идёт через ping транспорта', async () => {
-    const connected = await new SSHExecutor().testConnection(CONFIG, 'production');
+    const connected = await new SSHExecutor().testConnection(CONFIG);
 
     expect(connected).toBe(true);
     expect(pingMock).toHaveBeenCalled();

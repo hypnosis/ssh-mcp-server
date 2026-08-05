@@ -97,11 +97,6 @@ describe('ssh_monitor stats', () => {
     expect(text).toContain('ECONNREFUSED');
   });
 
-  it('спрашивает транспорт запрошенного профиля', async () => {
-    await run({ action: 'stats', profile: 'staging' });
-
-    expect(getRunnerMock).toHaveBeenCalledWith(expect.anything(), 'staging');
-  });
 });
 
 describe('ssh_monitor test', () => {

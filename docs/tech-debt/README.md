@@ -15,5 +15,9 @@
 | TD-03 | Ответ инструмента не отличает провал от результата | 🔴 открыт | [tool-schemas_03.md](tool-schemas_03.md) |
 | TD-04 | Косметика вывода аудита | 🟡 открыт | [audit-output_04.md](audit-output_04.md) |
 | TD-05 | Комментарии в разборе путей пересказывают решение | 🟡 открыт | [path-guard-comments_05.md](path-guard-comments_05.md) |
+| TD-06 | Поиск следов не отличает полный список от обрезанного | 🟡 открыт | [leftover-scan-truncation_06.md](leftover-scan-truncation_06.md) |
+| TD-07 | Проигравший в гонке установок получает сырой текст `mv` | 🟡 открыт | [install-race-message_07.md](install-race-message_07.md) |
+| TD-08 | Отмена есть в контракте, но не доходит до инструментов | 🟡 открыт | [cancellation-not-wired_08.md](cancellation-not-wired_08.md) |
+| TD-09 | Проверка точки монтирования не знает BSD и macOS | 🟡 открыт | [mountpoint-check-bsd_09.md](mountpoint-check-bsd_09.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.

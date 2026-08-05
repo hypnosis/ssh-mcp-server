@@ -93,6 +93,14 @@ export interface RunnerStats {
 }
 
 /**
+ * Чем кончилась попытка закрыть общее соединение.
+ *
+ * `nothing-to-close` — не отказ: соединение уже ушло по сроку простоя.
+ * `multiplexing-off` — закрывать нечего в принципе, соединение не переживает команду.
+ */
+export type MasterCloseOutcome = 'closed' | 'nothing-to-close' | 'multiplexing-off';
+
+/**
  * Транспорт для выполнения команд и передачи файлов на одном профиле
  */
 export interface CommandRunner {
@@ -111,6 +119,6 @@ export interface CommandRunner {
   /** Состояние транспорта для диагностики */
   stats(): Promise<RunnerStats>;
 
-  /** Закрыть переиспользуемое соединение (no-op там, где его нет) */
-  closeMaster(): Promise<void>;
+  /** Закрыть переиспользуемое соединение */
+  closeMaster(): Promise<MasterCloseOutcome>;
 }

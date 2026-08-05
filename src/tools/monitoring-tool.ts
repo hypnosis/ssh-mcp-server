@@ -2,13 +2,15 @@
  * Monitoring Tool - Monitor SSH connections and profiles
  * 
  * Actions:
- * - stats: Get connection pool statistics
+ * - stats: Get transport state for a profile
  * - reload: Reload SSH profiles
  * - test: Test connection to profile
  * - list: List available profiles
+ * - close: Close the shared connection of a profile
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { idleWindowSec, listControlSockets } from '../runner/control-sockets.js';
 import { getRunner } from '../runner/get-runner.js';
 import { getAvailableProfiles, getDefaultProfile, reloadProfiles, resolveSSHConfig } from '../utils/profile-resolver.js';
 import { logger } from '../utils/logger.js';
@@ -17,18 +19,18 @@ export class MonitoringTool {
   getTool(): Tool {
     return {
       name: 'ssh_monitor',
-      description: 'Monitor SSH connections and server status. Get stats, reload profiles, test connections, list profiles.',
+      description: 'Monitor SSH connections and server status. Get stats, reload profiles, test connections, list profiles, close a shared connection.',
       inputSchema: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['stats', 'reload', 'test', 'list'],
-            description: 'Action to perform: stats (get pool stats), reload (reload profiles), test (test connection), list (list profiles)'
+            enum: ['stats', 'reload', 'test', 'list', 'close'],
+            description: 'Action to perform: stats (transport state), reload (reload profiles), test (test connection), list (list profiles), close (close the shared connection now instead of waiting for it to idle out)'
           },
           profile: {
             type: 'string',
-            description: 'Profile name (for test action)'
+            description: 'Profile name (for test and close actions)'
           }
         },
         required: ['action']
@@ -43,19 +45,23 @@ export class MonitoringTool {
     logger.debug(`[Monitoring Tool] Action: ${action}, profile: ${args.profile || 'default'}`);
     
     try {
+      // Ожидание здесь обязательно: без него отказ уходит мимо перехвата ниже
       switch (action) {
         case 'stats':
-          return this.getStats(args.profile);
-        
+          return await this.getStats(args.profile);
+
         case 'reload':
-          return this.reloadProfilesAction();
-        
+          return await this.reloadProfilesAction();
+
         case 'test':
-          return this.testConnection(args.profile);
-        
+          return await this.testConnection(args.profile);
+
         case 'list':
-          return this.listProfiles();
-        
+          return await this.listProfiles();
+
+        case 'close':
+          return await this.closeConnection(args.profile);
+
         default:
           throw new Error(`Unknown action: ${action}`);
       }
@@ -194,6 +200,59 @@ export class MonitoringTool {
     }
   }
   
+  /**
+   * Закрыть общее соединение профиля, не дожидаясь срока простоя.
+   *
+   * Закрывается назначение профиля, а не всё подряд: имя сокета — хэш, по нему
+   * сервер не восстановить, а удаление файла соединение не разрывает.
+   */
+  private async closeConnection(profileName?: string) {
+    const profile = profileName || getDefaultProfile();
+    const sshConfig = resolveSSHConfig({ profile });
+    const destination = `${sshConfig.host}:${sshConfig.port || 22}`;
+    const runner = await getRunner(sshConfig);
+    const outcome = await runner.closeMaster();
+
+    let output = `🔌 Shared Connection: ${profile}\n\n`;
+    switch (outcome) {
+      case 'closed':
+        output += `✅ Closed the connection to ${destination}\n`;
+        break;
+      case 'nothing-to-close':
+        output += `ℹ️ Nothing to close: ${destination} has no open connection, it already idled out\n`;
+        break;
+      case 'multiplexing-off':
+        output += `ℹ️ Nothing to close: multiplexing is off, connections do not outlive a command\n`;
+        break;
+    }
+
+    output += `\n${await this.describeLeftovers()}`;
+
+    return {
+      content: [{ type: 'text', text: output }]
+    };
+  }
+
+  /**
+   * Что осталось на машине после закрытия: соединения других профилей переживают
+   * и это действие, и выход сервера.
+   */
+  private async describeLeftovers(): Promise<string> {
+    try {
+      const sockets = await listControlSockets();
+      const alive = sockets.filter((socket) => socket.state === 'alive');
+
+      if (alive.length === 0) {
+        return 'Left on this machine: no live connections\n';
+      }
+
+      return `Left on this machine: ${alive.length} live connection(s), ` +
+        `each closing after ${idleWindowSec()}s of idle time\n`;
+    } catch (error: any) {
+      return `Left on this machine: unknown, the control directory is unreadable (${error.message})\n`;
+    }
+  }
+
   /**
    * List available profiles
    */

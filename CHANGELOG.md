@@ -23,6 +23,10 @@ pool, so `SSH_MCP_BACKEND` no longer selects anything.
   (whole seconds, `0` closes immediately, default `600`). The remaining idle time is
   deliberately not reported: a socket's timestamp marks when the master came up, not the
   last command. See `docs/decisions/006-leftover-control-sockets.md`.
+- `ssh_monitor` gained the action `close`: it closes the shared connection of one profile
+  right away instead of waiting for the idle window, and says what is still left on the
+  machine. Nothing to close is an answer, not a failure — the connection may have already
+  idled out.
 
 ### Fixed — data loss and false corruption reports
 - `~` in `remote_path` of `ssh_upload` / `ssh_download`. Download used to bring the file

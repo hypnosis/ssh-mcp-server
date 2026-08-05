@@ -21,9 +21,7 @@ const LIVE_TIMEOUT_MS = 60_000;
 const unavailable = await labUnavailableReason();
 const workDir = await mkdtemp(join(tmpdir(), 'tool-paths-'));
 
-// Инструмент берёт конфиг только из файла профилей, а бэкенд — из окружения.
-// Проверяем openssh: он станет дефолтом, и лишний уровень вложенности — его
-// особенность, не ssh2.
+// Инструмент берёт конфигурацию только из файла профилей
 const profilesPath = join(workDir, 'profiles.json');
 await writeFile(
   profilesPath,
@@ -47,7 +45,6 @@ await writeFile(
 
 process.env.SSH_PROFILES_FILE = profilesPath;
 process.env.SSH_MCP_CONTROL_DIR ??= LAB_CONTROL_DIR;
-process.env.SSH_MCP_BACKEND = 'openssh';
 
 const { TransferTool } = await import('../../src/tools/transfer-tool.js');
 const { SSHExecutor } = await import('../../src/managers/ssh-executor.js');

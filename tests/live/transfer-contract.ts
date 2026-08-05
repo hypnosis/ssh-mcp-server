@@ -1,8 +1,8 @@
 /**
- * Контракт передачи файлов — общий набор для всех бэкендов
+ * Контракт передачи файлов
  *
  * Мок здесь бесполезен: он не покажет, что оказалось на диске. Поэтому набор
- * гоняется против настоящих ssh/scp и ssh2 на живых серверах.
+ * гоняется против настоящих ssh и scp на живых серверах.
  *
  * Главное утверждение: `upload(X, Y, {recursive:true})` создаёт Y и кладёт
  * внутрь содержимое X — не `Y/<имя X>/…`. Цель всегда несуществующая; её
@@ -38,29 +38,12 @@ export interface TransferHarness {
   remoteBase: string;
   /** Отдать наружу манифест приехавшего дерева, если вызывающему есть с чем его сверить */
   record?(manifest: Manifest): void;
-  /**
-   * Утверждения, которым этот бэкенд заведомо не соответствует.
-   *
-   * Такие проверки обязаны падать: пока расхождение живо, прогон зелёный,
-   * а починка сделает тест красным и заставит убрать пометку. Молча
-   * выключать проверку нельзя — так расхождение теряется.
-   */
-  knownGaps?: string[];
   /** Закрыть транспорт после набора */
   cleanup?(runner: CommandRunner): Promise<void>;
 }
 
 export function describeTransferContract(harness: TransferHarness): void {
   describe(`Transfer contract: ${harness.name}`, { timeout: LIVE_TIMEOUT_MS }, () => {
-    /** Утверждение контракта: обычное или заведомо не выполняемое этим бэкендом */
-    const check = (name: string, body: () => Promise<void>): void => {
-      if (harness.knownGaps?.includes(name)) {
-        it.fails(`${name} — не выполняется этим бэкендом`, body);
-      } else {
-        it(name, body);
-      }
-    };
-
     let runner: CommandRunner;
     let localRoot: string;
     let treeDir: string;
@@ -91,7 +74,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       return parseRemoteManifest(result.stdout);
     }
 
-    check('файл едет в несуществующую цель', async () => {
+    it('файл едет в несуществующую цель', async () => {
       const target = `${harness.remoteBase}/single/plain.txt`;
       await runner.exec(`mkdir -p '${harness.remoteBase}/single'`);
 
@@ -101,7 +84,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       expect(result.stdout).toBe('простой файл\n');
     });
 
-    check('каталог едет в несуществующую цель: структура, права и имена сохранены', async () => {
+    it('каталог едет в несуществующую цель: структура, права и имена сохранены', async () => {
       const target = `${harness.remoteBase}/tree`;
 
       await runner.upload(treeDir, target, { recursive: true });
@@ -111,7 +94,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       expect(actual).toBe(expected);
     });
 
-    check('пустой каталог всё равно создаётся', async () => {
+    it('пустой каталог всё равно создаётся', async () => {
       const source = join(localRoot, 'empty');
       await mkdir(source, { recursive: true });
       const target = `${harness.remoteBase}/empty`;
@@ -122,7 +105,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       expect(result.stdout.trim()).toBe('yes');
     });
 
-    check('скачивание возвращает дерево один в один', async () => {
+    it('скачивание возвращает дерево один в один', async () => {
       const remoteTree = `${harness.remoteBase}/for-download`;
       await runner.upload(treeDir, remoteTree, { recursive: true });
       const target = join(localRoot, 'downloaded');
@@ -132,7 +115,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       expect(await localManifest(target)).toBe(expected);
     });
 
-    check('пустой каталог доезжает и при скачивании', async () => {
+    it('пустой каталог доезжает и при скачивании', async () => {
       const remoteDir = `${harness.remoteBase}/download-empty`;
       await runner.exec(`mkdir -p '${remoteDir}/${TREE_EMPTY_DIR}'`);
       const target = join(localRoot, 'downloaded-empty');
@@ -142,19 +125,19 @@ export function describeTransferContract(harness: TransferHarness): void {
       expect(await localManifest(target)).toBe(`d ${TREE_EMPTY_DIR}`);
     });
 
-    check('нет источника — исключение, а не тихий успех', async () => {
+    it('нет источника — исключение, а не тихий успех', async () => {
       await expect(
         runner.upload(join(localRoot, 'no-such-file'), `${harness.remoteBase}/nowhere.txt`)
       ).rejects.toThrow();
     });
 
-    check('цель в несуществующем каталоге — исключение', async () => {
+    it('цель в несуществующем каталоге — исключение', async () => {
       await expect(
         runner.upload(join(treeDir, 'plain.txt'), `${harness.remoteBase}/no/such/dir/file.txt`)
       ).rejects.toThrow();
     });
 
-    check('таймаут передачи — SSHTimeoutError', async () => {
+    it('таймаут передачи — SSHTimeoutError', async () => {
       const big = join(localRoot, 'big.bin');
       await writeFile(big, Buffer.alloc(16 * 1024 * 1024, 7));
 
@@ -163,7 +146,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       ).rejects.toBeInstanceOf(SSHTimeoutError);
     });
 
-    check('отмена передачи — SSHCancelledError', async () => {
+    it('отмена передачи — SSHCancelledError', async () => {
       const big = join(localRoot, 'big.bin');
       const controller = new AbortController();
       setTimeout(() => controller.abort(), 10);
@@ -173,7 +156,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       ).rejects.toBeInstanceOf(SSHCancelledError);
     });
 
-    check('ссылки внутри дерева разыменовываются', async () => {
+    it('ссылки внутри дерева разыменовываются', async () => {
       const source = join(localRoot, 'links');
       await mkdir(join(source, 'dir'), { recursive: true });
       await writeFile(join(source, 'dir/inside.txt'), 'внутри\n');
@@ -201,7 +184,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       expect(hashOf('link-to-file')).toBe(hashOf('dir/inside.txt'));
     });
 
-    check('битая ссылка обрывает передачу', async () => {
+    it('битая ссылка обрывает передачу', async () => {
       const source = join(localRoot, 'broken-link');
       await mkdir(source, { recursive: true });
       await writeFile(join(source, 'file.txt'), 'обычный файл\n');
@@ -212,7 +195,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       ).rejects.toThrow();
     });
 
-    check('цикл ссылок обрывает передачу', async () => {
+    it('цикл ссылок обрывает передачу', async () => {
       const source = join(localRoot, 'loop-link');
       await mkdir(source, { recursive: true });
       await writeFile(join(source, 'file.txt'), 'обычный файл\n');
@@ -224,7 +207,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       ).rejects.toThrow();
     });
 
-    check('рекурсивная передача считается одной передачей', async () => {
+    it('рекурсивная передача считается одной передачей', async () => {
       const before = (await runner.stats()).transfersThisSession;
 
       await runner.upload(treeDir, `${harness.remoteBase}/counted`, { recursive: true });

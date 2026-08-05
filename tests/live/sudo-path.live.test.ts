@@ -47,7 +47,6 @@ await writeFile(
 
 process.env.SSH_PROFILES_FILE = profilesPath;
 process.env.SSH_MCP_CONTROL_DIR ??= LAB_CONTROL_DIR;
-process.env.SSH_MCP_BACKEND = 'openssh';
 
 const { FileTools } = await import('../../src/tools/file-tools.js');
 const { TransferTool } = await import('../../src/tools/transfer-tool.js');

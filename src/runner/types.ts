@@ -75,7 +75,8 @@ export interface PingResult {
  * Состояние транспорта для диагностики (ssh_monitor stats)
  */
 export interface RunnerStats {
-  backend: 'openssh' | 'ssh2';
+  /** Способ доставки команд. Транспорт один, поле остаётся частью ответа ssh_monitor */
+  backend: 'openssh';
   /** Работает ли мультиплексирование соединений */
   multiplexing: boolean;
   /** Причина, по которой мультиплексирование выключено */

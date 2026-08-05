@@ -42,7 +42,7 @@
 - ✅ **sudo support** - parameter in every command
 - ✅ **Profiles** - multiple SSH configurations
 - ✅ **Retry logic** - automatic retries on network errors
-- ✅ **Connection reuse** - one shared, multiplexed OpenSSH connection per profile (the ssh2 backend keeps its own connection pool)
+- ✅ **Connection reuse** - one shared, multiplexed OpenSSH connection per destination
 
 ## 📦 Installation
 
@@ -303,7 +303,7 @@ ssh_file_write({
 
 #### v1.3.0+ Per-File Flags: `verify`, `atomic`, `binary`
 
-`ssh_file_write` is back-compat by default but now supports three new per-file flags. Internally any of these — or content size > 256KB — routes the write through the transfer runner (`scp` on the default OpenSSH backend, SFTP on the ssh2 backend) instead of the legacy heredoc fast path.
+`ssh_file_write` is back-compat by default but now supports three new per-file flags. Internally any of these — or content size > 256KB — routes the write through the transfer runner (`scp`, which rides SFTP on client 9.0+) instead of the legacy heredoc fast path.
 
 | Flag | Default | What it does |
 |------|---------|--------------|
@@ -344,7 +344,7 @@ ssh_file_write({
 
 #### v1.3.0+ ssh_file_read — `binary: true`
 
-Reads through the transfer runner (`scp` on the default OpenSSH backend, SFTP on the ssh2 backend) and returns base64-encoded bytes, byte-for-byte safe (legacy `cat` over PTY corrupts binaries due to encoding/CR-LF translation).
+Reads through the transfer runner (`scp`, which rides SFTP on client 9.0+) and returns base64-encoded bytes, byte-for-byte safe (legacy `cat` over PTY corrupts binaries due to encoding/CR-LF translation).
 
 ```typescript
 ssh_file_read({
@@ -704,12 +704,9 @@ This pipeline covers ~80% of a typical server audit without touching `ssh_exec`.
 - `SSH_MCP_LOG_TIMESTAMP` - Show timestamps in logs: `true`, `false` (default: `true`)
 
 ### Optional (Transport)
-- `SSH_MCP_BACKEND` - How commands are delivered: `openssh` (default, the system ssh client) or `ssh2` (the bundled backend, removed in a later release)
-
-### Optional (Connection Pool — `SSH_MCP_BACKEND=ssh2` only)
-The pool lives inside the ssh2 backend. With the default transport, connections are shared by the system ssh client and these two have no effect.
-- `SSH_MCP_POOL_IDLE_TIMEOUT` - Idle timeout for connections in ms (default: `30000`)
-- `SSH_MCP_POOL_KEEPALIVE_INTERVAL` - Keep-alive ping interval in ms (default: `10000`)
+Commands are delivered by the system `ssh` client. The connection is shared through a control socket, so it outlives the server process on purpose — closing it would cut the channel of another window on the same machine.
+- `SSH_MCP_CONTROL_PERSIST` - How long a connection stays alive after the last command, in whole seconds; `0` closes it immediately (default: `600`)
+- `SSH_MCP_CONTROL_DIR` - Where control sockets live (default: `~/.ssh/ssh-mcp`)
 
 ### Optional (Profiles)
 - `SSH_MCP_PROFILES_CACHE_TTL` - Profile cache TTL in ms (default: `60000`)
@@ -726,7 +723,7 @@ export SSH_MCP_LOG_LEVEL="debug"
 export SSH_MCP_LOG_TIMESTAMP="true"
 
 # Optional - Transport
-export SSH_MCP_BACKEND="openssh"
+export SSH_MCP_CONTROL_PERSIST="600"
 
 # Optional - Profiles
 export SSH_MCP_PROFILES_WATCH="true"
@@ -774,7 +771,7 @@ SSH MCP Server
       ↓
 Profile Resolver → ~/.cursor/ssh-profiles.json
       ↓
-SSH Runner (OpenSSH multiplex by default; ssh2 pool via SSH_MCP_BACKEND=ssh2)
+SSH Runner (system ssh, one multiplexed connection per destination)
       ↓
 SSH Executor
       ↓
@@ -785,12 +782,11 @@ Remote Server(s)
 
 ### Key Principles:
 
-- **Connection reuse** - the default OpenSSH backend shares one multiplexed connection per profile (ControlMaster); the ssh2 backend keeps its own connection pool
-- **Session-based metrics** - the ssh2 backend's pool resets its metrics when all connections close
+- **Connection reuse** - one multiplexed connection per destination (ControlMaster), shared with every other process on the machine that uses the same control socket
+- **Session-based metrics** - command and transfer counters live in this server process; the connection itself belongs to `ssh`
 - **NO streaming** - snapshot results only
 - **REST approach** - arrays where logical
-- **Retry logic** - one retry for idempotent commands after a transport failure; the ssh2 backend also retries with exponential backoff
-- **Auto-reconnect** - ssh2 backend only: reconnects automatically on connection loss
+- **Retry logic** - one retry for idempotent commands after a transport failure; a refused multiplexed session falls back to a connection of its own
 
 ## 🛠️ Development
 
@@ -871,8 +867,7 @@ src/
 - ✅ Password profiles verified live: no secret in `ps`, none on disk, one prompt
       per `ControlPersist` window (requires a local OpenSSH client 8.4+)
 - ✅ The sudo path is verified live on both BusyBox and coreutils servers
-- ✅ The system OpenSSH client is the default transport
-- 🚧 Removal of the bundled ssh2 backend
+- ✅ The system OpenSSH client is the only transport; the bundled ssh2 backend is gone
 
 ### Future (Planned)
 - 📋 Recursive sudo upload (one-shot, without staging workaround)

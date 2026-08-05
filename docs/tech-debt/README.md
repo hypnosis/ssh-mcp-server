@@ -19,5 +19,6 @@
 | TD-07 | Проигравший в гонке установок получает сырой текст `mv` | 🟡 открыт | [install-race-message_07.md](install-race-message_07.md) |
 | TD-08 | Отмена есть в контракте, но не доходит до инструментов | 🟡 открыт | [cancellation-not-wired_08.md](cancellation-not-wired_08.md) |
 | TD-09 | Проверка точки монтирования не знает BSD и macOS | 🟡 открыт | [mountpoint-check-bsd_09.md](mountpoint-check-bsd_09.md) |
+| TD-10 | Имя профиля течёт через стек, потребителя нет | 🟡 открыт | [profile-name-flows-nowhere_10.md](profile-name-flows-nowhere_10.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.

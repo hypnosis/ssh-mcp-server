@@ -42,7 +42,7 @@
 - ✅ **sudo support** - parameter in every command
 - ✅ **Profiles** - multiple SSH configurations
 - ✅ **Retry logic** - automatic retries on network errors
-- ✅ **Connection pooling** - reuse SSH connections for better performance
+- ✅ **Connection reuse** - one shared, multiplexed OpenSSH connection per profile (the ssh2 backend keeps its own connection pool)
 
 ## 📦 Installation
 
@@ -303,7 +303,7 @@ ssh_file_write({
 
 #### v1.3.0+ Per-File Flags: `verify`, `atomic`, `binary`
 
-`ssh_file_write` is back-compat by default but now supports three new per-file flags. Internally any of these — or content size > 256KB — routes the write through SFTP instead of the legacy heredoc fast path.
+`ssh_file_write` is back-compat by default but now supports three new per-file flags. Internally any of these — or content size > 256KB — routes the write through the transfer runner (`scp` on the default OpenSSH backend, SFTP on the ssh2 backend) instead of the legacy heredoc fast path.
 
 | Flag | Default | What it does |
 |------|---------|--------------|
@@ -344,7 +344,7 @@ ssh_file_write({
 
 #### v1.3.0+ ssh_file_read — `binary: true`
 
-Reads via SFTP and returns base64-encoded bytes, byte-for-byte safe (legacy `cat` over PTY corrupts binaries due to encoding/CR-LF translation).
+Reads through the transfer runner (`scp` on the default OpenSSH backend, SFTP on the ssh2 backend) and returns base64-encoded bytes, byte-for-byte safe (legacy `cat` over PTY corrupts binaries due to encoding/CR-LF translation).
 
 ```typescript
 ssh_file_read({
@@ -774,7 +774,7 @@ SSH MCP Server
       ↓
 Profile Resolver → ~/.cursor/ssh-profiles.json
       ↓
-Connection Pool (reuse connections)
+SSH Runner (OpenSSH multiplex by default; ssh2 pool via SSH_MCP_BACKEND=ssh2)
       ↓
 SSH Executor
       ↓
@@ -785,12 +785,12 @@ Remote Server(s)
 
 ### Key Principles:
 
-- **Connection Pool** - reuse SSH connections for better performance (6-10× faster)
-- **Session-based metrics** - metrics reset automatically when all connections close
+- **Connection reuse** - the default OpenSSH backend shares one multiplexed connection per profile (ControlMaster); the ssh2 backend keeps its own connection pool
+- **Session-based metrics** - the ssh2 backend's pool resets its metrics when all connections close
 - **NO streaming** - snapshot results only
 - **REST approach** - arrays where logical
-- **Retry logic** - automatic retries with exponential backoff
-- **Auto-reconnect** - automatic reconnection on connection loss
+- **Retry logic** - one retry for idempotent commands after a transport failure; the ssh2 backend also retries with exponential backoff
+- **Auto-reconnect** - ssh2 backend only: reconnects automatically on connection loss
 
 ## 🛠️ Development
 

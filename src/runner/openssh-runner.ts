@@ -49,7 +49,8 @@ import type {
   TransferOptions,
 } from './types.js';
 
-const DEFAULT_EXEC_TIMEOUT_MS = 30000;
+/** Общий срок команды: его же обещает схема `ssh_exec` через `ssh-executor.ts` */
+export const DEFAULT_EXEC_TIMEOUT_MS = 30000;
 const DEFAULT_CONTROL_TIMEOUT_MS = 5000;
 /** Запас поверх локального таймаута для удалённого сторожа */
 const REMOTE_TIMEOUT_MARGIN_SEC = 5;

@@ -6,7 +6,7 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
-import { SSHExecutor } from '../managers/ssh-executor.js';
+import { DEFAULT_TIMEOUT_MS, SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { requireTextList } from '../utils/tool-args.js';
 import { exitCodeHint, TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
@@ -110,8 +110,10 @@ export class ExecTool {
           },
           timeout: {
             type: 'number',
-            description: 'Timeout in milliseconds. Default: 30000 (30 seconds)',
-            default: 30000,
+            description:
+              `Timeout in milliseconds. Default: ${DEFAULT_TIMEOUT_MS} ` +
+              `(${DEFAULT_TIMEOUT_MS / 1000} seconds)`,
+            default: DEFAULT_TIMEOUT_MS,
           },
         },
         required: ['command'],
@@ -164,7 +166,8 @@ export class ExecTool {
         const result = await this.executor.execute(sshConfig, commands[0], {
           sudo: args.sudo || false,
           cwd: args.cwd,
-          timeout: args.timeout || 30000,
+          // Ноль здесь значит «срок не назван»: общий срок подставит слой ниже
+          timeout: args.timeout || undefined,
           profileName,
         });
         
@@ -216,7 +219,8 @@ export class ExecTool {
         const result = await this.executor.execute(sshConfig, cmd, {
           sudo: args.sudo || false,
           cwd: args.cwd,
-          timeout: args.timeout || 30000,
+          // Ноль здесь значит «срок не назван»: общий срок подставит слой ниже
+          timeout: args.timeout || undefined,
           profileName,
         });
         

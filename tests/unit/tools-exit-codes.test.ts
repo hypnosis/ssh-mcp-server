@@ -19,6 +19,7 @@ const { executeMock } = vi.hoisted(() => ({ executeMock: vi.fn() }));
 vi.mock('../../src/managers/ssh-executor.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/managers/ssh-executor.js')>();
   return {
+    DEFAULT_TIMEOUT_MS: actual.DEFAULT_TIMEOUT_MS,
     SSHExecutor: class {
       execute = executeMock;
       // Проверяющая обёртка тестируется настоящая: инструменты рассчитывают

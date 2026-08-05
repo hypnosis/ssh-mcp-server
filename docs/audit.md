@@ -28,9 +28,9 @@ Before v1.3.0 the typical `server-auditor` agent sequence looked like this: one 
 | Section | Commands | Purpose |
 |---------|----------|---------|
 | `system` | `hostname`, `uptime`, `date -u`, `/etc/os-release`, `uname -r`, `/proc/loadavg` | Identification + load |
-| `disk` | `df -hT -x tmpfs -x devtmpfs -x squashfs` | Filesystem usage by mount |
+| `disk` | `df -hT` (tmpfs/devtmpfs/squashfs dropped while parsing — BusyBox `df` has no `-x`) | Filesystem usage by mount |
 | `mem` | `free -h` (Linux) / `vm_stat` (macOS) | Memory totals |
-| `net` | `ss -tulpenH` (fallback `netstat -tulpn`), `ip -br a` | Listening ports + interfaces |
+| `net` | `ss -tulpenH` (fallback `netstat -tulpn`, then `NO_NET_TOOL`), `ip -br a` | Listening ports + interfaces |
 | `ssh` | `sshd -T \| grep -E ...` | Effective sshd config (**requires sudo**) |
 | `services` | `systemctl --failed`, `systemctl list-units --state=running \| wc -l` | Failed units + running count |
 | `docker` | `docker ps -a --format ...`, `docker system df` | Containers + Docker disk |
@@ -47,8 +47,10 @@ Before v1.3.0 the typical `server-auditor` agent sequence looked like this: one 
 
 A single text block with two parts:
 
-1. Human-readable summary — host header, CRITICAL/WARNING shortlist, disk table, listeners, sshd line, services, docker, firewall, updates
+1. Human-readable summary — host header, CRITICAL/WARNING shortlist, `NOT CHECKED` list, disk table, listeners, sshd line, services, docker, firewall, updates
 2. `--- raw JSON ---` followed by the full structured result
+
+**Sections that could not be checked** land in `unavailable` (and in the `NOT CHECKED` block) instead of quietly reading as zero: a server without `ss` and `netstat` used to report `listeners (0)`, which is "nothing is listening", not "there was nothing to look with". No red flag is raised for such a section.
 
 **Auto red-flag classification:**
 
@@ -78,13 +80,14 @@ If `check_renew_hook: true` (default), additionally inspects:
 - `/etc/letsencrypt/renewal/*.conf` for `renew_hook = ...`
 - `/etc/letsencrypt/renewal-hooks/deploy/` for any deploy script
 
-Returns CRITICAL/WARNING flags + structured JSON.
+Returns UNKNOWN/CRITICAL/WARNING flags + structured JSON.
 
 | Severity | Trigger |
 |----------|---------|
+| **UNKNOWN** | the certificate was never read — no `openssl` on the server, connection refused, domain unreachable. The reason is quoted from the command output; `not_after` and `san_includes_hostname` are `null`, and no certificate verdict is issued |
 | **CRITICAL** | certificate expired |
 | **CRITICAL** | ≤ 7 days until expiry |
-| **CRITICAL** | SAN does not include the requested domain |
+| **CRITICAL** | SAN does not include the requested domain (only when the certificate was actually read) |
 | **WARNING** | ≤ 30 days until expiry |
 | **WARNING** | no Let's Encrypt deploy_hook configured (when `check_renew_hook: true`) |
 

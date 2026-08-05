@@ -55,6 +55,13 @@ interface BaselineResult {
     upgradable: number;
     reboot_required: boolean;
   };
+  /**
+   * Разделы, которые проверить было нечем: команды нет на сервере или она
+   * ничего не вернула. Пустой раздел и непроверенный раздел выглядят
+   * одинаково («disk:» без строк, «listeners (0)»), а значат разное —
+   * без этого списка отчёт объявляет отсутствие данных отсутствием проблем.
+   */
+  unavailable: string[];
   red_flags: { critical: string[]; warning: string[]; ok: string[] };
 }
 
@@ -195,13 +202,22 @@ export class AuditTool {
       parts.push({ key: 'load', cmd: "cat /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg 2>/dev/null || echo unavailable" });
     }
     if (include.includes('disk')) {
-      parts.push({ key: 'df', cmd: 'df -hT -x tmpfs -x devtmpfs -x squashfs 2>/dev/null' });
+      // Без -x: BusyBox этих опций не знает и обрывается на первой же
+      // («df: unrecognized option: x»), а вывод уходит в /dev/null — раздел
+      // диска на всех BusyBox-машинах молча оставался пустым. Псевдофайловые
+      // системы отсеиваются при разборе, по колонке Type.
+      parts.push({ key: 'df', cmd: 'df -hT 2>/dev/null' });
     }
     if (include.includes('mem')) {
       parts.push({ key: 'free', cmd: 'free -h 2>/dev/null || vm_stat 2>/dev/null' });
     }
     if (include.includes('net')) {
-      parts.push({ key: 'listeners', cmd: 'ss -tulpenH 2>/dev/null || netstat -tulpn 2>/dev/null' });
+      // Маркер обязателен: без него сервер без ss и netstat отдаёт пустоту,
+      // неотличимую от «никто не слушает»
+      parts.push({
+        key: 'listeners',
+        cmd: 'ss -tulpenH 2>/dev/null || netstat -tulpn 2>/dev/null || echo NO_NET_TOOL',
+      });
       parts.push({ key: 'interfaces', cmd: 'ip -br a 2>/dev/null || ifconfig 2>/dev/null | head -40' });
     }
     if (include.includes('ssh')) {
@@ -269,6 +285,13 @@ export class AuditTool {
     const trimLines = (txt: string, n: number) =>
       compact ? txt.split('\n').slice(0, n).join('\n') : txt;
 
+    const dfText = (s.get('df') || '').trim();
+    const listenersText = (s.get('listeners') || '').trim();
+    const unavailable: string[] = [];
+    if (!dfText) unavailable.push('disk (df gave no output)');
+    if (!listenersText || listenersText === 'NO_NET_TOOL')
+      unavailable.push('listeners (neither ss nor netstat on the server)');
+
     const result: BaselineResult = {
       hostname: (s.get('hostname') || '').trim(),
       uptime: (s.get('uptime') || '').trim(),
@@ -298,6 +321,7 @@ export class AuditTool {
         upgradable: parseInt((s.get('upgradable') || '0').trim(), 10) || 0,
         reboot_required: (s.get('reboot_required') || '').trim() === 'YES',
       },
+      unavailable,
       red_flags: { critical: [], warning: [], ok: [] },
     };
 
@@ -357,6 +381,13 @@ export class AuditTool {
     return result;
   }
 
+  /**
+   * Ровно те системы, что раньше отсекались флагами `-x` у самой df.
+   * Список не расширяем: overlay — это корень контейнера, и его исчезновение
+   * из отчёта было бы новой потерей данных вместо исправленной.
+   */
+  private static readonly PSEUDO_FS = new Set(['tmpfs', 'devtmpfs', 'squashfs']);
+
   private parseDf(text: string): BaselineResult['disk'] {
     const out: BaselineResult['disk'] = [];
     const lines = text.split('\n').slice(1); // skip header
@@ -364,6 +395,7 @@ export class AuditTool {
       if (!line.trim()) continue;
       const cols = line.split(/\s+/);
       if (cols.length < 7) continue;
+      if (AuditTool.PSEUDO_FS.has(cols[1])) continue;
       const pct = parseInt(cols[5].replace('%', ''), 10);
       out.push({
         filesystem: cols[0],
@@ -388,6 +420,16 @@ export class AuditTool {
     };
   }
 
+  /**
+   * Разбор списка слушающих сокетов.
+   *
+   * Источников два, и колонки у них разные: у `ss` локальный адрес пятый,
+   * у `netstat` — четвёртый, а перед ним ещё две шапки текста. Поэтому
+   * ищем не номер колонки, а первый адрес вида `хост:порт` с числовым
+   * портом: у обеих команд это ровно тот сокет, который слушают. Заодно
+   * отсеиваются заголовки netstat — раньше они приезжали в отчёт записями
+   * вида `{ proto: "Proto", address: "Address" }`.
+   */
   private parseListeners(text: string): BaselineResult['net']['listeners'] {
     const out: BaselineResult['net']['listeners'] = [];
     for (const line of text.split('\n')) {
@@ -395,10 +437,14 @@ export class AuditTool {
       if (!trimmed) continue;
       const cols = trimmed.split(/\s+/);
       if (cols.length < 5) continue;
+
+      const addressAt = cols.findIndex((col, index) => index > 0 && /^\S*:\d+$/.test(col));
+      if (addressAt === -1) continue;
+
       out.push({
         proto: cols[0],
-        address: cols[4] || '',
-        pid_program: cols.slice(5).join(' ').slice(0, 80),
+        address: cols[addressAt],
+        pid_program: cols.slice(addressAt + 1).join(' ').slice(0, 80),
       });
     }
     return out;
@@ -423,6 +469,12 @@ export class AuditTool {
     if (r.red_flags.warning.length > 0) {
       lines.push('WARNING:');
       for (const x of r.red_flags.warning) lines.push(`  - ${x}`);
+      lines.push('');
+    }
+
+    if (r.unavailable.length > 0) {
+      lines.push('NOT CHECKED:');
+      for (const x of r.unavailable) lines.push(`  - ${x}`);
       lines.push('');
     }
 
@@ -487,10 +539,14 @@ export class AuditTool {
     }
 
     const SEP = '__SSH_MCP_TLS_SEP__';
+    // stderr не глушим: без него причина отказа (openssl нет, соединение не
+    // встало, домен не отвечает) пропадала, и пустой сертификат превращался
+    // в утверждение «SAN не содержит домен» о сертификате, которого никто не
+    // видел. Разбору ниже лишние строки не мешают — он идёт по регулярным.
     const opensslCmd =
       `echo | openssl s_client -connect ${shellQuote(`${domain}:${port}`)} ` +
-      `-servername ${shellQuote(domain)} -showcerts 2>/dev/null | ` +
-      `openssl x509 -noout -dates -ext subjectAltName -issuer 2>/dev/null`;
+      `-servername ${shellQuote(domain)} -showcerts 2>&1 | ` +
+      `openssl x509 -noout -dates -ext subjectAltName -issuer 2>&1`;
     const renewCmd = checkRenew
       ? `(grep -h '^renew_hook' /etc/letsencrypt/renewal/*.conf 2>/dev/null; ` +
         `ls -la /etc/letsencrypt/renewal-hooks/deploy/ 2>/dev/null) | head -40`
@@ -515,14 +571,20 @@ export class AuditTool {
       ? Math.floor((new Date(notAfter).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
       : null;
 
+    // Сертификат считается прочитанным только с разобранной датой: без неё
+    // все остальные поля пусты не потому, что в сертификате их нет
+    const certRead = daysLeft !== null && !Number.isNaN(daysLeft);
+
     const sanLine = cert.match(/X509v3 Subject Alternative Name:\s*\n\s*(.+)/) ||
       cert.match(/Subject Alternative Name:\s*(.+)/);
     const sanText = sanLine ? sanLine[1] : '';
-    const sanIncludes = sanText
-      .split(/[,\s]+/)
-      .map((x) => x.replace(/^DNS:/, ''))
-      .filter(Boolean)
-      .includes(domain);
+    const sanIncludes = certRead
+      ? sanText
+          .split(/[,\s]+/)
+          .map((x) => x.replace(/^DNS:/, ''))
+          .filter(Boolean)
+          .includes(domain)
+      : null;
 
     const issuerMatch = cert.match(/issuer=(.+)$/m);
     const issuer = issuerMatch ? issuerMatch[1].trim() : null;
@@ -544,10 +606,13 @@ export class AuditTool {
     };
 
     const flags: string[] = [];
-    if (daysLeft !== null && daysLeft <= 0) flags.push('CRITICAL: certificate EXPIRED');
-    else if (daysLeft !== null && daysLeft <= 7) flags.push(`CRITICAL: expires in ${daysLeft} days`);
-    else if (daysLeft !== null && daysLeft <= 30) flags.push(`WARNING: expires in ${daysLeft} days`);
-    if (!sanIncludes) flags.push(`CRITICAL: SAN does not include ${domain}`);
+    if (!certRead) {
+      const reason = cert.split('\n').map((l) => l.trim()).find(Boolean) ?? 'no output from openssl';
+      flags.push(`UNKNOWN: certificate not read — ${reason.slice(0, 160)}`);
+    } else if (daysLeft! <= 0) flags.push('CRITICAL: certificate EXPIRED');
+    else if (daysLeft! <= 7) flags.push(`CRITICAL: expires in ${daysLeft} days`);
+    else if (daysLeft! <= 30) flags.push(`WARNING: expires in ${daysLeft} days`);
+    if (certRead && !sanIncludes) flags.push(`CRITICAL: SAN does not include ${domain}`);
     if (checkRenew && !renewHookConfigured) flags.push('WARNING: no Let\'s Encrypt deploy_hook configured');
 
     const text =

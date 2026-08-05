@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — v2.0.0 (branch `feat/openssh-transport`)
 
 Transport moved from the in-process `ssh2` pool to the system OpenSSH client with
-ControlMaster multiplexing. Sprints CORE_08 → CORE_10; full record with measurements in
-`docs/sprints/planned/`. Not released yet — the default backend is still `ssh2` until the
-flip (CORE_10 step 5.2).
+ControlMaster multiplexing. Sprints CORE_08 → CORE_11; full record with measurements in
+`docs/sprints/planned/`. The system client is now the default; the bundled `ssh2` backend
+still answers to `SSH_MCP_BACKEND=ssh2` and is removed later in CORE_11.
 
 ### Fixed — data loss and false corruption reports
 - `~` in `remote_path` of `ssh_upload` / `ssh_download`. Download used to bring the file

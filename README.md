@@ -868,7 +868,8 @@ src/
 - ✅ Password profiles verified live: no secret in `ps`, none on disk, one prompt
       per `ControlPersist` window (requires a local OpenSSH client 8.4+)
 - ✅ The sudo path is verified live on both BusyBox and coreutils servers
-- 🚧 Default backend flip and removal of the bundled ssh2 backend
+- ✅ The system OpenSSH client is the default transport
+- 🚧 Removal of the bundled ssh2 backend
 
 ### Future (Planned)
 - 📋 Recursive sudo upload (one-shot, without staging workaround)

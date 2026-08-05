@@ -43,6 +43,7 @@ import type {
   CommandRunner,
   ExecOptions,
   ExecResult,
+  MasterCloseOutcome,
   PingResult,
   RunnerStats,
   TransferOptions,
@@ -169,8 +170,8 @@ export class OpenSshRunner implements CommandRunner {
     };
   }
 
-  async closeMaster(): Promise<void> {
-    if (!this.runtime.multiplexing) return;
+  async closeMaster(): Promise<MasterCloseOutcome> {
+    if (!this.runtime.multiplexing) return 'multiplexing-off';
 
     const outcome = await runProcess({
       file: 'ssh',
@@ -181,10 +182,12 @@ export class OpenSshRunner implements CommandRunner {
 
     if (outcome.exitCode === 0) {
       logger.info(`[Runner] ${this.destination}: master connection closed`);
-    } else {
-      // Отсутствие master — норма, а не ошибка: он мог уже истечь по ControlPersist
-      logger.debug(`[Runner] ${this.destination}: no master connection to close`);
+      return 'closed';
     }
+
+    // Отсутствие master — норма, а не ошибка: он мог уже истечь по ControlPersist
+    logger.debug(`[Runner] ${this.destination}: no master connection to close`);
+    return 'nothing-to-close';
   }
 
   /** Живо ли управляющее соединение */

@@ -238,6 +238,29 @@ describe('OpenSshRunner retry policy', () => {
   });
 });
 
+describe('OpenSshRunner closeMaster', () => {
+  it('называет закрытие закрытием и просит у ssh именно выход', async () => {
+    runProcessMock.mockResolvedValue(ok());
+
+    expect(await makeRunner().closeMaster()).toBe('closed');
+    expect((runProcessMock.mock.calls[0][0] as ProcessRunOptions).file).toBe('ssh');
+    expect(callArgs(0)).toContain('exit');
+  });
+
+  it('ненулевой код — это «закрывать было нечего», а не отказ', async () => {
+    runProcessMock.mockResolvedValue(ok({ exitCode: 255, stderr: 'No such file or directory' }));
+
+    expect(await makeRunner().closeMaster()).toBe('nothing-to-close');
+  });
+
+  it('без мультиплексирования ssh не запускается вовсе', async () => {
+    const runtime: SshRuntime = { ...RUNTIME, multiplexing: false };
+
+    expect(await makeRunner(CONFIG, runtime).closeMaster()).toBe('multiplexing-off');
+    expect(runProcessMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('OpenSshRunner multiplexing', () => {
   it('falls back to a direct connection when the server refuses a multiplexed session', async () => {
     runProcessMock

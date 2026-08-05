@@ -21,7 +21,7 @@
 5. **ssh_log_tail** - Last N lines from logs (single or multiple)
 6. **ssh_log_search** - Search logs with grep (single or multiple)
 7. **ssh_snapshot** - Instant system health check
-8. **ssh_monitor** - Monitor connections, reload profiles, test connections
+8. **ssh_monitor** - Monitor connections, reload profiles, test connections, close a shared connection
 
 **Transfer — SFTP (2, v1.3.0+):**
 9. **ssh_upload** - Binary-safe file/directory upload (sha256 verify, atomic rename, sudo via `install`)
@@ -475,6 +475,15 @@ ssh_monitor({
   action: "list"
 })
 // Shows all available profiles with default marked
+
+// Close the shared connection now, without waiting for it to idle out
+ssh_monitor({
+  action: "close",
+  profile: "production"
+})
+// Closes the connection of that profile and reports what is still left on
+// this machine — connections of other profiles outlive both this call and
+// the server itself
 ```
 
 ---

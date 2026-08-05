@@ -448,7 +448,7 @@ export function configFingerprint(config: RunnerConfig): string {
     config.passphrase ?? '',
     config.strictHostKeyChecking ?? '',
     config.ignoreUserConfig ? '1' : '0',
-  ].join(' ');
+  ].join('\u0000');
 
   return createHash('sha256').update(material).digest('hex').slice(0, 16);
 }

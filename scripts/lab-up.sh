@@ -6,6 +6,12 @@
 # Debian (coreutils, sh это dash). Расхождения между ними ловят половину
 # дефектов, которые моки не видят вовсе.
 #
+# Третий контейнер — mcp-router: имитация домашнего роутера/встраиваемого
+# устройства. На таких sshd часто dropbear, а не OpenSSH, и subsystem sftp
+# не собран вовсе — только классический scp. Профиль для него держим вне
+# LAB_SERVERS (см. tests/live/lab.ts): общая сетка гоняет sftp-путь, а этот
+# узел его провалит по определению.
+#
 # Скрипт идемпотентен: живые контейнеры не трогает, мёртвые пересоздаёт.
 
 set -euo pipefail
@@ -16,6 +22,7 @@ KEY="$LAB_DIR/key"
 
 ALPINE_PORT=2231
 DEBIAN_PORT=2232
+ROUTER_PORT=2233
 
 # Пароль лабораторного пользователя pwuser. Дублируется в tests/live/lab.ts —
 # одно значение на shell и на тесты, поэтому меняется в двух местах сразу.
@@ -122,6 +129,16 @@ DEBIAN_BOOT='apt-get update -qq >/dev/null && apt-get install -y -qq openssh-ser
   mkdir -p /run/sshd /root/.ssh && cp /tmp/authkey /root/.ssh/authorized_keys &&
   chmod 600 /root/.ssh/authorized_keys && /usr/sbin/sshd -D -e'
 
+# openssh-client — только ради бинаря scp: пакету dropbear он не нужен, сервер
+# при классическом scp сам его не запускает (это делает клиент), но remote-конец
+# scp-протокола запускает `scp` на сервере, и без пакета его там не будет.
+# sftp-server эта установка не добавляет — он живёт в openssh-server, которого
+# здесь нет и не будет: это и есть весь смысл узла.
+ROUTER_BOOT='apk add --no-cache dropbear openssh-client >/dev/null &&
+  mkdir -p /root/.ssh && cp /tmp/authkey /root/.ssh/authorized_keys &&
+  chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys &&
+  /usr/sbin/dropbear -F -E -R'
+
 if probe "$ALPINE_PORT"; then
   echo "mcp-alpine уже отвечает на порту $ALPINE_PORT"
   ensure_users mcp-alpine
@@ -136,7 +153,31 @@ else
   start mcp-debian debian:12 "$DEBIAN_PORT" "$DEBIAN_BOOT"
 fi
 
+# Router не заводит deploy/pwuser через ensure_users (и потому не переиспользует
+# start()) — на нём нет ни sudo, ни smtp пароля, только вход root по ключу. Это
+# и есть весь профиль встраиваемого устройства, лишние пользователи тут не нужны.
+if probe "$ROUTER_PORT"; then
+  echo "mcp-router уже отвечает на порту $ROUTER_PORT"
+else
+  docker rm -f mcp-router >/dev/null 2>&1 || true
+  ssh-keygen -R "[127.0.0.1]:$ROUTER_PORT" >/dev/null 2>&1 || true
+  docker run -d --name mcp-router -p "$ROUTER_PORT:22" \
+    -v "$KEY.pub:/tmp/authkey:ro" alpine:3.20 sh -c "$ROUTER_BOOT" >/dev/null
+
+  waited=0
+  until probe "$ROUTER_PORT"; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 90 ]; then
+      echo "mcp-router не ответил за 90 секунд" >&2
+      docker logs --tail 20 mcp-router >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  echo "mcp-router готов на порту $ROUTER_PORT"
+fi
+
 echo
 echo "лаборатория поднята, ключ: $KEY"
 echo "живая сетка: npm run test:live"
-echo "снести: docker rm -f mcp-alpine mcp-debian"
+echo "снести: docker rm -f mcp-alpine mcp-debian mcp-router"

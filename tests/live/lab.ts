@@ -32,6 +32,13 @@ export const LAB_SERVERS: LabServer[] = [
   { name: 'debian/dash', port: 2232 },
 ];
 
+/**
+ * Роутер: dropbear вместо OpenSSH, sftp-server не собран вовсе — только
+ * классический scp. Нарочно вне LAB_SERVERS: общая сетка гоняет sftp-путь,
+ * и этот узел провалит его по определению, а не по дефекту.
+ */
+export const LAB_ROUTER: LabServer = { name: 'router/dropbear', port: 2233 };
+
 /** Строгий режим: отсутствие лаборатории — падение, а не пропуск */
 export const LAB_REQUIRED = process.env.SSH_MCP_LIVE === '1';
 

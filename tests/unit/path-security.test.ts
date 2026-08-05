@@ -38,12 +38,20 @@ describe('PathValidator', () => {
       expect(result.error).toContain('Path too long');
     });
     
+    // Предел — это «не длиннее», а не «короче»
+    it('путь ровно в предел проходит, а длиннее на знак — нет', () => {
+      const validator = new PathValidator({ maxPathLength: 10 });
+
+      expect(validator.validate('/123456789').valid).toBe(true);
+      expect(validator.validate('/1234567890').valid).toBe(false);
+    });
+
     it('should allow paths within max length', () => {
       const config: PathSecurityConfig = {
         maxPathLength: 100
       };
       const validator = new PathValidator(config);
-      
+
       const result = validator.validate('/short/path');
       expect(result.valid).toBe(true);
     });
@@ -126,7 +134,8 @@ describe('PathValidator', () => {
       
       const result = validator.validate('/etc/hosts');
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('not in allowed list');
+      // Отказ перечисляет разрешённое, иначе человеку нечего исправлять
+      expect(result.error).toBe('Path not in allowed list. Allowed: /home/admin, /var/log');
     });
     
     it('should allow subdirectories of whitelisted paths', () => {
@@ -194,7 +203,10 @@ describe('PathValidator', () => {
     const allowed = new PathValidator({ allowedPaths: ['/home/user'] });
 
     it('тильда не проходит ни белый список, ни чёрный', () => {
-      expect(allowed.validate('~/file.txt').error).toContain('not canonical');
+      expect(allowed.validate('~/file.txt').error).toBe(
+        'Path is not canonical: "~/file.txt". Rules apply to absolute paths ' +
+        'with no leading "~", no "." or ".." — resolve it before validating'
+      );
       expect(denied.validate('~/secret').valid).toBe(false);
       expect(denied.validate('~').valid).toBe(false);
       expect(denied.validate('~deploy/.ssh/id_rsa').valid).toBe(false);
@@ -224,6 +236,32 @@ describe('PathValidator', () => {
     it('канонический путь судится как обычно', () => {
       expect(denied.validate('/root/secret').valid).toBe(false);
       expect(denied.validate('/home/deploy/secret').valid).toBe(true);
+    });
+
+    // Раскрывается только ведущая тильда; в середине пути `~` — имя файла,
+    // и такие имена на сервере есть: их оставлял прежний дефект загрузки
+    it('тильда в середине пути — обычное имя, а не повод отказать', () => {
+      expect(denied.validate('/tmp/~/x').valid).toBe(true);
+      expect(denied.validate('/home/deploy/~').valid).toBe(true);
+      expect(denied.validate('/root/~/secret').valid).toBe(false);
+      expect(allowed.validate('/home/user/~backup').valid).toBe(true);
+    });
+  });
+
+  // Пустой белый список — это «список не задан», а не «запрещено всё»
+  describe('Пустой список путей ничего не запрещает', () => {
+    it('пустой белый список рядом с чёрным оставляет остальное открытым', () => {
+      const validator = new PathValidator({ deniedPaths: ['/root'], allowedPaths: [] });
+
+      expect(validator.validate('/var/log/app.log').valid).toBe(true);
+      expect(validator.validate('/root/secret').valid).toBe(false);
+    });
+
+    it('пустой чёрный список рядом с белым не мешает разрешённому', () => {
+      const validator = new PathValidator({ deniedPaths: [], allowedPaths: ['/var/log'] });
+
+      expect(validator.validate('/var/log/app.log').valid).toBe(true);
+      expect(validator.validate('/etc/passwd').valid).toBe(false);
     });
   });
 

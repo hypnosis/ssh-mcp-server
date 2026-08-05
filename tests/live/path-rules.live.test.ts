@@ -121,7 +121,11 @@ if (unavailable && LAB_REQUIRED) {
             `printf 'ordinary line\\n' > ${ALLOWED_DIR}/inner/app.log && ` +
             `printf '${SECRET_WORD}\\n' > ${ALLOWED_DIR}-evil/secret && ` +
             `ln -sfn /root ${ALLOWED_DIR}/escape && ` +
-            `ln -sfn ${ALLOWED_DIR}/inner ${ALLOWED_DIR}/shortcut`,
+            `ln -sfn ${ALLOWED_DIR}/inner ${ALLOWED_DIR}/shortcut && ` +
+            // Каталог с именем ровно `~` — законное имя, а не нераскрытая тильда
+            `mkdir -p '${ALLOWED_DIR}/~' '/root/~' && ` +
+            `printf 'tilde directory\\n' > '${ALLOWED_DIR}/~/note.txt' && ` +
+            `printf '${SECRET_WORD}\\n' > '/root/~/secret'`,
           { profileName: server.name }
         );
       });
@@ -129,7 +133,7 @@ if (unavailable && LAB_REQUIRED) {
       afterAll(async () => {
         await executor.execute(
           config,
-          `rm -f /root/secret ${allowedLog}; rm -rf ${ALLOWED_DIR} ${ALLOWED_DIR}-evil`,
+          `rm -f /root/secret ${allowedLog}; rm -rf ${ALLOWED_DIR} ${ALLOWED_DIR}-evil '/root/~'`,
           { profileName: server.name }
         );
         await closeAllRunners();
@@ -255,6 +259,25 @@ if (unavailable && LAB_REQUIRED) {
 
         expect(text).toContain('ordinary line');
         expect(text).not.toMatch(/Path validation failed/);
+      });
+
+      // Такие имена на сервере есть: их оставлял прежний дефект загрузки,
+      // и убрать их — обычная работа, которую правила не должны запрещать
+      it('файл с именем `~` внутри разрешённого каталога читается', async () => {
+        const text = await callFiles('ssh_file_read', {
+          profile: listed,
+          path: `${ALLOWED_DIR}/~/note.txt`,
+        });
+
+        expect(text).toContain('tilde directory');
+        expect(text).not.toMatch(/Path validation failed/);
+      });
+
+      it('тильда в середине запрещённого пути отказ не отменяет', async () => {
+        const text = await callFiles('ssh_file_read', { profile: guarded, path: '/root/~/secret' });
+
+        expect(text).not.toContain(SECRET_WORD);
+        expect(text).toMatch(/Access denied/);
       });
     });
   }

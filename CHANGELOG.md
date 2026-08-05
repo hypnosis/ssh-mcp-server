@@ -9,8 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Transport moved from the in-process `ssh2` pool to the system OpenSSH client with
 ControlMaster multiplexing. Sprints CORE_08 → CORE_11; full record with measurements in
-`docs/sprints/planned/`. The system client is now the default; the bundled `ssh2` backend
-still answers to `SSH_MCP_BACKEND=ssh2` and is removed later in CORE_11.
+`docs/sprints/planned/`. The bundled `ssh2` backend is gone, and with it the connection
+pool, so `SSH_MCP_BACKEND` no longer selects anything.
+
+### Changed — one transport, and connections that outlive the server
+- The system `ssh` client is the only way commands are delivered. `SSH_MCP_BACKEND=ssh2`
+  is no longer honoured (**breaking**), and the pool variables `SSH_MCP_POOL_IDLE_TIMEOUT`
+  and `SSH_MCP_POOL_KEEPALIVE_INTERVAL` are gone with the pool itself.
+- Connections are no longer closed on exit: the control socket is shared with other
+  windows on the machine. The server reports what it leaves behind instead — which sockets
+  are in the control directory and whether their master is alive.
+- `SSH_MCP_CONTROL_PERSIST` sets how long a connection stays alive after the last command
+  (whole seconds, `0` closes immediately, default `600`). The remaining idle time is
+  deliberately not reported: a socket's timestamp marks when the master came up, not the
+  last command. See `docs/decisions/006-leftover-control-sockets.md`.
 
 ### Fixed — data loss and false corruption reports
 - `~` in `remote_path` of `ssh_upload` / `ssh_download`. Download used to bring the file

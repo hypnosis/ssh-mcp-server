@@ -94,7 +94,6 @@ const originalPath = process.env.PATH;
 
 process.env.SSH_PROFILES_FILE = profilesPath;
 process.env.SSH_MCP_CONTROL_DIR ??= LAB_CONTROL_DIR;
-process.env.SSH_MCP_BACKEND = 'openssh';
 process.env.PATH = `${shimDir}:${originalPath ?? ''}`;
 process.env.SSH_MCP_LEGACY_SHIM = '1';
 

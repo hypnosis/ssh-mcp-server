@@ -1,9 +1,8 @@
 /**
  * Unit tests: ssh_monitor рассказывает про транспорт, а не про пул
  *
- * Метрики пула соединений имеют смысл только на бэкенде ssh2 — на openssh
- * пула нет вовсе, и раздел «Active Connections» показывал бы пустоту при
- * живом master-соединении. Теперь состояние спрашивается у транспорта.
+ * Пула нет: соединение держит сам ssh, и раздел «Active Connections»
+ * показывал бы пустоту при живом master. Состояние спрашивается у транспорта.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -70,16 +69,15 @@ describe('ssh_monitor stats', () => {
   it('объясняет, почему мультиплексирования нет', async () => {
     statsMock.mockResolvedValue(
       stats({
-        backend: 'ssh2',
         multiplexing: false,
-        multiplexingDisabledReason: 'connections are pooled inside this process',
+        multiplexingDisabledReason: 'ControlPersist requires OpenSSH 5.6+, found OpenSSH_5.3',
         masterActive: false,
       })
     );
 
     const text = (await run({ action: 'stats' })).content[0].text as string;
 
-    expect(text).toContain('pooled inside this process');
+    expect(text).toContain('ControlPersist requires OpenSSH 5.6+');
   });
 
   it('показывает счётчики команд и передач', async () => {

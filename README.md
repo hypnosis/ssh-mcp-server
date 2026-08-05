@@ -934,6 +934,24 @@ Add `pathSecurity` to profiles for additional protection:
 
 See [Quick Start](#11-optional-path-security-configuration) for details.
 
+**How a path is judged.** Rules are never matched against the string you passed. The path is
+first brought to a canonical form — `~` and relative paths are expanded against the server's
+home directory, `..`, `.` and doubled slashes are folded — and only then compared, by directory
+boundary: `/root` denies `/root/secret` but not `/rootkit`.
+
+Symlinks are followed too: the server is asked where the path really leads, and the rule is
+applied to both the name and the target. A link inside an allowed directory that points at a
+denied one is rejected. This costs one extra round trip per path, and only for profiles that
+actually define rules — without `pathSecurity` nothing is asked.
+
+Two limits worth knowing:
+
+- If the server cannot resolve the path (no `readlink`), the operation still runs, checked by
+  name alone, and says so in its answer. A router that cannot resolve links is not a reason to
+  refuse work.
+- Rules cover file and log tools. `ssh_exec` runs arbitrary commands, and a command is not a
+  path — restrict those with the account's own permissions on the server.
+
 ## 📄 License
 
 MIT License - Copyright (c) 2026 hypnosis

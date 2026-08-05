@@ -58,6 +58,7 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
 
 const { TransferTool } = await import('../../src/tools/transfer-tool.js');
 const { FileTools } = await import('../../src/tools/file-tools.js');
+const { LogTools } = await import('../../src/tools/log-tools.js');
 const { UNKNOWN_PASSPORT } = await import('../../src/runner/passport.js');
 
 function call(name: string, args: Record<string, unknown>): CallToolRequest {
@@ -72,6 +73,18 @@ async function transfer(name: string, args: Record<string, unknown>): Promise<st
 async function files(name: string, args: Record<string, unknown>): Promise<string> {
   const response = await new FileTools().handleCall(call(name, args));
   return response.content[0].text as string;
+}
+
+async function logs(name: string, args: Record<string, unknown>): Promise<string> {
+  const response = await new LogTools().handleCall(call(name, args));
+  return response.content[0].text as string;
+}
+
+/** Команды, ушедшие на сервер, — по первому слову */
+function sentCommands(starts: string): string[] {
+  return executeMock.mock.calls
+    .map(([, command]) => String(command))
+    .filter((command) => command.startsWith(starts));
 }
 
 let localDir: string;
@@ -158,6 +171,42 @@ describe('запрещённый каталог остаётся запрещё�
       true
     );
   });
+
+  // Журнальные инструменты проверяли путь ДО раскрытия, поэтому `~/secret`
+  // проходил запрет и отдавал содержимое файла — замерено на обоих контейнерах.
+  // У каждого инструмента две ветки, один путь и список, и обе строят команду
+  // сами: покрываем обе.
+
+  it('ssh_log_tail не читает запрещённый дом', async () => {
+    const text = await logs('ssh_log_tail', { path: '~/secret' });
+
+    expect(text).toMatch(/Path validation failed/);
+    expect(sentCommands('tail ')).toHaveLength(0);
+  });
+
+  it('ssh_log_tail в списке путей отказывает только запрещённому', async () => {
+    const text = await logs('ssh_log_tail', { path: ['~/secret', '/var/log/app.log'] });
+
+    expect(text).toMatch(/Path validation failed/);
+    expect(sentCommands('tail ')).toEqual([expect.stringContaining('/var/log/app.log')]);
+  });
+
+  it('ssh_log_search не ищет в запрещённом доме', async () => {
+    const text = await logs('ssh_log_search', { path: '~/secret', query: 'ключ' });
+
+    expect(text).toMatch(/Path validation failed/);
+    expect(sentCommands('grep ')).toHaveLength(0);
+  });
+
+  it('ssh_log_search в списке путей отказывает только запрещённому', async () => {
+    const text = await logs('ssh_log_search', {
+      path: ['~/secret', '/var/log/app.log'],
+      query: 'ключ',
+    });
+
+    expect(text).toMatch(/Path validation failed/);
+    expect(sentCommands('grep ')).toEqual([expect.stringContaining('/var/log/app.log')]);
+  });
 });
 
 describe('разрешённый каталог не отвергается из-за тильды', () => {
@@ -183,5 +232,12 @@ describe('разрешённый каталог не отвергается из
     expect(executeMock.mock.calls.some(([, command]) => String(command).startsWith('cat '))).toBe(
       true
     );
+  });
+
+  it('ssh_log_tail из собственного дома проходит', async () => {
+    const text = await logs('ssh_log_tail', { path: '~/app.log' });
+
+    expect(text).not.toMatch(/Path validation failed/);
+    expect(sentCommands('tail ')).toEqual([expect.stringContaining(`${HOME}/app.log`)]);
   });
 });

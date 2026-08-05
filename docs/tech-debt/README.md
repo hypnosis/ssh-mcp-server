@@ -14,5 +14,6 @@
 | TD-02 | CI собран на устаревших версиях чужих блоков | ✅ закрыт | [archive/ci-actions_02.md](archive/ci-actions_02.md) |
 | TD-03 | Ответ инструмента не отличает провал от результата | 🔴 открыт | [tool-schemas_03.md](tool-schemas_03.md) |
 | TD-04 | Косметика вывода аудита | 🟡 открыт | [audit-output_04.md](audit-output_04.md) |
+| TD-05 | Комментарии в разборе путей пересказывают решение | 🟡 открыт | [path-guard-comments_05.md](path-guard-comments_05.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.

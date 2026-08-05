@@ -184,15 +184,77 @@ describe('PathValidator', () => {
     });
   });
   
-  describe('Tilde path normalization', () => {
-    it('should normalize tilde paths for validation', () => {
-      const config: PathSecurityConfig = {
-        allowedPaths: ['/home/user']
-      };
-      const validator = new PathValidator(config);
-      
-      // ~/file should be normalized to /home/user/file
-      expect(validator.validate('~/file.txt').valid).toBe(true);
+  // Валидатор подставлял вместо `~` выдуманный `/home/user` и отвечал
+  // «разрешено». На сервере с входом под root это ровно наоборот: `~/x` ведёт
+  // в /root, то есть запрет `/root` обходился, а разрешение — не срабатывало.
+  // Теперь путь приводит к каноническому виду path-guard, а судить неканонический
+  // валидатор отказывается — угадывать ему нечем.
+  describe('Судить можно только канонический путь', () => {
+    const denied = new PathValidator({ deniedPaths: ['/root'] });
+    const allowed = new PathValidator({ allowedPaths: ['/home/user'] });
+
+    it('тильда не проходит ни белый список, ни чёрный', () => {
+      expect(allowed.validate('~/file.txt').error).toContain('not canonical');
+      expect(denied.validate('~/secret').valid).toBe(false);
+      expect(denied.validate('~').valid).toBe(false);
+      expect(denied.validate('~deploy/.ssh/id_rsa').valid).toBe(false);
+    });
+
+    it('относительный путь не проходит: рабочий каталог отсюда не виден', () => {
+      expect(denied.validate('secret').valid).toBe(false);
+      expect(denied.validate('./secret').valid).toBe(false);
+      expect(allowed.validate('file.txt').valid).toBe(false);
+    });
+
+    it('несвёрнутые `..` и `.` не проходят', () => {
+      expect(allowed.validate('/home/user/../../root/secret').valid).toBe(false);
+      expect(denied.validate('/tmp/./x').valid).toBe(false);
+    });
+
+    it('сдвоенный слэш не проходит: BusyBox отдаёт корень именно так', () => {
+      expect(denied.validate('//root/secret').valid).toBe(false);
+    });
+
+    // Сравнивать не с чем — значит и отказывать не за что
+    it('без списков путей неканонический вид пропускается', () => {
+      expect(new PathValidator({ maxPathLength: 100 }).validate('~/file.txt').valid).toBe(true);
+      expect(new PathValidator({ allowTraversal: false }).validate('~/x').valid).toBe(true);
+    });
+
+    it('канонический путь судится как обычно', () => {
+      expect(denied.validate('/root/secret').valid).toBe(false);
+      expect(denied.validate('/home/deploy/secret').valid).toBe(true);
+    });
+  });
+
+  describe('Сравнение идёт по границе каталога', () => {
+    it('запрет не цепляет каталог с похожим именем', () => {
+      const validator = new PathValidator({ deniedPaths: ['/root'] });
+
+      expect(validator.validate('/rootkit/payload').valid).toBe(true);
+      expect(validator.validate('/root').valid).toBe(false);
+      expect(validator.validate('/root/secret').valid).toBe(false);
+    });
+
+    it('разрешение не пропускает соседа по имени', () => {
+      const validator = new PathValidator({ allowedPaths: ['/var/log'] });
+
+      expect(validator.validate('/var/logs-of-someone-else/x').valid).toBe(false);
+      expect(validator.validate('/var/log').valid).toBe(true);
+      expect(validator.validate('/var/log/app.log').valid).toBe(true);
+    });
+
+    it('слэш в конце правила ничего не меняет', () => {
+      const validator = new PathValidator({ deniedPaths: ['/root/'] });
+
+      expect(validator.validate('/root/secret').valid).toBe(false);
+      expect(validator.validate('/rootkit/x').valid).toBe(true);
+    });
+
+    it('правило `/` накрывает всё', () => {
+      const validator = new PathValidator({ deniedPaths: ['/'] });
+
+      expect(validator.validate('/tmp/x').valid).toBe(false);
     });
   });
   

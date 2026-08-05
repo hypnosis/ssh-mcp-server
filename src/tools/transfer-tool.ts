@@ -381,7 +381,7 @@ export class TransferTool {
     // sudo path: SFTP into /tmp, then `sudo install` into place
     if (opts.sudo) {
       const stage = buildSudoStagingPath();
-      await this.putFile(sshConfig, profileName, localPath, stage, opts.timeoutMs);
+      await this.putFile(sshConfig, localPath, stage, opts.timeoutMs);
       try {
         await this.sudoInstallFile(sshConfig, profileName, stage, remotePath, opts);
       } finally {
@@ -420,7 +420,7 @@ export class TransferTool {
       finalPath: remotePath,
       kind: 'file',
       stage: async (staging) => {
-        await this.putFile(sshConfig, profileName, localPath, staging, opts.timeoutMs);
+        await this.putFile(sshConfig, localPath, staging, opts.timeoutMs);
       },
       verify: async (staging) => {
         if (!opts.verify) return null;
@@ -464,12 +464,11 @@ export class TransferTool {
    */
   private async putFile(
     sshConfig: any,
-    profileName: string,
     localPath: string,
     remotePath: string,
     timeoutMs?: number
   ): Promise<void> {
-    const runner = await getRunner(sshConfig, profileName);
+    const runner = await getRunner(sshConfig);
     await runner.upload(localPath, remotePath, { timeoutMs });
   }
 
@@ -623,7 +622,7 @@ export class TransferTool {
       kind: 'directory',
       stage: async (staging) => {
         // Дерево уезжает целиком: подкаталоги создаёт транспорт
-        const runner = await getRunner(sshConfig, profileName);
+        const runner = await getRunner(sshConfig);
         await runner.upload(localDir, staging, { recursive: true, timeoutMs: opts.timeoutMs });
       },
       verify: async (staging) => {
@@ -762,7 +761,7 @@ export class TransferTool {
     localPath: string,
     opts: { verify: boolean; timeoutMs?: number }
   ): Promise<{ bytes: number; verified: boolean; verifyNote?: string; warnings: string[] }> {
-    const runner = await getRunner(sshConfig, profileName);
+    const runner = await getRunner(sshConfig);
     let bytes = 0;
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
@@ -805,7 +804,7 @@ export class TransferTool {
     localDir: string,
     opts: { verify: boolean; timeoutMs?: number }
   ): Promise<{ files: number; verified: boolean; verifyNote?: string; warnings: string[] }> {
-    const runner = await getRunner(sshConfig, profileName);
+    const runner = await getRunner(sshConfig);
     let files: string[] = [];
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 

@@ -2,8 +2,11 @@
  * Unit tests for ssh/scp argument building
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { logger } from '../../src/utils/logger.js';
 import {
+  resolveControlPersistSec,
+  resetControlPersistWarning,
   buildCommonOptions,
   buildSshArgs,
   buildScpArgs,
@@ -132,9 +135,14 @@ describe('ssh-args', () => {
       expect(hasOption(args, 'ControlPersist')).toBe(false);
     });
 
-    it('honours a custom ControlPersist window', () => {
-      const args = buildCommonOptions(KEY_PROFILE, CAPS, { controlPersistSec: 1800 });
-      expect(optionValue(args, 'ControlPersist')).toBe('1800');
+    it('honours a custom ControlPersist window from the environment', () => {
+      process.env.SSH_MCP_CONTROL_PERSIST = '1800';
+      try {
+        const args = buildCommonOptions(KEY_PROFILE, CAPS);
+        expect(optionValue(args, 'ControlPersist')).toBe('1800');
+      } finally {
+        delete process.env.SSH_MCP_CONTROL_PERSIST;
+      }
     });
 
     it('keeps the control socket path short enough for a unix socket address', () => {
@@ -417,6 +425,70 @@ describe('ssh-args', () => {
 
     it('leaves paths whose colon comes after a slash untouched', () => {
       expect(normalizeLocalSpec('dir/a:b')).toBe('dir/a:b');
+    });
+  });
+
+  // Срок простоя приходит и в команду ssh, и в ответ о том, что осталось на
+  // машине. Источник один, поэтому разбор значения проверяется отдельно
+  describe('resolveControlPersistSec', () => {
+    afterEach(() => {
+      resetControlPersistWarning();
+      vi.restoreAllMocks();
+    });
+
+    it('без переменной держит соединение прежние 600 секунд', () => {
+      expect(resolveControlPersistSec({})).toBe(600);
+      expect(resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: '  ' })).toBe(600);
+    });
+
+    it('берёт из переменной целое число секунд', () => {
+      expect(resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: '30' })).toBe(30);
+      expect(resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: ' 1800 ' })).toBe(1800);
+    });
+
+    it('ноль понимает как «закрывать сразу», а не как отсутствие значения', () => {
+      expect(resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: '0' })).toBe(0);
+    });
+
+    it('на непригодное значение берёт прежний срок', () => {
+      vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      expect(resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: 'soon' })).toBe(600);
+      expect(resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: '-5' })).toBe(600);
+      expect(resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: '1.5' })).toBe(600);
+    });
+
+    it('предупреждение называет и полученное значение, и запасное', () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: 'soon' });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain('soon');
+      expect(message).toContain('600');
+      // Отказ обязан объяснить, какое значение подошло бы
+      expect(message).toContain('whole number of seconds');
+      expect(message).toContain('0 to close immediately');
+    });
+
+    it('молчит на пригодных значениях', () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      resolveControlPersistSec({});
+      resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: '0' });
+      resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: '30' });
+
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('повторяет предупреждение один раз, а не на каждую команду', () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: 'soon' });
+      resolveControlPersistSec({ SSH_MCP_CONTROL_PERSIST: 'later' });
+
+      expect(warn).toHaveBeenCalledTimes(1);
     });
   });
 });

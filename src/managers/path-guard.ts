@@ -80,7 +80,7 @@ export async function expandRemoteHome(
     );
   }
 
-  const passport = await executor.passport(config, options.profileName);
+  const passport = await executor.passport(config);
   if (!passport.home) {
     throw new Error(
       `cannot expand "${path}": the server did not report a home directory. ` +
@@ -193,7 +193,7 @@ export async function decideRemotePath(
   // Дом нужен только относительному пути, и только он один за ним ходит
   const home = expanded.path.startsWith('/')
     ? ''
-    : (await executor.passport(config, options.profileName)).home;
+    : (await executor.passport(config)).home;
   const canonical = toCanonical(expanded.path, home);
 
   const deny = (subject: string, error: string): PathDecision => ({

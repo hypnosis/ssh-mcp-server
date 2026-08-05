@@ -88,7 +88,7 @@ export class SSHExecutor {
     // поэтому он же и ответ на «паспорт не прочитан».
     let finalCommand = command;
     if (options.sudo) {
-      const passport = await this.passport(config, options.profileName);
+      const passport = await this.passport(config);
       finalCommand = `sudo ${passport.bash ? 'bash' : 'sh'} -c ${this.escapeShell(command)}`;
     }
 
@@ -99,7 +99,7 @@ export class SSHExecutor {
 
     logger.debug(`Executing SSH command: ${finalCommand.substring(0, 100)}...`);
 
-    const runner = await getRunner(config, options.profileName || 'default');
+    const runner = await getRunner(config);
     const result = await runner.exec(finalCommand, {
       timeoutMs: options.timeout ?? DEFAULT_TIMEOUT_MS,
       idempotent: options.idempotent,
@@ -150,9 +150,9 @@ export class SSHExecutor {
    *
    * Ключ кэша общий с транспортом — проба на назначение одна.
    */
-  async passport(config: SSHConfig, profileName = 'default'): Promise<ServerPassport> {
+  async passport(config: SSHConfig): Promise<ServerPassport> {
     return getServerPassport(passportKey(config), async () => {
-      const runner = await getRunner(config, profileName);
+      const runner = await getRunner(config);
       const result = await runner.exec(PASSPORT_PROBE_COMMAND, {
         timeoutMs: PASSPORT_PROBE_TIMEOUT_MS,
         remoteTimeout: false,
@@ -172,9 +172,9 @@ export class SSHExecutor {
   /**
    * Test connection to server
    */
-  async testConnection(config: SSHConfig, profileName?: string): Promise<boolean> {
+  async testConnection(config: SSHConfig): Promise<boolean> {
     try {
-      const runner = await getRunner(config, profileName || 'default');
+      const runner = await getRunner(config);
       const result = await runner.ping();
       return result.ok;
     } catch {

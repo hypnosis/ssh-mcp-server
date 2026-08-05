@@ -23,7 +23,33 @@ import { SnapshotTool } from './tools/snapshot-tool.js';
 import { MonitoringTool } from './tools/monitoring-tool.js';
 import { TransferTool } from './tools/transfer-tool.js';
 import { AuditTool } from './tools/audit-tool.js';
-import { ConnectionPool } from './managers/connection-pool.js';
+import { listControlSockets, idleWindowSec } from './runner/control-sockets.js';
+
+/**
+ * Сказать на выходе, что осталось на машине.
+ *
+ * Соединения переживают сервер намеренно: сокет общий, и закрытие рвало бы
+ * канал соседнему окну. Сколько именно осталось жить каждому — не считаем:
+ * время сокета показывает подъём соединения, а не последнюю команду.
+ */
+async function reportLeftoverConnections(): Promise<void> {
+  const sockets = await listControlSockets();
+  if (sockets.length === 0) return;
+
+  const alive = sockets.filter((socket) => socket.state === 'alive');
+  const stale = sockets.filter((socket) => socket.state === 'stale');
+
+  logger.info(
+    `Оставлено соединений: ${alive.length} (закроются сами через ${idleWindowSec()} с простоя)`
+  );
+  for (const socket of alive) {
+    logger.info(`  ${socket.path} — поднято ${socket.since.toISOString()}`);
+  }
+  if (stale.length > 0) {
+    logger.info(`Сокеты без соединения: ${stale.length} — уйдут при следующей команде`);
+  }
+  logger.info('Закрыть сразу: ssh -O exit <сервер> с теми же настройками профиля');
+}
 
 async function main() {
   // Одна сорвавшаяся операция не должна уносить весь сервер
@@ -173,11 +199,7 @@ async function main() {
     logger.info(`\nReceived ${signal}, shutting down SSH MCP Server...`);
     
     try {
-      // Close all SSH connections
-      const pool = ConnectionPool.getInstance();
-      await pool.closeAll();
-      
-      logger.info('✅ All SSH connections closed');
+      await reportLeftoverConnections();
       logger.info('SSH MCP Server stopped gracefully');
       process.exit(0);
     } catch (error: any) {

@@ -293,7 +293,7 @@ export class ExecTool {
 
     for (const command of commands) {
       if (findRemovalTargets(command).length === 0) continue;
-      if (home === null) home = (await this.executor.passport(config, profileName)).home;
+      if (home === null) home = (await this.executor.passport(config)).home;
 
       const verdict = inspectCommand(command, home);
       if (verdict.blocked) {

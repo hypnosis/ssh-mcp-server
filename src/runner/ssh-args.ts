@@ -9,6 +9,7 @@
  * видны в `ps` любому пользователю системы. Секрет доставляется через askpass.
  */
 
+import { logger } from '../utils/logger.js';
 import type { SSHConfig, StrictHostKeyChecking } from '../utils/ssh-config.js';
 
 export type { StrictHostKeyChecking };
@@ -42,8 +43,6 @@ export interface SshCapabilities {
  * Настройки, у которых есть разумные значения по умолчанию
  */
 export interface SshArgsOptions {
-  /** Сколько держать соединение живым после последней команды, секунды */
-  controlPersistSec?: number;
   /** Таймаут установки соединения, секунды */
   connectTimeoutSec?: number;
   /** Интервал keepalive-проб, секунды */
@@ -54,8 +53,42 @@ export interface SshArgsOptions {
 
 const DEFAULT_CONTROL_PERSIST_SEC = 600;
 const DEFAULT_CONNECT_TIMEOUT_SEC = 10;
+/** Имя управляющего сокета начинается с этого — по нему же он и опознаётся в каталоге */
+export const CONTROL_SOCKET_PREFIX = 's-';
 const DEFAULT_SERVER_ALIVE_INTERVAL_SEC = 15;
 const DEFAULT_SERVER_ALIVE_COUNT_MAX = 3;
+
+/** О непонятном значении переменной предупреждаем один раз, а не на каждую команду */
+let unknownPersistReported = false;
+
+/**
+ * Сколько соединение живёт после последней команды, секунды.
+ *
+ * Единственный источник: отсюда значение уходит и в команду ssh, и в ответ
+ * инструментов о том, что осталось на машине. Ноль означает «закрывать сразу».
+ */
+export function resolveControlPersistSec(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SSH_MCP_CONTROL_PERSIST?.trim();
+  if (!raw) return DEFAULT_CONTROL_PERSIST_SEC;
+
+  const seconds = Number(raw);
+  if (Number.isInteger(seconds) && seconds >= 0) return seconds;
+
+  if (!unknownPersistReported) {
+    unknownPersistReported = true;
+    logger.warn(
+      `[Runner] Unusable SSH_MCP_CONTROL_PERSIST "${raw}", falling back to ${DEFAULT_CONTROL_PERSIST_SEC}. ` +
+      `Expected a whole number of seconds, 0 to close immediately`
+    );
+  }
+
+  return DEFAULT_CONTROL_PERSIST_SEC;
+}
+
+/** Забыть, что о значении уже предупреждали (используется в тестах) */
+export function resetControlPersistWarning(): void {
+  unknownPersistReported = false;
+}
 
 /**
  * Значение, которое ssh воспримет как опцию, а не как аргумент.
@@ -86,7 +119,7 @@ export function needsAskpass(config: RunnerConfig): boolean {
  * unix-сокета на macOS — 104 байта.
  */
 export function buildControlPath(controlDir: string): string {
-  return `${controlDir}/s-%C`;
+  return `${controlDir}/${CONTROL_SOCKET_PREFIX}%C`;
 }
 
 /**
@@ -104,7 +137,6 @@ export function buildCommonOptions(
   }
 
   const {
-    controlPersistSec = DEFAULT_CONTROL_PERSIST_SEC,
     connectTimeoutSec = DEFAULT_CONNECT_TIMEOUT_SEC,
     serverAliveIntervalSec = DEFAULT_SERVER_ALIVE_INTERVAL_SEC,
     serverAliveCountMax = DEFAULT_SERVER_ALIVE_COUNT_MAX,
@@ -123,7 +155,7 @@ export function buildCommonOptions(
   if (caps.multiplexing) {
     args.push('-o', 'ControlMaster=auto');
     args.push('-o', `ControlPath=${buildControlPath(caps.controlDir)}`);
-    args.push('-o', `ControlPersist=${controlPersistSec}`);
+    args.push('-o', `ControlPersist=${resolveControlPersistSec()}`);
   }
 
   // Штатный keepalive вместо самодельных пингов командой

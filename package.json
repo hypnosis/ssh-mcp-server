@@ -32,14 +32,12 @@
     "publish:npm": "npm publish --access public"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.6.0",
-    "ssh2": "^1.15.0"
+    "@modelcontextprotocol/sdk": "^0.6.0"
   },
   "devDependencies": {
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^20.11.0",
-    "@types/ssh2": "^1.15.0",
     "@vitest/coverage-v8": "^4.0.16",
     "@vitest/ui": "^4.0.16",
     "tsx": "^4.7.0",

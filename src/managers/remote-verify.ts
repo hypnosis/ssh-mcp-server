@@ -81,7 +81,7 @@ export async function verifyRemoteFiles(
     return { status: 'unavailable', reason: 'there were no files to verify' };
   }
 
-  const passport = await executor.passport(config, options.profileName);
+  const passport = await executor.passport(config);
   if (passport.sha256 === 'none') {
     return {
       status: 'unavailable',
@@ -101,7 +101,7 @@ export async function verifyRemoteFiles(
     // Паспорт обещал утилиту, а её нет: сервер изменился под нами.
     // Забываем запись и спрашиваем заново — вдруг остался openssl.
     invalidatePassport(passportKey(config));
-    const refreshed = await executor.passport(config, options.profileName);
+    const refreshed = await executor.passport(config);
 
     if (refreshed.sha256 === 'none' || refreshed.sha256 === passport.sha256) {
       return { status: 'unavailable', reason: `${passport.sha256} is not available on the server` };

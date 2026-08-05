@@ -81,7 +81,7 @@ export class MonitoringTool {
   private async getStats(profileName?: string) {
     const profile = profileName || getDefaultProfile();
     const sshConfig = resolveSSHConfig({ profile });
-    const runner = await getRunner(sshConfig, profile);
+    const runner = await getRunner(sshConfig);
     const stats = await runner.stats();
 
     let output = `📊 SSH Transport: ${profile}\n\n`;
@@ -159,7 +159,7 @@ export class MonitoringTool {
 
     try {
       const sshConfig = resolveSSHConfig({ profile });
-      const runner = await getRunner(sshConfig, profile);
+      const runner = await getRunner(sshConfig);
       const result = await runner.ping();
 
       if (!result.ok) {

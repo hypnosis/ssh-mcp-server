@@ -36,11 +36,8 @@ export interface TransferHarness {
   createRunner(): Promise<CommandRunner> | CommandRunner;
   /** Куда класть временные каталоги на сервере */
   remoteBase: string;
-  /**
-   * Отдать наружу манифест приехавшего дерева — тест-файл сверяет
-   * бэкенды между собой, а не только каждый с контрактом.
-   */
-  record(manifest: Manifest): void;
+  /** Отдать наружу манифест приехавшего дерева, если вызывающему есть с чем его сверить */
+  record?(manifest: Manifest): void;
   /**
    * Утверждения, которым этот бэкенд заведомо не соответствует.
    *
@@ -110,7 +107,7 @@ export function describeTransferContract(harness: TransferHarness): void {
       await runner.upload(treeDir, target, { recursive: true });
 
       const actual = await remoteManifest(target);
-      harness.record(actual);
+      harness.record?.(actual);
       expect(actual).toBe(expected);
     });
 

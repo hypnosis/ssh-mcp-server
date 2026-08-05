@@ -15,12 +15,17 @@ const { executeMock, passportMock } = vi.hoisted(() => ({
   passportMock: vi.fn(),
 }));
 
-vi.mock('../../src/managers/ssh-executor.js', () => ({
-  SSHExecutor: class {
-    execute = executeMock;
-    passport = passportMock;
-  },
-}));
+vi.mock('../../src/managers/ssh-executor.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/managers/ssh-executor.js')>();
+  return {
+    // Срок по умолчанию инструмент берёт здесь; подменённый модуль обязан его отдать
+    DEFAULT_TIMEOUT_MS: actual.DEFAULT_TIMEOUT_MS,
+    SSHExecutor: class {
+      execute = executeMock;
+      passport = passportMock;
+    },
+  };
+});
 
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: () => ({ host: 'example.com', username: 'deploy', port: 22 }),

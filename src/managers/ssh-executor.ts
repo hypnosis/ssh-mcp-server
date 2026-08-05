@@ -7,6 +7,7 @@
  */
 
 import { getRunner } from '../runner/get-runner.js';
+import { DEFAULT_EXEC_TIMEOUT_MS } from '../runner/openssh-runner.js';
 import {
   getServerPassport,
   passportKey,
@@ -17,7 +18,8 @@ import { logger } from '../utils/logger.js';
 import { exitCodeHint } from '../utils/output-notes.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
-const DEFAULT_TIMEOUT_MS = 30000;
+/** Дверь к сроку транспорта для инструментов: они берут его здесь, а не в раннере */
+export const DEFAULT_TIMEOUT_MS = DEFAULT_EXEC_TIMEOUT_MS;
 /** Сколько ждём ответа на пробу паспорта */
 const PASSPORT_PROBE_TIMEOUT_MS = 15000;
 

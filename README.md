@@ -204,6 +204,34 @@ ssh_exec({
 })
 ```
 
+**Recursive deletes that would destroy the server are refused, not warned about.**
+
+Nothing is sent to the server when a `rm -r` in the call targets:
+
+- the filesystem root, the home directory, or a system tree (`/etc`, `/usr`, `/var`, `/home`, …);
+- a path that only *reaches* one of them through a symlink — `rm -rf /var/www/data/`, where
+  `data` links to `/`, empties the root on GNU coreutils;
+- something the server expands itself (`$DIR`, `` `cmd` ``, `*`) — an empty variable turns
+  `rm -rf "$DIR"/*` into wiping the root, and that cannot be checked in advance;
+- anything the server cannot resolve, including a server with no `readlink`. Not knowing is
+  a reason to ask, not a reason to delete.
+
+The whole call stops, batch included: a half-executed batch leaves the server in an unknown state.
+`rm -rf link` without a trailing slash removes the link itself and is allowed — that is ordinary
+cleanup, measured on both BusyBox and coreutils.
+
+To run such a command deliberately, append the marker to that specific command:
+
+```typescript
+ssh_exec({
+  profile: "production",
+  command: "rm -rf /var/lib/old-app # CONFIRMED-DESTRUCTIVE"
+})
+```
+
+Other commands in the same batch are unaffected, and the marker stays in the server's shell
+history as a record of a deliberate decision.
+
 ### ssh_file_read - Read Files
 
 **Note:** For multiple files, use double quotes: `path: ["file1", "file2"]`
@@ -570,6 +598,7 @@ Auto red-flag rules:
 - **CRITICAL**: filesystem ≥ 90%, `PermitRootLogin yes`, `PasswordAuthentication yes` on port 22
 - **WARNING**: filesystem 70–90%, exited containers, failed systemd units, reboot pending, > 50 upgradable packages
 - **OK**: filesystem < 70% per mount, everything nominal
+- **NOT CHECKED**: a section whose command produced nothing (no `ss`/`netstat`, no `df` output) is listed in `unavailable` rather than reported as an empty — and therefore healthy-looking — result
 
 ```typescript
 ssh_audit_baseline({
@@ -588,6 +617,7 @@ ssh_audit_baseline({
 
 Pipes `openssl s_client -connect <domain>:<port> -servername <domain>` into `openssl x509`, parses `notAfter`, SAN entries (X509v3 Subject Alternative Name), issuer; computes `days_until_expiry`. Also scans `/etc/letsencrypt/renewal/*.conf` for `renew_hook` and `/etc/letsencrypt/renewal-hooks/deploy/`.
 
+- **UNKNOWN**: the certificate was never read (no `openssl`, connection refused, domain unreachable) — the reason is quoted, `not_after` and `san_includes_hostname` stay `null`, and no verdict about the certificate is issued
 - **CRITICAL**: expired, ≤ 7 days, or SAN does not include the requested domain
 - **WARNING**: ≤ 30 days, or no Let's Encrypt deploy_hook configured
 

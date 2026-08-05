@@ -10,16 +10,26 @@ import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { requireTextList } from '../utils/tool-args.js';
 import { exitCodeHint, TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
+import {
+  blockedMessage,
+  CONFIRMATION_MARKER,
+  findRemovalTargets,
+  inspectCommand,
+} from '../utils/destructive-command.js';
+import { resolveRemovalTargets } from '../managers/removal-guard.js';
+import type { SSHConfig } from '../utils/ssh-config.js';
 
 /**
  * Dangerous command patterns
  */
+/*
+ * Удаление в этом списке больше не значится: шаблон `rm -rf /` срабатывал на
+ * любом абсолютном пути и печатал «rm -rf / detected» даже на `echo "rm -rf /"`.
+ * Предупреждение, которое кричит на штатной уборке, агент перестаёт читать —
+ * и настоящий снос корня в этом шуме теряется. Настоящую проверку делает
+ * destructive-command.ts: она смотрит, куда путь ведёт, и не пускает команду.
+ */
 const DANGEROUS_PATTERNS = [
-  // Deletion
-  { pattern: /\brm\s+-rf\s+\//, message: 'rm -rf / detected' },
-  { pattern: /\brm\s+-rf\s+~/, message: 'rm -rf ~ detected' },
-  { pattern: /\brm\s+-rf\s+\*/, message: 'rm -rf * detected' },
-  
   // Permissions
   { pattern: /\bchmod\s+777\b/, message: 'chmod 777 detected (security risk)' },
   
@@ -68,7 +78,13 @@ export class ExecTool {
   getTool(): Tool {
     return {
       name: 'ssh_exec',
-      description: 'Execute command(s) on remote server via SSH. Supports single command or batch execution.',
+      description:
+        'Execute command(s) on remote server via SSH. Supports single command or batch execution. ' +
+        'SAFETY: a recursive delete is refused before anything runs when its target is the filesystem root, ' +
+        'the home directory or a system tree (/etc, /usr, /var, /home, …) — including a path that only reaches ' +
+        'one of them through a symlink, and including a target the server expands itself (variable, substitution, ' +
+        `glob), which cannot be checked in advance. To run such a command deliberately, append "${CONFIRMATION_MARKER}" ` +
+        'to that specific command; other commands in the same batch are unaffected.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -126,6 +142,14 @@ export class ExecTool {
       // вызывающий не поймёт, что ошибся формой.
       const commands = requireTextList(args.command, 'command', '"uptime"');
       
+      // Удаление корня, дома или системного дерева останавливается ДО первой
+      // отправки — и весь вызов целиком. Проверять по ходу нельзя: половина
+      // батча уехала бы, а состояние сервера стало бы неизвестным.
+      const refusal = await this.refuseDestructive(commands, sshConfig, profileName, args.sudo);
+      if (refusal) {
+        return { content: [{ type: 'text', text: refusal }] };
+      }
+
       // Check for dangerous commands
       const warnings: string[] = [];
       for (const cmd of commands) {
@@ -134,7 +158,7 @@ export class ExecTool {
           warnings.push(`${warning}\nCommand: ${cmd.substring(0, 100)}`);
         }
       }
-      
+
       // Single command - return simple result
       if (commands.length === 1) {
         const result = await this.executor.execute(sshConfig, commands[0], {
@@ -247,5 +271,48 @@ export class ExecTool {
         content: [{ type: 'text', text: `Error: ${error.message}` }],
       };
     }
+  }
+
+  /**
+   * Отказ, если хоть одна команда вызова сносит корень, дом или систему.
+   *
+   * Разбор строки решает почти всё сразу и без сети; на сервер уходит один
+   * запрос и только за тем, чего в тексте не видно, — куда ведёт ссылка.
+   * Возвращает готовый текст отказа или null, если идти можно.
+   */
+  private async refuseDestructive(
+    commands: string[],
+    config: SSHConfig,
+    profileName: string,
+    sudo?: boolean
+  ): Promise<string | null> {
+    // Паспорт нужен только ради домашнего каталога, а он нужен только там, где
+    // удаление вообще есть. Обычная команда не должна платить за проверку,
+    // которая её не касается, — поэтому дом берётся лениво.
+    let home: string | null = null;
+
+    for (const command of commands) {
+      if (findRemovalTargets(command).length === 0) continue;
+      if (home === null) home = (await this.executor.passport(config, profileName)).home;
+
+      const verdict = inspectCommand(command, home);
+      if (verdict.blocked) {
+        return blockedMessage(command, verdict.reason!);
+      }
+
+      if (verdict.needsResolution.length > 0) {
+        const resolution = await resolveRemovalTargets(
+          this.executor,
+          config,
+          verdict.needsResolution,
+          { profileName, sudo }
+        );
+        if (resolution.blocked) {
+          return blockedMessage(command, resolution.reason!);
+        }
+      }
+    }
+
+    return null;
   }
 }

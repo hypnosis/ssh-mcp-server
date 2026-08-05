@@ -450,12 +450,12 @@ ssh_snapshot({
 ### ssh_monitor - Monitoring & Diagnostics
 
 ```typescript
-// Get connection pool statistics
+// Get transport statistics
 ssh_monitor({
   action: "stats"
 })
-// Returns: cache hit rate, active connections, session metrics
-// Note: Metrics reset automatically when all connections close (session-based)
+// Returns: backend, whether multiplexing works, ssh version, whether the master
+// connection is alive, and how many commands and transfers this session ran
 
 // Reload SSH profiles (without server restart)
 ssh_monitor({
@@ -481,7 +481,7 @@ ssh_monitor({
 
 ## 📦 Transfer tools (v1.3.0+)
 
-Binary-safe SFTP transfer, piggy-backed on the same connection pool used by other tools. **Use these instead of base64-chunks through ssh_exec** — heredoc / `cat > file` corrupts binaries, has no atomic semantics, no integrity verification, and pulls the whole payload into Node memory.
+Binary-safe transfer through the system `scp`, over the same multiplexed connection the other tools use. **Use these instead of base64-chunks through ssh_exec** — heredoc / `cat > file` corrupts binaries, has no atomic semantics, no integrity verification, and pulls the whole payload into Node memory.
 
 Defaults: `atomic=true` (write to `<path>.tmp.<rand>`, then `mv`), `verify=true` (local sha256 vs remote `sha256sum` / `openssl dgst -sha256` fallback).
 
@@ -506,7 +506,7 @@ For full API and architecture see [docs/transfer.md](docs/transfer.md).
 | `sudo` | boolean | `false` | Stage in `/tmp`, then `sudo install` into target |
 | `owner` | string | — | When `sudo=true`: `"user:group"` for `install -o/-g` |
 | `overwrite` | boolean | `true` | Allow overwriting an existing remote file |
-| `concurrency` | number | `4` | Parallel SFTP chunk concurrency for `fastPut` |
+| `concurrency` | number | — | Deprecated and ignored: `scp` has no chunk concurrency to tune |
 
 ```typescript
 // 1) Single file with sha256 verify and atomic rename (defaults)
@@ -516,15 +516,14 @@ ssh_upload({
   remote_path: "/srv/releases/app-2026-05.tar.gz",
   mode: "644"
 })
-// SFTP fastPut → write to .tmp.<rand> → sha256 verify → mv → chmod
+// scp → write to .tmp.<rand> → sha256 verify → mv → chmod
 
 // 2) Recursive directory upload (auto-detected from local stat)
 ssh_upload({
   profile: "production",
   local_path: "./dist",
   remote_path: "/var/www/app/current",
-  mode: "755",
-  concurrency: 8
+  mode: "755"
 })
 // walks local tree, uploads to staging dir, atomic mv into place
 
@@ -540,8 +539,9 @@ ssh_upload({
 // Note: recursive + sudo is not supported in one shot — workaround:
 //   1) upload to a user-writable staging path (no sudo)
 //   2) sudo cp -r via ssh_exec
-// Symlinks in recursive uploads are skipped (not dereferenced, not recreated).
-// For symlink fidelity tar -czf locally and upload the tarball.
+// Symlinks in recursive uploads arrive as copies: a link to a file becomes the
+// file, a link to a directory becomes the directory with its contents.
+// To keep links as links, tar -czf locally and upload the tarball.
 
 // 4) Download a binary back (verify on by default)
 ssh_download({
@@ -560,15 +560,14 @@ ssh_download({
 | `local_path` | string | **required** | Local destination path |
 | `recursive` | boolean | auto | Force directory mode (auto-detected via remote `test -d`) |
 | `verify` | boolean | `true` | Compare local and remote sha256 after download |
-| `concurrency` | number | `4` | Parallel SFTP chunk concurrency for `fastGet` |
+| `concurrency` | number | — | Deprecated and ignored: `scp` has no chunk concurrency to tune |
 
 ```typescript
 ssh_download({
   profile: "production",
   remote_path: "/var/backups/db",
   local_path: "./backups/db",
-  recursive: true,
-  concurrency: 4
+  recursive: true
 })
 ```
 
@@ -704,7 +703,11 @@ This pipeline covers ~80% of a typical server audit without touching `ssh_exec`.
 - `SSH_MCP_LOG_LEVEL` - Log level: `debug`, `info`, `warn`, `error` (default: `info`)
 - `SSH_MCP_LOG_TIMESTAMP` - Show timestamps in logs: `true`, `false` (default: `true`)
 
-### Optional (Connection Pool)
+### Optional (Transport)
+- `SSH_MCP_BACKEND` - How commands are delivered: `openssh` (default, the system ssh client) or `ssh2` (the bundled backend, removed in a later release)
+
+### Optional (Connection Pool — `SSH_MCP_BACKEND=ssh2` only)
+The pool lives inside the ssh2 backend. With the default transport, connections are shared by the system ssh client and these two have no effect.
 - `SSH_MCP_POOL_IDLE_TIMEOUT` - Idle timeout for connections in ms (default: `30000`)
 - `SSH_MCP_POOL_KEEPALIVE_INTERVAL` - Keep-alive ping interval in ms (default: `10000`)
 
@@ -722,8 +725,8 @@ export SSH_PROFILES_FILE="$HOME/.ssh/mcp-profiles.json"
 export SSH_MCP_LOG_LEVEL="debug"
 export SSH_MCP_LOG_TIMESTAMP="true"
 
-# Optional - Connection Pool
-export SSH_MCP_POOL_IDLE_TIMEOUT="60000"
+# Optional - Transport
+export SSH_MCP_BACKEND="openssh"
 
 # Optional - Profiles
 export SSH_MCP_PROFILES_WATCH="true"

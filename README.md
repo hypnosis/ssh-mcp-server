@@ -939,9 +939,10 @@ Add `pathSecurity` to profiles for additional protection:
 See [Quick Start](#11-optional-path-security-configuration) for details.
 
 **How a path is judged.** Rules are never matched against the string you passed. The path is
-first brought to a canonical form — `~` and relative paths are expanded against the server's
-home directory, `..`, `.` and doubled slashes are folded — and only then compared, by directory
-boundary: `/root` denies `/root/secret` but not `/rootkit`.
+first brought to a canonical form — a leading `~` and relative paths are expanded against the
+server's home directory, `..`, `.` and doubled slashes are folded — and only then compared, by
+directory boundary: `/root` denies `/root/secret` but not `/rootkit`. A `~` further down the
+path is an ordinary file name and is treated as one.
 
 Symlinks are followed too: the server is asked where the path really leads, and the rule is
 applied to both the name and the target. A link inside an allowed directory that points at a

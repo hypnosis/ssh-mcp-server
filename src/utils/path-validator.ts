@@ -46,14 +46,18 @@ export interface PathValidationResult {
 }
 
 /**
- * Путь, о котором можно судить: абсолютный, без тильды, без `.` и `..`,
- * без сдвоенных слэшей. Приводит к такому виду resolveRemotePath.
+ * Путь, о котором можно судить: абсолютный, без `.` и `..`, без сдвоенных
+ * слэшей. Приводит к такому виду resolveRemotePath.
+ *
+ * Тильда отдельного условия не требует: раскрывается только ведущая, а она
+ * невозможна у пути, начинающегося со слэша. В середине `~` — обычное имя
+ * файла, и такой путь судится наравне с остальными.
  */
 export function isCanonical(path: string): boolean {
   if (!path.startsWith('/')) return false;
   if (path.includes('//')) return false;
 
-  return path.split('/').every((segment) => segment !== '.' && segment !== '..' && segment !== '~');
+  return path.split('/').every((segment) => segment !== '.' && segment !== '..');
 }
 
 /**
@@ -152,7 +156,7 @@ export class PathValidator {
       return {
         valid: false,
         error: `Path is not canonical: "${path}". Rules apply to absolute paths ` +
-          'with no "~", "." or ".." — resolve it before validating'
+          'with no leading "~", no "." or ".." — resolve it before validating'
       };
     }
 

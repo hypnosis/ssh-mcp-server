@@ -108,3 +108,15 @@ export async function labUnavailableReason(): Promise<string | null> {
 
   return null;
 }
+
+/**
+ * То же для роутера: он вне общей сетки, поэтому и сторож ему нужен свой —
+ * иначе «контейнер не поднят» прочиталось бы как «проверка прошла».
+ */
+export async function routerUnavailableReason(): Promise<string | null> {
+  if (!existsSync(LAB_KEY)) return `нет ключа ${LAB_KEY}`;
+  if (!(await portOpen(LAB_ROUTER.port))) {
+    return `порт ${LAB_ROUTER.port} (${LAB_ROUTER.name}) молчит`;
+  }
+  return null;
+}

@@ -27,6 +27,11 @@ pool, so `SSH_MCP_BACKEND` no longer selects anything.
   right away instead of waiting for the idle window, and says what is still left on the
   machine. Nothing to close is an answer, not a failure — the connection may have already
   idled out.
+- Servers without an sftp subsystem (routers, embedded devices, dropbear) can receive and
+  send files again. On client 9.0+ `scp` rides SFTP, which such a server refuses; the
+  transfer now falls back to the classic scp protocol once and remembers that destination.
+  Nothing to configure. A remote path containing a newline is refused on that path — the
+  classic protocol cannot carry it safely.
 
 ### Fixed — data loss and false corruption reports
 - `~` in `remote_path` of `ssh_upload` / `ssh_download`. Download used to bring the file

@@ -64,6 +64,9 @@ temp/
 # Лаборатория живых тестов: ключ и локальное состояние контейнеров
 .lab/
 
+# Записи о ходе сессий — локальные, в репозиторий не едут
+.remember/
+
 # SSH profiles (never commit!)
 *.profiles.json
 ssh-profiles.json

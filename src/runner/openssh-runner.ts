@@ -25,6 +25,7 @@ import {
   type ServerPassport,
 } from './passport.js';
 import { runProcess } from './process.js';
+import { shellQuote } from '../utils/shell-arg.js';
 import {
   assertProfileSupported,
   detectRuntime,
@@ -58,11 +59,6 @@ const REMOTE_TIMEOUT_MARGIN_SEC = 5;
 const PASSPORT_PROBE_TIMEOUT_MS = 15000;
 /** Пауза перед повтором транспортного сбоя */
 const RETRY_DELAY_MS = 1000;
-
-/** Обернуть строку в одинарные кавычки для удалённого shell */
-function shellQuote(value: string): string {
-  return `'${value.split("'").join(`'\\''`)}'`;
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

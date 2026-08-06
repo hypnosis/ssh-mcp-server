@@ -8,7 +8,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { shellCount, shellMode, shellOwner, shellGlob } from '../../src/utils/shell-arg.js';
+import { runProcess } from '../../src/runner/process.js';
+import {
+  shellCount,
+  shellMode,
+  shellOwner,
+  shellGlob,
+  shellQuote,
+} from '../../src/utils/shell-arg.js';
 
 /** Значения, ради которых всё это написано */
 const INJECTIONS = [
@@ -20,6 +27,52 @@ const INJECTIONS = [
   "' ; id ; '",
   '\n id',
 ];
+
+/** Имена, на которых весь спринт ловились ошибки квотирования */
+const AWKWARD_NAMES = [
+  'plain.txt',
+  "it's.txt",
+  'a b.txt',
+  'a\\b.txt',
+  'a\nb.txt',
+  '$HOME.txt',
+  '`id`.txt',
+  '$(id).txt',
+  '~tilde.txt',
+  'star*.txt',
+  '; id ;.txt',
+];
+
+/** Что настоящий shell увидит на месте закавыченного значения */
+async function shellSees(command: string): Promise<string> {
+  const result = await runProcess({ file: '/bin/sh', args: ['-c', command], timeoutMs: 5000 });
+  return result.stdout;
+}
+
+describe('shellQuote', () => {
+  it('обрамляет значение одинарными кавычками', () => {
+    expect(shellQuote('/etc/foo')).toBe(`'/etc/foo'`);
+  });
+
+  it("закрывает вложенный апостроф приёмом '\\''", () => {
+    expect(shellQuote("/path/it's.txt")).toBe(`'/path/it'\\''s.txt'`);
+  });
+
+  it.each(AWKWARD_NAMES)('shell возвращает %j нетронутым', async (name) => {
+    expect(await shellSees(`printf %s ${shellQuote(name)}`)).toBe(name);
+  });
+
+  /**
+   * Путь sudo: команда уезжает внутрь `sudo sh -c '…'`, то есть значение
+   * закавычивается дважды. Приём обязан переживать сам себя — здесь жила
+   * третья реализация, и на одном круге кавычек разницы не видно.
+   */
+  it.each(AWKWARD_NAMES)('%j переживает второй круг кавычек', async (name) => {
+    const inner = `printf %s ${shellQuote(name)}`;
+
+    expect(await shellSees(`sh -c ${shellQuote(inner)}`)).toBe(name);
+  });
+});
 
 describe('shellCount', () => {
   it('пропускает целые числа', () => {

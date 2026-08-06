@@ -9,9 +9,8 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
-import { shellCount } from '../utils/shell-arg.js';
+import { shellCount, shellQuote } from '../utils/shell-arg.js';
 import { requireText, requireTextList } from '../utils/tool-args.js';
-import { shellQuote } from '../utils/tmp-name.js';
 import { resolveRemotePath } from '../managers/path-guard.js';
 
 /**

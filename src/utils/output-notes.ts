@@ -7,8 +7,24 @@
  * и молча отданный огрызок читается как достоверный ответ.
  */
 
-/** Лимит буфера вывода в транспорте (см. DEFAULT_MAX_OUTPUT_BYTES) */
-const OUTPUT_LIMIT_LABEL = '10 MiB';
+/** Сколько вывода команды помещается в буфер транспорта; сверх этого ответ обрезается */
+export const OUTPUT_LIMIT_BYTES = 10 * 1024 * 1024;
+
+const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB'];
+
+/** Человеческая запись объёма: 10485760 → «10 MiB» */
+export function byteLimitLabel(bytes: number): string {
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rounded = value.toFixed(1);
+  return `${rounded.endsWith('.0') ? rounded.slice(0, -2) : rounded} ${BYTE_UNITS[unit]}`;
+}
+
+const OUTPUT_LIMIT_LABEL = byteLimitLabel(OUTPUT_LIMIT_BYTES);
 
 /**
  * Коды, которыми удалённый сторож сообщает, что убил затянувшуюся команду.

@@ -18,7 +18,7 @@ import { posix as posixPath } from 'path';
 import type { PathKind, PathOps } from './installer.js';
 import type { SSHExecutor } from './ssh-executor.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
-import { shellQuote } from '../utils/tmp-name.js';
+import { shellQuote } from '../utils/shell-arg.js';
 
 /** Маркеры ответа: разбираем по ним, а не по коду возврата */
 const KIND_MARKERS: Record<string, PathKind> = {

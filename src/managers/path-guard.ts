@@ -23,7 +23,7 @@ import { posix as posixPath } from 'path';
 import type { SSHExecutor } from './ssh-executor.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 import { createPathValidator } from '../utils/path-validator.js';
-import { shellQuote } from '../utils/tmp-name.js';
+import { shellQuote } from '../utils/shell-arg.js';
 
 export interface ExpandedPath {
   path: string;

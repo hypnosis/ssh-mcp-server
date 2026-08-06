@@ -25,8 +25,8 @@ import { install } from '../managers/installer.js';
 import { localPathOps } from '../managers/local-path-ops.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
 import { resolveRemotePath } from '../managers/path-guard.js';
-import { buildSudoStagingPath, shellQuote } from '../utils/tmp-name.js';
-import { shellMode, shellOwner } from '../utils/shell-arg.js';
+import { buildSudoStagingPath } from '../utils/tmp-name.js';
+import { shellMode, shellOwner, shellQuote } from '../utils/shell-arg.js';
 import { requireText } from '../utils/tool-args.js';
 
 interface UploadFileResult {

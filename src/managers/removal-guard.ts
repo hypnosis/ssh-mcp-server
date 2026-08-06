@@ -13,7 +13,7 @@
 
 import type { SSHExecutor } from './ssh-executor.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
-import { shellQuote } from '../utils/tmp-name.js';
+import { shellQuote } from '../utils/shell-arg.js';
 import { classifyTarget, type RemovalTarget } from '../utils/destructive-command.js';
 
 /** Ответ сервера, у которого нет чем резолвить путь */

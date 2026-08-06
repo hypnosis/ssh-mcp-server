@@ -141,6 +141,21 @@ describe('runProcess', () => {
       const result = await nodeScript('process.stdout.write("small")', { maxOutputBytes: 1000 });
       expect(result.truncated).toBe(false);
     });
+
+    /**
+     * Обрезка внутри второй порции: остаток буфера считается от уже накопленного,
+     * а не от пустого. Один-единственный кусок вывода этого не показывает —
+     * при пустом буфере остаток равен всему лимиту.
+     */
+    it('counts the remaining room against what is already buffered', async () => {
+      const script =
+        'process.stdout.write("a".repeat(60));' +
+        'setTimeout(() => process.stdout.write("b".repeat(60)), 50)';
+      const result = await nodeScript(script, { maxOutputBytes: 100, timeoutMs: 5000 });
+
+      expect(result.stdout).toBe('a'.repeat(60) + 'b'.repeat(40));
+      expect(result.truncated).toBe(true);
+    });
   });
 
   describe('encoding', () => {

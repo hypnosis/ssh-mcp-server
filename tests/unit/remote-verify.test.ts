@@ -264,6 +264,139 @@ describe('команда сверки: минимальный набор ути�
 });
 
 /**
+ * Длина команды: предел у сервера в байтах, а имя приходит знаками.
+ *
+ * Замерено на обоих серверах лаборатории: строка длиннее 128 KiB не доезжает
+ * вовсе — `Argument list too long` с пустым выводом, а сверх четверти мегабайта
+ * сервер рвёт соединение. Пустой вывод читается как расхождение, по которому
+ * установщик сносит уже уехавшее дерево, поэтому команда обязана влезать
+ * заведомо.
+ *
+ * Границ две — по числу имён и по длине, — и каждая проверяется своим тестом.
+ */
+describe('команда сверки: длина считается в байтах', () => {
+  /** Предел из кода назван здесь заново: тест не должен ехать вслед за правкой константы */
+  const LIMIT_BYTES = 32 * 1024;
+
+  const treeOf = (name: (index: number) => string, count: number) =>
+    Array.from({ length: count }, (_, index) => ({ path: name(index), hash: HASH_ONE }));
+
+  /** Сервер молчит: разбиение проверяется по отправленному, а не по ответу */
+  const silentServer = () => executeMock.mockResolvedValue(reply(''));
+
+  const verify = (entries: { path: string; hash: string }[], sudo = false) =>
+    verifyRemoteFiles(executor(), CONFIG, entries, { profileName: 'production', sudo });
+
+  /**
+   * Сколько байт уедет на сервер. Под sudo исполнитель заворачивает всю
+   * команду в `sudo bash -c '…'`; счёт здесь свой, независимый от кода.
+   */
+  function sentBytes(index: number, sudo = false): number {
+    const command = sentCommand(index);
+    return Buffer.byteLength(sudo ? `sudo bash -c '${command.replace(/'/g, "'\\''")}'` : command);
+  }
+
+  const commandCount = () => executeMock.mock.calls.length;
+  const allSentBytes = (sudo = false) =>
+    executeMock.mock.calls.map((_call, index) => sentBytes(index, sudo));
+
+  it('граница по числу имён: короткие имена дробятся ровно сотнями', async () => {
+    // 202 имени: по сотне в двух командах и остаток в третьей. Сдвиг границы на
+    // одно имя виден сразу — команд станет две
+    silentServer();
+
+    await verify(treeOf((index) => `/srv/file-${index}`, 202));
+
+    expect(commandCount()).toBe(3);
+  });
+
+  it('в командах ровно те имена, что просили, и каждое по одному разу', async () => {
+    silentServer();
+    const entries = treeOf((index) => `/srv/file-${index}`, 202);
+
+    await verify(entries);
+
+    const asked = executeMock.mock.calls.flatMap((_call, index) =>
+      [...sentCommand(index).matchAll(/'([^']*)'/g)].map((match) => match[1])
+    );
+    expect(asked).toEqual(entries.map((entry) => entry.path));
+  });
+
+  it('граница по длине: длинные имена дробятся раньше, чем набежит сотня', async () => {
+    silentServer();
+
+    await verify(treeOf((index) => `/srv/${String(index).padStart(4, '0')}/${'a'.repeat(600)}`, 200));
+
+    expect(commandCount()).toBeGreaterThan(2);
+    expect(Math.max(...allSentBytes())).toBeLessThanOrEqual(LIMIT_BYTES);
+  });
+
+  it('русское имя весит вдвое — команд выходит больше, чем на латинском той же длины', async () => {
+    silentServer();
+    await verify(treeOf((index) => `/srv/${index}/${'a'.repeat(320)}`, 300));
+    const latin = commandCount();
+
+    vi.clearAllMocks();
+    passportMock.mockResolvedValue(passport());
+    silentServer();
+    await verify(treeOf((index) => `/srv/${index}/${'я'.repeat(320)}`, 300));
+
+    expect(commandCount()).toBeGreaterThan(latin);
+    expect(Math.max(...allSentBytes())).toBeLessThanOrEqual(LIMIT_BYTES);
+  });
+
+  it('апостроф в имени считается по экранированной длине, а не по одному знаку', async () => {
+    silentServer();
+
+    await verify(treeOf((index) => `/srv/${index}/${"'".repeat(300)}.txt`, 200));
+
+    expect(Math.max(...allSentBytes())).toBeLessThanOrEqual(LIMIT_BYTES);
+  });
+
+  it('под sudo имя закавычивается второй раз — команда влезает и после этого', async () => {
+    silentServer();
+
+    await verify(treeOf((index) => `/srv/${index}/${"'".repeat(300)}.txt`, 200), true);
+
+    expect(Math.max(...allSentBytes(true))).toBeLessThanOrEqual(LIMIT_BYTES);
+  });
+
+  it('sudo дробит те же имена мельче, чем работа без него', async () => {
+    silentServer();
+    await verify(treeOf((index) => `/srv/${index}/${"'".repeat(300)}.txt`, 200));
+    const plain = commandCount();
+
+    vi.clearAllMocks();
+    passportMock.mockResolvedValue(passport());
+    silentServer();
+    await verify(treeOf((index) => `/srv/${index}/${"'".repeat(300)}.txt`, 200), true);
+
+    expect(commandCount()).toBeGreaterThan(plain);
+  });
+
+  it('начало команды занимает место наравне с именами', async () => {
+    // Имя подобрано так, что без учёта начала команды в предел влезали бы
+    // ровно 32 имени по 1024 байта: с ним помещается 31, и хвост уезжает
+    // третьей командой
+    silentServer();
+
+    await verify(treeOf((index) => `/srv/${String(index).padStart(4, '0')}/${'a'.repeat(1011)}`, 64));
+
+    expect(commandCount()).toBe(3);
+  });
+
+  it('длинное начало команды тоже занимает место: openssl считается своей строкой', async () => {
+    passportMock.mockResolvedValue(passport({ sha256: 'openssl' }));
+    silentServer();
+
+    await verify(treeOf((index) => `/srv/${index}/${'я'.repeat(400)}`, 200));
+
+    expect(sentCommand()).toMatch(/^openssl dgst -sha256 /);
+    expect(Math.max(...allSentBytes())).toBeLessThanOrEqual(LIMIT_BYTES);
+  });
+});
+
+/**
  * Имя файла возвращается не таким, каким уехало.
  *
  * Замерено на живых серверах: coreutils для имени с обратным слэшем, переводом

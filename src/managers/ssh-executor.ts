@@ -16,6 +16,7 @@ import {
 } from '../runner/passport.js';
 import { logger } from '../utils/logger.js';
 import { exitCodeHint } from '../utils/output-notes.js';
+import { shellQuote } from '../utils/shell-arg.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
 /** Дверь к сроку транспорта для инструментов: они берут его здесь, а не в раннере */
@@ -91,12 +92,12 @@ export class SSHExecutor {
     let finalCommand = command;
     if (options.sudo) {
       const passport = await this.passport(config);
-      finalCommand = `sudo ${passport.bash ? 'bash' : 'sh'} -c ${this.escapeShell(command)}`;
+      finalCommand = `sudo ${passport.bash ? 'bash' : 'sh'} -c ${shellQuote(command)}`;
     }
 
     // Add cd if working directory is specified
     if (options.cwd) {
-      finalCommand = `cd ${this.escapeShell(options.cwd)} && ${finalCommand}`;
+      finalCommand = `cd ${shellQuote(options.cwd)} && ${finalCommand}`;
     }
 
     logger.debug(`Executing SSH command: ${finalCommand.substring(0, 100)}...`);
@@ -162,13 +163,6 @@ export class SSHExecutor {
       });
       return result.stdout;
     });
-  }
-
-  /**
-   * Escape string for shell
-   */
-  private escapeShell(str: string): string {
-    return `'${str.replace(/'/g, "'\"'\"'")}'`;
   }
 
   /**

@@ -126,8 +126,8 @@ describe('SSHExecutor: сборка команды', () => {
 
     await new SSHExecutor().execute(CONFIG, `echo 'hi'`, { sudo: true });
 
-    // Кавычка закрывает строку, вставляется как отдельная и строка открывается снова
-    expect(lastCommand()).toBe(`sudo bash -c 'echo '"'"'hi'"'"''`);
+    // Кавычка закрывает строку, вставляется экранированной и строка открывается снова
+    expect(lastCommand()).toBe(`sudo bash -c 'echo '\\''hi'\\'''`);
   });
 
   it('оставляет обычную команду нетронутой', async () => {

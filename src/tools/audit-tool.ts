@@ -17,8 +17,7 @@ import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
-import { shellQuote } from '../utils/tmp-name.js';
-import { shellCount } from '../utils/shell-arg.js';
+import { shellCount, shellQuote } from '../utils/shell-arg.js';
 
 interface BaselineResult {
   hostname: string;

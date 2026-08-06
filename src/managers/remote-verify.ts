@@ -14,13 +14,20 @@
 import { invalidatePassport, passportKey, type Sha256Tool } from '../runner/passport.js';
 import { logger } from '../utils/logger.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
-import { shellQuote } from '../utils/tmp-name.js';
+import { shellQuote } from '../utils/shell-arg.js';
 import type { SSHExecutor } from './ssh-executor.js';
 
 /** Сколько имён отдаём одной команде */
 const MAX_PATHS_PER_COMMAND = 100;
-/** Предел длины командной строки; на встраиваемых системах он куда ниже обычного */
+/**
+ * Предел длины команды в байтах — считается то, что уедет на сервер, а не
+ * длина пути в знаках. Ядро Linux не принимает строку длиннее 128 KiB
+ * (замерено на обоих серверах лаборатории), встраиваемые системы обрывают
+ * раньше, поэтому берём вчетверо меньше потолка.
+ */
 const MAX_COMMAND_LENGTH = 32 * 1024;
+/** Обвязка `sudo <shell> -c '…'`, в которую исполнитель заворачивает команду */
+const SUDO_WRAPPER_BYTES = 15;
 /** Код возврата shell, когда программы нет на месте */
 const COMMAND_NOT_FOUND = 127;
 /**
@@ -156,7 +163,13 @@ async function collectRemoteHashes(
     if (exitCode !== 0) logger.debug(`[Verify] hashing reported exit ${exitCode}: ${stderr.trim()}`);
   };
 
-  for (const chunk of splitIntoCommands(paths.filter((path) => !NAME_BREAKS_LINES.test(path)))) {
+  const listed = splitIntoCommands(
+    paths.filter((path) => !NAME_BREAKS_LINES.test(path)),
+    tool,
+    options.sudo === true
+  );
+
+  for (const chunk of listed) {
     const result = await ask(chunk);
 
     if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';
@@ -184,11 +197,19 @@ async function collectRemoteHashes(
   return hashes;
 }
 
+/**
+ * Начало команды до первого имени.
+ *
+ * `--` защищает от имени, начинающегося с дефиса; openssl такого разделителя
+ * не знает.
+ */
+function commandPrefix(tool: Exclude<Sha256Tool, 'none'>): string {
+  return tool === 'sha256sum' ? 'sha256sum -- ' : 'openssl dgst -sha256 ';
+}
+
 /** Команда, печатающая хэши списка файлов */
 function buildHashCommand(tool: Exclude<Sha256Tool, 'none'>, paths: string[]): string {
-  const quoted = paths.map(shellQuote).join(' ');
-  // `--` защищает от имени, начинающегося с дефиса; openssl такого разделителя не знает
-  return tool === 'sha256sum' ? `sha256sum -- ${quoted}` : `openssl dgst -sha256 ${quoted}`;
+  return commandPrefix(tool) + paths.map(shellQuote).join(' ');
 }
 
 /**
@@ -264,18 +285,39 @@ function compare(entries: VerifyEntry[], remote: Map<string, string>): VerifyOut
   return mismatched.length === 0 ? { status: 'matched' } : { status: 'mismatched', paths: mismatched };
 }
 
-/** Разбить список путей так, чтобы каждая команда влезла в лимит командной строки */
-function splitIntoCommands(paths: string[]): string[][] {
+/**
+ * Во что имя обходится в строке команды: кавычки, экранирование внутри них и
+ * пробел до соседа. Под sudo вся команда уезжает внутрь `sudo sh -c '…'`, то
+ * есть каждое имя закавычивается второй раз, и апострофы в нём растут вчетверо.
+ */
+function pathCost(path: string, sudo: boolean): number {
+  const quoted = shellQuote(path);
+  return Buffer.byteLength(sudo ? shellQuote(quoted) : quoted) + 1;
+}
+
+/**
+ * Разбить список путей так, чтобы каждая команда влезла в предел.
+ *
+ * Считаются байты отправляемой строки: русское имя в UTF-8 весит вдвое больше
+ * своей длины в знаках, имя из апострофов — вчетверо, а под sudo к этому
+ * добавляется второй круг кавычек.
+ */
+function splitIntoCommands(
+  paths: string[],
+  tool: Exclude<Sha256Tool, 'none'>,
+  sudo: boolean
+): string[][] {
+  const overhead = Buffer.byteLength(commandPrefix(tool)) + (sudo ? SUDO_WRAPPER_BYTES : 0);
   const chunks: string[][] = [];
   let current: string[] = [];
-  let length = 0;
+  let length = overhead;
 
   for (const path of paths) {
-    const cost = path.length + 4; // кавычки, пробел и запас на экранирование
+    const cost = pathCost(path, sudo);
     if (current.length > 0 && (current.length >= MAX_PATHS_PER_COMMAND || length + cost > MAX_COMMAND_LENGTH)) {
       chunks.push(current);
       current = [];
-      length = 0;
+      length = overhead;
     }
     current.push(path);
     length += cost;

@@ -10,11 +10,10 @@
  */
 
 import { spawn } from 'child_process';
+import { OUTPUT_LIMIT_BYTES } from '../utils/output-notes.js';
 
 /** Сколько ждать после SIGTERM, прежде чем послать SIGKILL */
 const DEFAULT_KILL_GRACE_MS = 5000;
-/** Лимит накопленного вывода: 10 МиБ */
-const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 
 export interface ProcessRunOptions {
   /** Исполняемый файл: ssh, scp */
@@ -100,7 +99,7 @@ export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcom
     timeoutMs,
     signal,
     stdin,
-    maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES,
+    maxOutputBytes = OUTPUT_LIMIT_BYTES,
     killGraceMs = DEFAULT_KILL_GRACE_MS,
   } = options;
 

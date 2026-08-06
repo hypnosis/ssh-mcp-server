@@ -69,11 +69,3 @@ export function buildSudoStagingPath(): string {
   const rand = randomBytes(8).toString('hex');
   return `/tmp/.ssh-mcp-upload-${rand}`;
 }
-
-/**
- * Single-quote a path for safe inclusion in a shell command.
- * Escapes embedded single quotes via '\'' trick.
- */
-export function shellQuote(path: string): string {
-  return `'${path.replace(/'/g, "'\\''")}'`;
-}

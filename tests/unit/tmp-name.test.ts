@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildTempPath, buildSudoStagingPath, shellQuote } from '../../src/utils/tmp-name.js';
+import { buildTempPath, buildSudoStagingPath } from '../../src/utils/tmp-name.js';
 
 describe('tmp-name helpers', () => {
   describe('buildTempPath', () => {
@@ -28,20 +28,6 @@ describe('tmp-name helpers', () => {
     it('puts sudo staging in /tmp', () => {
       const s = buildSudoStagingPath();
       expect(s).toMatch(/^\/tmp\/\.ssh-mcp-upload-[0-9a-f]{16}$/);
-    });
-  });
-
-  describe('shellQuote', () => {
-    it('wraps simple paths in single quotes', () => {
-      expect(shellQuote('/etc/foo')).toBe(`'/etc/foo'`);
-    });
-
-    it("escapes embedded single quotes via '\\''", () => {
-      expect(shellQuote("/path/it's.txt")).toBe(`'/path/it'\\''s.txt'`);
-    });
-
-    it('quotes paths with $ and ` literally', () => {
-      expect(shellQuote('$HOME/`code`')).toBe(`'$HOME/\`code\`'`);
     });
   });
 });

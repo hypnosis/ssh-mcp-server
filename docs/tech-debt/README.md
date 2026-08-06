@@ -20,5 +20,6 @@
 | TD-08 | Отмена есть в контракте, но не доходит до инструментов | 🟡 открыт | [cancellation-not-wired_08.md](cancellation-not-wired_08.md) |
 | TD-09 | Проверка точки монтирования не знает BSD и macOS | 🟡 открыт | [mountpoint-check-bsd_09.md](mountpoint-check-bsd_09.md) |
 | TD-10 | Имя профиля течёт через стек, потребителя нет | 🟡 открыт | [profile-name-flows-nowhere_10.md](profile-name-flows-nowhere_10.md) |
+| TD-11 | Экспорты, которых никто не зовёт | 🟡 открыт | [unused-exports_11.md](unused-exports_11.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.

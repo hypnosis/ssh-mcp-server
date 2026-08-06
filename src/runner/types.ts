@@ -21,7 +21,7 @@ export interface ExecOptions {
   idempotent?: boolean;
   /** Данные для stdin команды */
   stdin?: string | Buffer;
-  /** Лимит буфера вывода в байтах (по умолчанию 10 МиБ) */
+  /** Лимит буфера вывода в байтах (по умолчанию — `OUTPUT_LIMIT_BYTES`) */
   maxOutputBytes?: number;
   /**
    * Оборачивать ли команду в удалённый `timeout` — чтобы процесс на сервере

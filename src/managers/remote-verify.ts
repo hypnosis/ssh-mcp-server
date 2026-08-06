@@ -15,7 +15,7 @@ import { invalidatePassport, passportKey, type Sha256Tool } from '../runner/pass
 import { logger } from '../utils/logger.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 import { shellQuote } from '../utils/shell-arg.js';
-import type { SSHExecutor } from './ssh-executor.js';
+import type { SSHExecuteResult, SSHExecutor } from './ssh-executor.js';
 
 /** Сколько имён отдаём одной команде */
 const MAX_PATHS_PER_COMMAND = 100;
@@ -71,6 +71,32 @@ export type VerifyOutcome =
   | { status: 'unavailable'; reason: string };
 
 /**
+ * Ответ, по которому судить нельзя: часть хэшей не получена.
+ *
+ * Все три исхода означают «проверить нечем» и никогда — «не сошлось»:
+ * по расхождению установщик сносит уже уехавшее дерево.
+ */
+type IncompleteAnswer = 'truncated' | 'guard-killed' | 'deadline';
+
+function isIncomplete(answer: unknown): answer is IncompleteAnswer {
+  return answer === 'truncated' || answer === 'guard-killed' || answer === 'deadline';
+}
+
+/**
+ * Сколько времени остаётся у всей сверки.
+ *
+ * Срок принадлежит операции целиком: тот же потолок на каждой команде означал
+ * бы, что обещанный срок множится на число команд, а их число задаёт длина
+ * списка. Ноль на входе — «потолка нет», и тогда часов не заводим вовсе: так
+ * зовут сверку деревьев на гигабайты.
+ */
+function startDeadline(timeoutMs: number | undefined): (() => number) | null {
+  if (!timeoutMs) return null;
+  const expiresAt = Date.now() + timeoutMs;
+  return () => expiresAt - Date.now();
+}
+
+/**
  * Сверить файлы на сервере с локально посчитанными хэшами.
  *
  * Не бросает на неудачной проверке: несовпадение — это ответ, по которому
@@ -88,6 +114,10 @@ export async function verifyRemoteFiles(
     return { status: 'unavailable', reason: 'there were no files to verify' };
   }
 
+  // Часы пускаются до пробы паспорта: она тоже идёт на сервер и тоже занимает
+  // обещанное пользователю время
+  const remaining = startDeadline(options.timeoutMs);
+
   const passport = await executor.passport(config);
   if (passport.sha256 === 'none') {
     return {
@@ -98,9 +128,16 @@ export async function verifyRemoteFiles(
     };
   }
 
-  const remoteHashes = await collectRemoteHashes(executor, config, entries, passport.sha256, options);
+  const remoteHashes = await collectRemoteHashes(
+    executor,
+    config,
+    entries,
+    passport.sha256,
+    options,
+    remaining
+  );
 
-  if (remoteHashes === 'truncated' || remoteHashes === 'guard-killed') {
+  if (isIncomplete(remoteHashes)) {
     return { status: 'unavailable', reason: incompleteReason(remoteHashes) };
   }
 
@@ -114,11 +151,18 @@ export async function verifyRemoteFiles(
       return { status: 'unavailable', reason: `${passport.sha256} is not available on the server` };
     }
 
-    const retried = await collectRemoteHashes(executor, config, entries, refreshed.sha256, options);
+    const retried = await collectRemoteHashes(
+      executor,
+      config,
+      entries,
+      refreshed.sha256,
+      options,
+      remaining
+    );
     if (retried === 'tool-missing') {
       return { status: 'unavailable', reason: `${refreshed.sha256} is not available on the server` };
     }
-    if (retried === 'truncated' || retried === 'guard-killed') {
+    if (isIncomplete(retried)) {
       return { status: 'unavailable', reason: incompleteReason(retried) };
     }
     return compare(entries, retried);
@@ -133,10 +177,10 @@ export async function verifyRemoteFiles(
  * Неполный ответ обязан читаться как «проверить нечем»: иначе недостающие
  * хэши выглядят как испорченные файлы, и установщик сносит целые данные.
  */
-function incompleteReason(outcome: 'truncated' | 'guard-killed'): string {
-  return outcome === 'truncated'
-    ? 'the hashing output did not fit the transport buffer'
-    : 'hashing was killed by the timeout guard on the server';
+function incompleteReason(outcome: IncompleteAnswer): string {
+  if (outcome === 'truncated') return 'the hashing output did not fit the transport buffer';
+  if (outcome === 'guard-killed') return 'hashing was killed by the timeout guard on the server';
+  return 'the time allowed for verification ran out before all hashes were read';
 }
 
 /** Спросить у сервера хэши всех файлов, разбив список на посильные команды */
@@ -145,18 +189,50 @@ async function collectRemoteHashes(
   config: SSHConfig,
   entries: VerifyEntry[],
   tool: Exclude<Sha256Tool, 'none'>,
-  options: VerifyOptions
-): Promise<Map<string, string> | 'tool-missing' | 'truncated' | 'guard-killed'> {
+  options: VerifyOptions,
+  remaining: (() => number) | null
+): Promise<Map<string, string> | 'tool-missing' | IncompleteAnswer> {
   const hashes = new Map<string, string>();
   const paths = entries.map((entry) => entry.path);
 
-  const ask = (chunk: string[]) =>
+  const ask = (chunk: string[], timeout: number) =>
     executor.execute(config, buildHashCommand(tool, chunk), {
       profileName: options.profileName,
       sudo: options.sudo,
       idempotent: true,
-      timeout: options.timeoutMs ?? 0,
+      timeout,
     });
+
+  /**
+   * Сколько времени вправе занять очередная команда. `null` — срок вышел,
+   * спрашивать больше нечего; ноль означает «потолка нет» и уезжает в
+   * исполнитель как есть.
+   */
+  const budget = (): number | null => {
+    if (!remaining) return 0;
+    const left = remaining();
+    return left > 0 ? left : null;
+  };
+
+  /**
+   * Спросить хэши, не выходя за общий срок.
+   *
+   * `'deadline'` возвращается в двух случаях: времени не осталось ещё до
+   * команды и команду убил наш же сторож — на исходе срока ей достаются
+   * последние миллисекунды. Оба — «проверить нечем»: ошибка наверх означала бы
+   * провал передачи, по которому установщик сносит уже уехавшее дерево.
+   */
+  const askWithin = async (chunk: string[]): Promise<SSHExecuteResult | 'deadline'> => {
+    const left = budget();
+    if (left === null) return 'deadline';
+
+    try {
+      return await ask(chunk, left);
+    } catch (error) {
+      if (budget() === null) return 'deadline';
+      throw error;
+    }
+  };
 
   /** Ненулевой код — норма: нечитаемый файл не отменяет остальные хэши */
   const note = (exitCode: number, stderr: string) => {
@@ -170,7 +246,8 @@ async function collectRemoteHashes(
   );
 
   for (const chunk of listed) {
-    const result = await ask(chunk);
+    const result = await askWithin(chunk);
+    if (result === 'deadline') return 'deadline';
 
     if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';
     if (GUARD_KILLED_EXIT_CODES.includes(result.exitCode)) return 'guard-killed';
@@ -183,7 +260,8 @@ async function collectRemoteHashes(
   }
 
   for (const path of paths.filter((entry) => NAME_BREAKS_LINES.test(entry))) {
-    const result = await ask([path]);
+    const result = await askWithin([path]);
+    if (result === 'deadline') return 'deadline';
 
     if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';
     if (GUARD_KILLED_EXIT_CODES.includes(result.exitCode)) return 'guard-killed';

@@ -10,7 +10,7 @@
  * BusyBox `sha256sum -c --quiet -` не существует.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { SSHConfig } from '../../src/utils/ssh-config.js';
 
 const { executeMock, passportMock } = vi.hoisted(() => ({
@@ -152,7 +152,12 @@ describe('сверка: проверить нечем', () => {
       { profileName: 'production' }
     );
 
-    expect(outcome.status).toBe('unavailable');
+    // Причина названа своя: три беды «проверить нечем» лечатся по-разному, и
+    // пользователю уходит именно та, что случилась
+    expect(outcome).toEqual({
+      status: 'unavailable',
+      reason: expect.stringContaining('killed by the timeout guard'),
+    });
   });
 
   it('обрезанный вывод — «проверить нечем», а не «не сошлось»', async () => {
@@ -170,7 +175,10 @@ describe('сверка: проверить нечем', () => {
       { profileName: 'production' }
     );
 
-    expect(outcome.status).toBe('unavailable');
+    expect(outcome).toEqual({
+      status: 'unavailable',
+      reason: expect.stringContaining('did not fit the transport buffer'),
+    });
   });
 
   it('пустой список не выдаётся за успешную проверку', async () => {
@@ -393,6 +401,203 @@ describe('команда сверки: длина считается в байт
 
     expect(sentCommand()).toMatch(/^openssl dgst -sha256 /);
     expect(Math.max(...allSentBytes())).toBeLessThanOrEqual(LIMIT_BYTES);
+  });
+});
+
+/**
+ * Обещанный срок принадлежит всей сверке, а не каждой её команде.
+ *
+ * Список дробится на команды, и их число задаёт длина списка: тот же потолок
+ * на каждой означал бы, что названные пользователем секунды множатся на число
+ * команд. Второе требование сильнее первого: исчерпанный срок — это «проверить
+ * нечем», никогда не «не сошлось». По расхождению установщик сносит уже
+ * уехавшее дерево, а здесь недостача хэшей объясняется временем, а не файлами.
+ */
+describe('сверка: срок стоит на всей операции', () => {
+  /** Часы под управлением теста: время двигается только тем, что мы велим */
+  function fakeClock() {
+    let now = 1_700_000_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    return { advance: (ms: number) => void (now += ms), restore: () => spy.mockRestore() };
+  }
+
+  let clock: ReturnType<typeof fakeClock>;
+
+  beforeEach(() => {
+    clock = fakeClock();
+  });
+
+  afterEach(() => {
+    clock.restore();
+  });
+
+  const treeOf = (count: number, name = (index: number) => `/srv/file-${index}`) =>
+    Array.from({ length: count }, (_, index) => ({ path: name(index), hash: HASH_ONE }));
+
+  /** Сервер отвечает честными хэшами и тратит на это заданное время */
+  const serverSpending = (ms: number) =>
+    executeMock.mockImplementation(async (_config: unknown, command: string) => {
+      clock.advance(ms);
+      const paths = [...command.matchAll(/'([^']*)'/g)].map((match) => match[1]);
+      return reply(paths.map((path) => `${HASH_ONE}  ${path}`).join('\n') + '\n');
+    });
+
+  const verify = (entries: { path: string; hash: string }[], timeoutMs?: number) =>
+    verifyRemoteFiles(executor(), CONFIG, entries, { profileName: 'production', timeoutMs });
+
+  /** Срок, доставшийся каждой отправленной команде */
+  const timeoutsSent = () =>
+    executeMock.mock.calls.map((call) => (call[2] as { timeout: number }).timeout);
+
+  it('каждая следующая команда получает остаток, а не полный срок заново', async () => {
+    serverSpending(1000);
+
+    await verify(treeOf(202), 10_000);
+
+    expect(timeoutsSent()).toEqual([10_000, 9000, 8000]);
+  });
+
+  it('исчерпанный срок — «проверить нечем», а не «не сошлось»', async () => {
+    // Хэши первых двух сотен уже собраны и сошлись, а на остаток списка времени
+    // не хватило: старый счёт объявил бы недостающие файлы испорченными
+    serverSpending(3000);
+
+    const outcome = await verify(treeOf(202), 5000);
+
+    expect(outcome).toEqual({
+      status: 'unavailable',
+      reason: expect.stringContaining('time allowed for verification'),
+    });
+    expect(timeoutsSent()).toEqual([5000, 2000]);
+  });
+
+  it('остаток, съеденный ровно в ноль, — уже исчерпанный срок', async () => {
+    serverSpending(3000);
+
+    const outcome = await verify(treeOf(202), 3000);
+
+    expect(outcome.status).toBe('unavailable');
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Имена с переводом строки спрашиваются по одному во втором цикле — он обязан
+   * следить за сроком наравне с первым.
+   */
+  it('второй цикл, где трудные имена идут по одному, тоже следит за сроком', async () => {
+    serverSpending(2000);
+    const entries = [
+      { path: '/srv/plain.txt', hash: HASH_ONE },
+      { path: '/srv/one\nline.txt', hash: HASH_ONE },
+      { path: '/srv/two\nline.txt', hash: HASH_ONE },
+    ];
+
+    const outcome = await verify(entries, 4000);
+
+    // Одна команда на обычное имя, одна на первое трудное — на второе трудное
+    // времени уже нет
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(outcome.status).toBe('unavailable');
+  });
+
+  it('проба паспорта тратит тот же срок — после неё спрашивать может быть уже нечего', async () => {
+    passportMock.mockImplementation(async () => {
+      clock.advance(20_000);
+      return passport();
+    });
+    serverSpending(0);
+
+    const outcome = await verify(treeOf(2), 5000);
+
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(outcome.status).toBe('unavailable');
+  });
+
+  /**
+   * На исходе срока команде достаются последние миллисекунды, и убивает её наш
+   * собственный сторож — исключением. Наружу оно уйти не должно: сверка обязана
+   * отвечать исходом, а ошибка здесь читается как провал передачи.
+   */
+  it('команда, убитая своим же сроком, — «проверить нечем», а не ошибка наверх', async () => {
+    executeMock.mockImplementation(async () => {
+      clock.advance(6000);
+      throw new Error('Command timed out after 5000ms on example.com');
+    });
+
+    const outcome = await verify(treeOf(2), 5000);
+
+    expect(outcome).toEqual({
+      status: 'unavailable',
+      reason: expect.stringContaining('time allowed for verification'),
+    });
+  });
+
+  it('ошибка не по времени идёт наверх, а не выдаётся за исчерпанный срок', async () => {
+    executeMock.mockImplementation(async () => {
+      clock.advance(10);
+      throw new Error('ssh: connect to host example.com port 22: Connection refused');
+    });
+
+    await expect(verify(treeOf(2), 5000)).rejects.toThrow('Connection refused');
+  });
+
+  it('повторный сбор после пропавшей утилиты идёт с остатком, а не с новым сроком', async () => {
+    passportMock
+      .mockResolvedValueOnce(passport())
+      .mockResolvedValueOnce(passport({ sha256: 'openssl' }));
+    executeMock
+      .mockImplementationOnce(async () => {
+        clock.advance(4000);
+        return reply('', { exitCode: 127, stderr: 'sh: sha256sum: not found' });
+      })
+      .mockImplementationOnce(async () => {
+        clock.advance(1000);
+        return reply(`SHA2-256(/srv/file-0)= ${HASH_ONE}\n`);
+      });
+
+    const outcome = await verify(treeOf(1), 10_000);
+
+    expect(timeoutsSent()).toEqual([10_000, 6000]);
+    expect(outcome.status).toBe('matched');
+  });
+
+  /**
+   * Повторный сбор идёт по тому же дереву и с тем же сроком. Ветка у него своя,
+   * и неполный ответ в ней обязан читаться так же, как в первом заходе.
+   */
+  it('срок, истёкший на повторном сборе, — тоже «проверить нечем»', async () => {
+    passportMock
+      .mockResolvedValueOnce(passport())
+      .mockResolvedValueOnce(passport({ sha256: 'openssl' }));
+    executeMock
+      .mockImplementationOnce(async () => {
+        clock.advance(1000);
+        return reply('', { exitCode: 127, stderr: 'sh: sha256sum: not found' });
+      })
+      .mockImplementationOnce(async () => {
+        clock.advance(9000);
+        return reply(`SHA2-256(/srv/file-0)= ${HASH_ONE}\n`);
+      });
+
+    // Второй заход собрал сотню, третьей команде времени уже нет
+    const outcome = await verify(treeOf(202), 10_000);
+
+    expect(outcome).toEqual({
+      status: 'unavailable',
+      reason: expect.stringContaining('time allowed for verification'),
+    });
+  });
+
+  it.each([
+    ['срок не назван', undefined],
+    ['срок назван нулём', 0],
+  ])('%s — потолка нет ни у одной команды', async (_name, timeoutMs) => {
+    serverSpending(60_000);
+
+    const outcome = await verify(treeOf(202), timeoutMs);
+
+    expect(timeoutsSent()).toEqual([0, 0, 0]);
+    expect(outcome.status).toBe('matched');
   });
 });
 

@@ -76,6 +76,8 @@ export class OpenSshRunner implements CommandRunner {
   private askpassScriptPath?: string;
   /** Последний прочитанный паспорт — для сообщений, где ждать его нельзя */
   private knownPassport?: ServerPassport;
+  /** Отвечает ли назначение только классическим протоколом scp */
+  private legacyScp = false;
 
   constructor(
     private readonly config: RunnerConfig,
@@ -366,12 +368,49 @@ export class OpenSshRunner implements CommandRunner {
     return passport;
   }
 
+  /**
+   * Передача с откатом на классический протокол.
+   *
+   * На серверах без подсистемы sftp (роутеры, встраиваемые системы) современный
+   * scp обрывается, а классический протокол работает. Отличить такой сервер
+   * заранее нечем, поэтому пробуем один раз и запоминаем ответ назначения.
+   */
   private async transfer(
     direction: 'upload' | 'download',
     localPath: string,
     remotePath: string,
     options: TransferOptions
   ): Promise<void> {
+    // Счёт ведётся по запрошенным передачам: отказ и повтор другим протоколом —
+    // это одна передача, а не две, иначе статистика назвала бы лишнюю
+    this.transferCount++;
+
+    const failure = await this.transferOnce(direction, localPath, remotePath, options, this.legacyScp);
+    if (!failure) return;
+
+    if (this.legacyScp || !this.runtime.scpOverSftp) throw failure;
+
+    const legacyFailure = await this.transferOnce(direction, localPath, remotePath, options, true);
+    if (legacyFailure) throw failure;
+
+    logger.info(`[Runner] ${this.destination}: no sftp subsystem, switching to the classic scp protocol`);
+    this.legacyScp = true;
+  }
+
+  /**
+   * Одна попытка передачи.
+   *
+   * Неудачу самой передачи возвращает, а не бросает: вызывающий решает,
+   * повторять ли её другим протоколом. Отмена и исчерпание срока — не тот
+   * случай, они уходят наверх сразу.
+   */
+  private async transferOnce(
+    direction: 'upload' | 'download',
+    localPath: string,
+    remotePath: string,
+    options: TransferOptions,
+    legacyProtocol: boolean
+  ): Promise<Error | undefined> {
     assertProfileSupported(this.config, this.runtime);
 
     // Своего потолка у передачи нет: не назвали таймаут — она идёт столько,
@@ -383,13 +422,12 @@ export class OpenSshRunner implements CommandRunner {
       file: 'scp',
       args: buildScpArgs(this.config, this.capabilities(), direction, localPath, remotePath, {
         recursive: options.recursive,
+        legacyProtocol,
       }),
       env: this.buildEnv(),
       timeoutMs,
       signal: options.signal,
     });
-
-    this.transferCount++;
 
     const stderr = outcome.stderr;
 
@@ -411,7 +449,7 @@ export class OpenSshRunner implements CommandRunner {
 
     if (transportError) {
       this.lastError = transportError.message;
-      throw transportError;
+      return transportError;
     }
 
     // У scp ненулевой код всегда означает неудачу передачи —
@@ -419,11 +457,13 @@ export class OpenSshRunner implements CommandRunner {
     if (outcome.exitCode !== 0) {
       const detail = stderr.trim() || `exit code ${outcome.exitCode}`;
       this.lastError = detail;
-      throw new SSHRunnerError(
+      return new SSHRunnerError(
         `Failed to ${direction} ${direction === 'upload' ? localPath : remotePath}: ${detail}`,
         { exitCode: outcome.exitCode ?? undefined, stderr }
       );
     }
+
+    return undefined;
   }
 }
 

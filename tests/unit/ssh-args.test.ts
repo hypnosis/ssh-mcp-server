@@ -335,6 +335,63 @@ describe('ssh-args', () => {
         buildScpArgs(KEY_PROFILE, CAPS_CLASSIC_SCP, 'upload', '/tmp/a', '/srv/x\ntouch /tmp/pwned')
       ).toThrow(/newline/);
     });
+
+    /**
+     * Сервер без подсистемы sftp понимает только классический протокол.
+     * Флаг просит о нём модерный клиент; путь при этом читает shell сервера,
+     * то есть экранирование обязано включиться в обе стороны.
+     */
+    describe('legacyProtocol', () => {
+      it('asks a modern client for the classic protocol', () => {
+        const args = buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/etc/b', {
+          legacyProtocol: true,
+        });
+        expect(args).toContain('-O');
+        expect(args.indexOf('-O')).toBeLessThan(args.length - 2);
+      });
+
+      it('does not add the flag when it was not asked for', () => {
+        const args = buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/etc/b');
+        expect(args).not.toContain('-O');
+      });
+
+      /** До 9.0 классический протокол и так единственный, а флага ещё нет */
+      it('omits the flag on a client that only speaks the classic protocol', () => {
+        const args = buildScpArgs(KEY_PROFILE, CAPS_CLASSIC_SCP, 'upload', '/tmp/a', '/etc/b', {
+          legacyProtocol: true,
+        });
+        expect(args).not.toContain('-O');
+      });
+
+      it('escapes both directions once the classic protocol is asked for', () => {
+        const upload = buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/srv/my app.txt', {
+          legacyProtocol: true,
+        });
+        const download = buildScpArgs(KEY_PROFILE, CAPS, 'download', '/tmp/a', '/srv/my app.txt', {
+          legacyProtocol: true,
+        });
+
+        expect(upload[upload.length - 1]).toBe('example.com:/srv/my\\ app.txt');
+        expect(download[download.length - 2]).toBe('example.com:/srv/my\\ app.txt');
+      });
+
+      it('refuses a newline path once the classic protocol is asked for', () => {
+        expect(() =>
+          buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/srv/x\ntouch /tmp/pwned', {
+            legacyProtocol: true,
+          })
+        ).toThrow(/newline/);
+      });
+
+      it('keeps -r alongside the flag', () => {
+        const args = buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/etc/b', {
+          legacyProtocol: true,
+          recursive: true,
+        });
+        expect(args).toContain('-O');
+        expect(args).toContain('-r');
+      });
+    });
   });
 
   describe('remote and local path specs', () => {

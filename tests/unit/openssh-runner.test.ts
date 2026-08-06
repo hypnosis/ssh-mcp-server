@@ -43,6 +43,7 @@ const RUNTIME: SshRuntime = {
   version: { major: 10, minor: 2, raw: 'OpenSSH_10.2p1' },
   multiplexing: true,
   askpassForce: true,
+  scpOverSftp: true,
   controlDir: '/home/user/.ssh/ssh-mcp',
 };
 
@@ -521,6 +522,145 @@ describe('OpenSshRunner transfers', () => {
     await expect(
       makeRunner().upload('/tmp/a', '/tmp/b', { timeoutMs: 7000 })
     ).rejects.toThrow(/timed out after 7000ms/);
+  });
+});
+
+/**
+ * Сервер без подсистемы sftp: современный scp обрывается, классический
+ * протокол работает. Замерено на dropbear-узле лаборатории — команды по тому
+ * же соединению при этом ходят исправно, ломается только передача.
+ */
+describe('OpenSshRunner transfers to a server without sftp', () => {
+  /** Отказ, каким его отдаёт scp на таком сервере */
+  const noSftp = () =>
+    ok({
+      exitCode: 255,
+      stderr: 'sh: /usr/lib/ssh/sftp-server: not found\nscp: Connection closed\r\n',
+    });
+
+  /** Есть ли флаг классического протокола в n-м запуске */
+  const askedClassic = (index: number) => callArgs(index).includes('-O');
+
+  it('retries an upload with the classic protocol', async () => {
+    runProcessMock.mockResolvedValueOnce(noSftp()).mockResolvedValueOnce(ok());
+
+    await expect(makeRunner().upload('/tmp/a', '/tmp/b')).resolves.toBeUndefined();
+
+    expect(runProcessMock).toHaveBeenCalledTimes(2);
+    expect(askedClassic(0)).toBe(false);
+    expect(askedClassic(1)).toBe(true);
+  });
+
+  it('retries a download with the classic protocol', async () => {
+    runProcessMock.mockResolvedValueOnce(noSftp()).mockResolvedValueOnce(ok());
+
+    await expect(makeRunner().download('/etc/hosts', '/tmp/hosts')).resolves.toBeUndefined();
+
+    expect(runProcessMock).toHaveBeenCalledTimes(2);
+    expect(askedClassic(1)).toBe(true);
+  });
+
+  /** Путь на классическом пути читает shell сервера, значит экранируется */
+  it('escapes the upload target once it falls back', async () => {
+    runProcessMock.mockResolvedValueOnce(noSftp()).mockResolvedValueOnce(ok());
+
+    await makeRunner().upload('/tmp/a', '/srv/my app.txt');
+
+    const first = callArgs(0);
+    const second = callArgs(1);
+    expect(first[first.length - 1]).toBe('example.com:/srv/my app.txt');
+    expect(second[second.length - 1]).toBe('example.com:/srv/my\\ app.txt');
+  });
+
+  it('remembers the destination and skips the failing attempt next time', async () => {
+    runProcessMock.mockResolvedValueOnce(noSftp()).mockResolvedValue(ok());
+    const runner = makeRunner();
+
+    await runner.upload('/tmp/a', '/tmp/b');
+    runProcessMock.mockClear();
+    await runner.upload('/tmp/c', '/tmp/d');
+
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+    expect(askedClassic(0)).toBe(true);
+  });
+
+  /**
+   * Откат либо чинит, либо ничего не меняет: вторая неудача возвращает
+   * вызывающему первую ошибку, а не жалобу классического протокола.
+   */
+  it('reports the original failure when the classic protocol fails too', async () => {
+    runProcessMock
+      .mockResolvedValueOnce(ok({ exitCode: 1, stderr: 'scp: /etc/x: Permission denied' }))
+      .mockResolvedValueOnce(ok({ exitCode: 1, stderr: 'scp: unrelated classic complaint' }));
+
+    await expect(makeRunner().upload('/tmp/a', '/etc/x')).rejects.toThrow(/Permission denied/);
+    expect(runProcessMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not remember the destination when the retry failed', async () => {
+    runProcessMock.mockResolvedValue(ok({ exitCode: 1, stderr: 'scp: /etc/x: Permission denied' }));
+    const runner = makeRunner();
+
+    await expect(runner.upload('/tmp/a', '/etc/x')).rejects.toThrow();
+    runProcessMock.mockClear();
+    await expect(runner.upload('/tmp/a', '/etc/x')).rejects.toThrow();
+
+    expect(askedClassic(0)).toBe(false);
+  });
+
+  it('does not retry after a timeout', async () => {
+    runProcessMock.mockResolvedValue(ok({ timedOut: true, exitCode: null }));
+
+    await expect(
+      makeRunner().upload('/tmp/a', '/tmp/b', { timeoutMs: 7000 })
+    ).rejects.toThrow(SSHTimeoutError);
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry after a cancellation', async () => {
+    runProcessMock.mockResolvedValue(ok({ aborted: true, exitCode: null }));
+
+    await expect(makeRunner().upload('/tmp/a', '/tmp/b')).rejects.toThrow(SSHCancelledError);
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  /** До 9.0 передача и так идёт классическим протоколом — повторять нечем */
+  it('does not retry on a client that only speaks the classic protocol', async () => {
+    runProcessMock.mockResolvedValue(noSftp());
+    const classicClient: SshRuntime = { ...RUNTIME, scpOverSftp: false };
+
+    await expect(makeRunner(CONFIG, classicClient).upload('/tmp/a', '/tmp/b')).rejects.toThrow();
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a transfer that succeeded', async () => {
+    runProcessMock.mockResolvedValue(ok());
+
+    await makeRunner().upload('/tmp/a', '/tmp/b');
+
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Недоступный сервер и отказавшая передача — разные ответы: по первому
+   * вызывающий повторяет операцию, по второму разбирается с путём и правами.
+   */
+  it('keeps a transport failure distinguishable from a failed transfer', async () => {
+    runProcessMock.mockResolvedValue(
+      ok({ exitCode: 255, stderr: 'ssh: connect to host example.com port 22: Connection refused' })
+    );
+
+    await expect(makeRunner().upload('/tmp/a', '/tmp/b')).rejects.toThrow(SSHTransportError);
+  });
+
+  /** Отказ и повтор другим протоколом — одна передача, а не две */
+  it('counts a fallback as a single transfer', async () => {
+    runProcessMock.mockResolvedValueOnce(noSftp()).mockResolvedValue(ok());
+    const runner = makeRunner();
+
+    await runner.upload('/tmp/a', '/tmp/b');
+
+    expect((await runner.stats()).transfersThisSession).toBe(1);
   });
 });
 

@@ -322,13 +322,20 @@ export function buildScpArgs(
   direction: 'upload' | 'download',
   localPath: string,
   remotePath: string,
-  options: SshArgsOptions & { recursive?: boolean } = {}
+  options: SshArgsOptions & { recursive?: boolean; legacyProtocol?: boolean } = {}
 ): string[] {
   const args = buildCommonOptions(config, caps, options);
 
   // У scp порт задаётся заглавной -P, в отличие от ssh
   args.push('-P', String(config.port ?? 22));
   args.push('-q');
+
+  // Классический протокол вместо SFTP: на клиентах до 9.0 он и так
+  // единственный, поэтому флаг нужен только новым
+  const classicProtocol = options.legacyProtocol || !caps.scpOverSftp;
+  if (options.legacyProtocol && caps.scpOverSftp) {
+    args.push('-O');
+  }
 
   if (options.recursive) {
     args.push('-r');
@@ -337,7 +344,7 @@ export function buildScpArgs(
   const localSpec = normalizeLocalSpec(localPath);
   // Цель загрузки в SFTP-режиме — единственный путь, который уходит буквально:
   // экранирование сделало бы обратный слэш частью имени (замерено)
-  const use: RemotePathUse = !caps.scpOverSftp ? 'shell' : direction === 'upload' ? 'literal' : 'glob';
+  const use: RemotePathUse = classicProtocol ? 'shell' : direction === 'upload' ? 'literal' : 'glob';
   const remoteSpec = buildRemoteSpec(config.host, prepareRemotePath(remotePath, use));
 
   if (direction === 'upload') {

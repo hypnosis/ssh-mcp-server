@@ -494,6 +494,8 @@ Binary-safe transfer through the system `scp`, over the same multiplexed connect
 
 Defaults: `atomic=true` (write to `<path>.tmp.<rand>`, then `mv`), `verify=true` (local sha256 vs remote `sha256sum` / `openssl dgst -sha256` fallback).
 
+**Servers without an sftp subsystem** (routers, embedded devices, dropbear) are handled automatically: on client 9.0+ `scp` rides SFTP, which such a server refuses, so the transfer falls back to the classic scp protocol once and remembers that destination. Nothing to configure. One limitation there: a remote path containing a newline is rejected instead of being sent — the classic protocol has no safe way to carry it.
+
 **File-size guidance:**
 - ≤ 256 KB, text only → `ssh_file_write` (legacy heredoc, slightly faster — no second sha256 round-trip)
 - 256 KB – 1 MB, text → `ssh_file_write` with `atomic: true, verify: true` (auto-routes to SFTP)

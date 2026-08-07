@@ -312,6 +312,121 @@ describe('OpenSshRunner multiplexing', () => {
     await Promise.all(inFlight);
     expect(runProcessMock).toHaveBeenCalledTimes(3);
   });
+
+  /**
+   * Сколько запусков процесса шло одновременно в самый плотный момент.
+   *
+   * Счётчик вызовов этого не показывает: залп из пяти команд и пять команд по
+   * очереди дают одно и то же число. Замер на лаборатории считал входы в логе
+   * sshd, здесь та же величина берётся с той стороны мока.
+   */
+  function trackPeakParallel(outcome: ProcessRunOutcome = ok()): () => number {
+    let now = 0;
+    let peak = 0;
+    runProcessMock.mockImplementation(
+      () =>
+        new Promise<ProcessRunOutcome>((resolve) => {
+          now += 1;
+          peak = Math.max(peak, now);
+          setTimeout(() => {
+            now -= 1;
+            resolve(outcome);
+          }, 10);
+        })
+    );
+    return () => peak;
+  }
+
+  it('после закрытия соединения профиль снова холодный, и входит одна команда', async () => {
+    runProcessMock.mockResolvedValue(ok());
+    const runner = makeRunner();
+    await runner.exec('warm up', { remoteTimeout: false });
+    await runner.closeMaster();
+    const before = runProcessMock.mock.calls.length;
+
+    let firstResolve!: (outcome: ProcessRunOutcome) => void;
+    runProcessMock.mockImplementationOnce(
+      () => new Promise<ProcessRunOutcome>((resolve) => { firstResolve = resolve; })
+    );
+
+    const inFlight = [
+      runner.exec('one', { remoteTimeout: false }),
+      runner.exec('two', { remoteTimeout: false }),
+      runner.exec('three', { remoteTimeout: false }),
+    ];
+
+    // Шлюз держит остальных, пока первая не подняла соединение заново
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runProcessMock).toHaveBeenCalledTimes(before + 1);
+
+    firstResolve(ok());
+    await Promise.all(inFlight);
+    expect(runProcessMock).toHaveBeenCalledTimes(before + 3);
+  });
+
+  it('пока соединение живо, команды идут разом и никого не ждут', async () => {
+    runProcessMock.mockResolvedValue(ok());
+    const runner = makeRunner();
+    await runner.exec('warm up', { remoteTimeout: false });
+
+    const peak = trackPeakParallel();
+    await Promise.all([
+      runner.exec('one', { remoteTimeout: false }),
+      runner.exec('two', { remoteTimeout: false }),
+      runner.exec('three', { remoteTimeout: false }),
+    ]);
+
+    expect(peak()).toBe(3);
+  });
+
+  it('после срока простоя соединения нет, и снова входит одна команда', async () => {
+    const previous = process.env.SSH_MCP_CONTROL_PERSIST;
+    process.env.SSH_MCP_CONTROL_PERSIST = '2';
+    // Подделываем только часы: сроки в самом тесте должны идти по-настоящему
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      runProcessMock.mockResolvedValue(ok());
+      const runner = makeRunner();
+      await runner.exec('warm up', { remoteTimeout: false });
+
+      vi.setSystemTime(Date.now() + 3000);
+      const peak = trackPeakParallel();
+      await Promise.all([
+        runner.exec('one', { remoteTimeout: false }),
+        runner.exec('two', { remoteTimeout: false }),
+      ]);
+
+      expect(peak()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      if (previous === undefined) delete process.env.SSH_MCP_CONTROL_PERSIST;
+      else process.env.SSH_MCP_CONTROL_PERSIST = previous;
+    }
+  });
+
+  /**
+   * Провалившаяся первая команда не поднимает master, поэтому ждавшие снова
+   * холодные — и уходить залпом им нельзя: каждая попытка считается сервером
+   * за отдельный неудачный вход.
+   */
+  it('когда первая команда провалилась, ждавшие пробуют по одной', async () => {
+    const peak = trackPeakParallel(
+      ok({
+        exitCode: SSH_FAILURE_EXIT_CODE,
+        stderr: 'ssh: connect to host example.com port 22: Connection refused',
+      })
+    );
+    const runner = makeRunner();
+
+    await Promise.allSettled([
+      runner.exec('one', { remoteTimeout: false }),
+      runner.exec('two', { remoteTimeout: false }),
+      runner.exec('three', { remoteTimeout: false }),
+    ]);
+
+    expect(peak()).toBe(1);
+    expect(runProcessMock).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('OpenSshRunner remote timeout guard', () => {

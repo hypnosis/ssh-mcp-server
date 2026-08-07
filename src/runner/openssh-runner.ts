@@ -37,6 +37,7 @@ import {
   buildScpArgs,
   buildSshArgs,
   needsAskpass,
+  resolveControlPersistSec,
   type RunnerConfig,
   type SshCapabilities,
 } from './ssh-args.js';
@@ -73,6 +74,8 @@ export class OpenSshRunner implements CommandRunner {
   private lastError?: string;
   /** Первая команда поднимает master; остальные ждут её, чтобы не входить дважды */
   private firstCommandGate?: Promise<void>;
+  /** Когда команда в последний раз доказала, что master поднят */
+  private masterSeenAt = 0;
   private askpassScriptPath?: string;
   /** Последний прочитанный паспорт — для сообщений, где ждать его нельзя */
   private knownPassport?: ServerPassport;
@@ -172,6 +175,10 @@ export class OpenSshRunner implements CommandRunner {
   async closeMaster(): Promise<MasterCloseOutcome> {
     if (!this.runtime.multiplexing) return 'multiplexing-off';
 
+    // Профиль снова холодный, каким бы ни был исход закрытия: следующая волна
+    // команд обязана идти через шлюз, иначе войдёт каждая по отдельности
+    this.masterSeenAt = 0;
+
     const outcome = await runProcess({
       file: 'ssh',
       args: buildControlArgs(this.config, this.capabilities(), 'exit'),
@@ -222,10 +229,26 @@ export class OpenSshRunner implements CommandRunner {
   }
 
   /**
+   * Поднят ли master прямо сейчас.
+   *
+   * Судим по часам, а не вопросом `ssh -O check`: проба — это лишний процесс
+   * на каждую команду. Master держится ControlPersist секунд после последней
+   * команды и раньше срока сам не уходит, поэтому в пределах срока ответ
+   * «поднят» верен, а за его пределами ворота просто закрываются снова.
+   */
+  private masterLikelyUp(): boolean {
+    const persistSec = resolveControlPersistSec();
+    if (persistSec <= 0) return false;
+    return Date.now() - this.masterSeenAt < persistSec * 1000;
+  }
+
+  /**
    * Выполнить команду, пропустив первую через шлюз.
    *
-   * Без шлюза две параллельные команды на холодном профиле открыли бы
-   * два соединения и дали бы два входа вместо одного.
+   * Без шлюза команды холодного профиля открыли бы каждая своё соединение и
+   * дали бы залп входов вместо одного. Шлюз закрывается перед каждым холодным
+   * стартом, а не однажды за жизнь транспорта: соединение закрывают и по
+   * команде, и по сроку простоя, и после этого профиль снова холодный.
    */
   private async execGuarded(
     command: string,
@@ -237,7 +260,13 @@ export class OpenSshRunner implements CommandRunner {
     }
 
     if (this.firstCommandGate) {
+      // Возвращаемся к началу, а не идём выполнять: если ждали напрасно и
+      // master так и не поднялся, первой станет одна команда, а не все сразу
       await this.firstCommandGate;
+      return this.execGuarded(command, options, context);
+    }
+
+    if (this.masterLikelyUp()) {
       return this.execOnce(command, options, context);
     }
 
@@ -249,6 +278,7 @@ export class OpenSshRunner implements CommandRunner {
     try {
       return await this.execOnce(command, options, context);
     } finally {
+      this.firstCommandGate = undefined;
       openGate();
     }
   }
@@ -308,6 +338,13 @@ export class OpenSshRunner implements CommandRunner {
     if (transportError) {
       this.lastError = transportError.message;
       throw transportError;
+    }
+
+    // Команда дошла до сервера общим соединением — значит master поднят, и
+    // следующим ждать нечего. Команда мимо мультиплексирования этого не
+    // доказывает: она ходила своим соединением
+    if (this.runtime.multiplexing && !context.disableMux) {
+      this.masterSeenAt = Date.now();
     }
 
     return {

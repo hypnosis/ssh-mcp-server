@@ -37,8 +37,8 @@ const { ExecTool } = await import('../../src/tools/exec-tool.js');
 const { UNKNOWN_PASSPORT } = await import('../../src/runner/passport.js');
 const { CONFIRMATION_MARKER } = await import('../../src/utils/destructive-command.js');
 
-function call(command: string | string[]): CallToolRequest {
-  return { params: { name: 'ssh_exec', arguments: { command } } } as CallToolRequest;
+function call(command: string | string[], extra: Record<string, unknown> = {}): CallToolRequest {
+  return { params: { name: 'ssh_exec', arguments: { command, ...extra } } } as CallToolRequest;
 }
 
 /** Всё, что ушло в транспорт за вызов */
@@ -51,7 +51,9 @@ beforeEach(() => {
   // Мок злее сервера: резолв отвечает настоящей целью ссылки, а не именем
   executeMock.mockImplementation(async (_config: unknown, command: string) => {
     if (command.includes('readlink -f')) {
-      return { stdout: '/\n', stderr: '', exitCode: 0, truncated: false };
+      // /srv/data ведёт туда же, куда названо, а /var/www/data — в корень
+      const target = command.includes('/srv/data') ? '/srv/data\n' : '/\n';
+      return { stdout: target, stderr: '', exitCode: 0, truncated: false };
     }
     return { stdout: 'ok', stderr: '', exitCode: 0, truncated: false };
   });
@@ -115,5 +117,32 @@ describe('ssh_exec: врезка защиты от разрушительног�
     await new ExecTool().handleCall(call(['uptime', 'whoami']));
 
     expect(passportMock).not.toHaveBeenCalled();
+  });
+
+  it('дом снимается один раз на весь батч, а не на каждое удаление', async () => {
+    await new ExecTool().handleCall(call(['rm -rf /tmp/one', 'rm -rf /tmp/two']));
+
+    expect(passportMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Обратная сторона проверки ссылок: резолв, который никуда не привёл, — это
+   * разрешение. Иначе отказ получала бы любая команда со слэшем на конце.
+   */
+  it('ссылка, ведущая туда же, где названа, удаление не отменяет', async () => {
+    const result = await new ExecTool().handleCall(call('rm -rf /srv/data/'));
+
+    expect(result.content[0].text).not.toContain('BLOCKED');
+    expect(sentCommands()).toContain('rm -rf /srv/data/');
+  });
+
+  it('резолв ссылки идёт с правами вызова, иначе он её не прочтёт', async () => {
+    await new ExecTool().handleCall(call('rm -rf /srv/data/', { sudo: true }));
+
+    const resolve = executeMock.mock.calls.find(([, command]) =>
+      String(command).includes('readlink -f')
+    );
+
+    expect(resolve?.[2]).toMatchObject({ sudo: true });
   });
 });

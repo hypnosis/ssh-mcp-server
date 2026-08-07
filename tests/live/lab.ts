@@ -25,11 +25,13 @@ export interface LabServer {
   /** Имя для заголовка теста */
   name: string;
   port: number;
+  /** Имя контейнера: через его лог видно, сколько входов увидел sshd */
+  container: string;
 }
 
 export const LAB_SERVERS: LabServer[] = [
-  { name: 'alpine/BusyBox', port: 2231 },
-  { name: 'debian/dash', port: 2232 },
+  { name: 'alpine/BusyBox', port: 2231, container: 'mcp-alpine' },
+  { name: 'debian/dash', port: 2232, container: 'mcp-debian' },
 ];
 
 /**
@@ -37,7 +39,7 @@ export const LAB_SERVERS: LabServer[] = [
  * классический scp. Нарочно вне LAB_SERVERS: общая сетка гоняет sftp-путь,
  * и этот узел провалит его по определению, а не по дефекту.
  */
-export const LAB_ROUTER: LabServer = { name: 'router/dropbear', port: 2233 };
+export const LAB_ROUTER: LabServer = { name: 'router/dropbear', port: 2233, container: 'mcp-router' };
 
 /** Строгий режим: отсутствие лаборатории — падение, а не пропуск */
 export const LAB_REQUIRED = process.env.SSH_MCP_LIVE === '1';

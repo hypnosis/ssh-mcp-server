@@ -126,6 +126,43 @@ describe.each(LAB_SERVERS)('Парольный профиль — $name', { time
     expect(await sshExitCode(args, env, ['DISPLAY', 'SSH_ASKPASS_REQUIRE'])).not.toBe(0);
   });
 
+  it.skipIf(unavailable)('вход проходит, пока askpass-скрипт переписывают на ходу', async () => {
+    // Управляющий каталог общий: пока один профиль входит по паролю, соседний
+    // может пересоздавать тот же скрипт. Замер до правки: 56 запусков из 330
+    // печатали пустоту вместо секрета — ssh получал пустой пароль и отказ.
+    const config = labPasswordConfig(server);
+    const runtime = await detectRuntime();
+    const env = buildRunnerEnv({
+      config,
+      askpassScriptPath: ensureAskpassScript(runtime.controlDir),
+    });
+
+    // Без мультиплексирования: через готовое соединение askpass не читается
+    // вовсе, и залп прошёл бы даже по обнулённому файлу
+    const args = buildSshArgs(config, { ...toCapabilities(runtime), multiplexing: false }, 'true');
+
+    let rewriting = true;
+    const writer = (async () => {
+      while (rewriting) {
+        ensureAskpassScript(runtime.controlDir);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    })();
+
+    const codes: number[] = [];
+    // По шесть за раз: сервер держит ограниченное число неаутентифицированных
+    // соединений, и залп пошире давал бы отказы сам по себе
+    for (let round = 0; round < 4; round++) {
+      codes.push(...(await Promise.all(Array.from({ length: 6 }, () => sshExitCode(args, env, [])))));
+    }
+    rewriting = false;
+    await writer;
+
+    // Длина проверяется отдельно: на пустом списке проверка кодов зеленела бы
+    expect(codes).toHaveLength(24);
+    expect(codes.filter((code) => code !== 0)).toEqual([]);
+  });
+
   it.skipIf(unavailable)('пока управляющее соединение живо, пароль больше не спрашивается', async () => {
     const live = await runner();
     expect((await live.stats()).masterActive).toBe(true);

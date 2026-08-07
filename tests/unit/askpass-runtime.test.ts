@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, statSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -241,6 +241,38 @@ describe('ensureAskpassScript', () => {
     ensureAskpassScript(dir);
     const scriptPath = ensureAskpassScript(dir);
     expect(statSync(scriptPath).mode & 0o777).toBe(0o700);
+  });
+
+  // A rewrite in place truncates the file first, and a neighbouring ssh running
+  // the script at that moment prints nothing instead of the secret. Swapping a
+  // fully written file in leaves no such window — the inode tells the two apart.
+  it('swaps a new file in instead of rewriting the script in place', () => {
+    const scriptPath = ensureAskpassScript(dir);
+    const firstInode = statSync(scriptPath).ino;
+
+    ensureAskpassScript(dir);
+
+    expect(statSync(scriptPath).ino).not.toBe(firstInode);
+    expect(readFileSync(scriptPath, 'utf8')).toContain(`$${SECRET_ENV_VAR}`);
+  });
+
+  // A crash between the write and the rename leaves the temporary file behind.
+  // Writing over it does not reset its permissions, so a leftover with loose
+  // ones would be renamed into place and ssh could not execute the script.
+  it('fixes permissions of a leftover temporary file before swapping it in', () => {
+    const leftover = join(dir, `${ASKPASS_SCRIPT_NAME}.${process.pid}`);
+    writeFileSync(leftover, '# stale', { mode: 0o644 });
+
+    const scriptPath = ensureAskpassScript(dir);
+
+    expect(statSync(scriptPath).mode & 0o777).toBe(0o700);
+  });
+
+  it('leaves no half-written leftovers in the control directory', () => {
+    ensureAskpassScript(dir);
+    ensureAskpassScript(dir);
+
+    expect(readdirSync(dir)).toEqual([ASKPASS_SCRIPT_NAME]);
   });
 });
 

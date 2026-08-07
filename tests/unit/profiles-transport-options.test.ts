@@ -7,10 +7,13 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { loadProfilesFile } from '../../src/utils/profiles-file.js';
 import { reloadProfiles, resolveSSHConfig } from '../../src/utils/profile-resolver.js';
+import { buildScpArgs, buildSshArgs, type SshCapabilities } from '../../src/runner/ssh-args.js';
+import { buildRunnerEnv, SECRET_ENV_VAR } from '../../src/runner/askpass.js';
+import type { SSHConfig } from '../../src/utils/ssh-config.js';
 
 const tempDirs: string[] = [];
 
@@ -28,6 +31,54 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * Пройти путь «файл → загрузчик → конфигурация» целиком.
+ *
+ * Профиль собирается вручную дважды подряд — в загрузчике и в сборщике
+ * конфигурации, — поэтому промежуточный объект ничего не доказывает: нужен
+ * тот, у которого транспорт спрашивает, куда и чем подключаться.
+ */
+function configFromFile(fields: Record<string, unknown>): SSHConfig {
+  const path = writeProfiles({
+    production: { host: 'example.com', username: 'deploy', ...fields },
+  });
+
+  const previous = process.env.SSH_PROFILES_FILE;
+  process.env.SSH_PROFILES_FILE = path;
+  try {
+    reloadProfiles();
+    return resolveSSHConfig({ profile: 'production' });
+  } finally {
+    // Возвращаем окружение как было; без файла профилей перезагрузка
+    // законно отказывается — соседние тесты от этого страдать не должны
+    if (previous === undefined) delete process.env.SSH_PROFILES_FILE;
+    else process.env.SSH_PROFILES_FILE = previous;
+    try {
+      reloadProfiles();
+    } catch {
+      /* профилей больше нет — так и было до теста */
+    }
+  }
+}
+
+const CAPS: SshCapabilities = {
+  multiplexing: true,
+  controlDir: '/tmp/ssh-mcp-test',
+  scpOverSftp: true,
+};
+
+/** Значение, стоящее в аргументах сразу за флагом */
+function flagValue(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
+}
+
+/** Значение опции `-o Name=value` */
+function optionValue(args: string[], name: string): string | undefined {
+  const option = args.find((arg, index) => args[index - 1] === '-o' && arg.startsWith(`${name}=`));
+  return option?.slice(name.length + 1);
+}
 
 describe('profiles file: transport options', () => {
   it('доносит политику проверки ключа хоста до конфигурации', () => {
@@ -136,31 +187,102 @@ describe('profiles file: ограничения на пути', () => {
    * от файла до того объекта, у которого инструменты спрашивают правила.
    */
   it('правила доходят до конфигурации, с которой работают инструменты', () => {
-    const path = writeProfiles({
-      production: {
-        host: 'example.com',
-        username: 'deploy',
-        pathSecurity: { deniedPaths: ['/root'] },
-      },
+    expect(configFromFile({ pathSecurity: { deniedPaths: ['/root'] } }).pathSecurity).toEqual({
+      deniedPaths: ['/root'],
     });
+  });
+});
 
-    const previous = process.env.SSH_PROFILES_FILE;
-    process.env.SSH_PROFILES_FILE = path;
-    try {
-      reloadProfiles();
-      const config = resolveSSHConfig({ profile: 'production' });
+/**
+ * Поля входа: порт, ключ, пароль и passphrase.
+ *
+ * Тот же класс, которым терялся `pathSecurity`, и та же цепочка: поле из файла
+ * дважды переписывается вручную, а потом превращается в аргумент команды или в
+ * переменную окружения. Поэтому утверждение здесь не про значение в объекте, а
+ * про то, что уехало в транспорт.
+ */
+describe('profiles file: поля входа доезжают до транспорта', () => {
+  it('порт из файла уезжает и в ssh, и в scp', () => {
+    const config = configFromFile({ port: 2222 });
 
-      expect(config.pathSecurity).toEqual({ deniedPaths: ['/root'] });
-    } finally {
-      // Возвращаем окружение как было; без файла профилей перезагрузка
-      // законно отказывается — соседние тесты от этого страдать не должны
-      if (previous === undefined) delete process.env.SSH_PROFILES_FILE;
-      else process.env.SSH_PROFILES_FILE = previous;
-      try {
-        reloadProfiles();
-      } catch {
-        /* профилей больше нет — так и было до теста */
-      }
-    }
+    expect(config.port).toBe(2222);
+    expect(flagValue(buildSshArgs(config, CAPS, 'true'), '-p')).toBe('2222');
+    // У scp порт задаётся заглавной буквой — это отдельный вызов и отдельная дыра
+    expect(flagValue(buildScpArgs(config, CAPS, 'upload', '/tmp/a', '/tmp/b'), '-P')).toBe('2222');
+  });
+
+  it('порт, записанный строкой, доезжает числом', () => {
+    const config = configFromFile({ port: '2222' });
+
+    expect(config.port).toBe(2222);
+    expect(flagValue(buildSshArgs(config, CAPS, 'true'), '-p')).toBe('2222');
+  });
+
+  it('профиль без порта уходит на 22', () => {
+    const config = configFromFile({});
+
+    expect(config.port).toBe(22);
+    expect(flagValue(buildSshArgs(config, CAPS, 'true'), '-p')).toBe('22');
+  });
+
+  it('путь к ключу уезжает в IdentityFile, и чужие ключи при этом не перебираются', () => {
+    const config = configFromFile({ privateKeyPath: '/home/deploy/.ssh/id_ed25519' });
+    const args = buildSshArgs(config, CAPS, 'true');
+
+    expect(config.privateKeyPath).toBe('/home/deploy/.ssh/id_ed25519');
+    expect(optionValue(args, 'IdentityFile')).toBe('/home/deploy/.ssh/id_ed25519');
+    // Без IdentitiesOnly клиент перебирает ключи агента, и вход прошёл бы даже
+    // с неверным путём — то есть проверка ключа ничего бы не значила
+    expect(optionValue(args, 'IdentitiesOnly')).toBe('yes');
+  });
+
+  /**
+   * Тильду раскрывает сборщик конфигурации, а не ssh: в IdentityFile она
+   * уехала бы как есть, и клиент искал бы каталог с именем `~`.
+   */
+  it('тильда в пути к ключу раскрывается до передачи транспорту', () => {
+    const config = configFromFile({ privateKeyPath: '~/.ssh/id_ed25519' });
+    const expected = join(homedir(), '.ssh', 'id_ed25519');
+
+    expect(config.privateKeyPath).toBe(expected);
+    expect(optionValue(buildSshArgs(config, CAPS, 'true'), 'IdentityFile')).toBe(expected);
+  });
+
+  it('пароль доезжает до askpass и переключает вход на парольный', () => {
+    const config = configFromFile({ password: 'hunter2' });
+    const args = buildSshArgs(config, CAPS, 'true');
+
+    expect(optionValue(args, 'PubkeyAuthentication')).toBe('no');
+    // BatchMode запрещает любые запросы ввода, включая askpass: с ним секрет
+    // некуда подать, и профиль с паролем не вошёл бы вовсе
+    expect(optionValue(args, 'BatchMode')).toBeUndefined();
+
+    const env = buildRunnerEnv({ config, askpassScriptPath: '/tmp/askpass.sh', baseEnv: {} });
+    expect(env[SECRET_ENV_VAR]).toBe('hunter2');
+  });
+
+  /**
+   * Пароль и passphrase едут одной дорогой, и перепутать их можно молча:
+   * ssh спросит фразу к ключу, а получит пароль пользователя.
+   */
+  it('passphrase доезжает до askpass, а не пароль рядом с ней', () => {
+    const config = configFromFile({
+      privateKeyPath: '/home/deploy/.ssh/id_ed25519',
+      passphrase: 'key-secret',
+      password: 'user-secret',
+    });
+    const env = buildRunnerEnv({ config, askpassScriptPath: '/tmp/askpass.sh', baseEnv: {} });
+
+    expect(config.passphrase).toBe('key-secret');
+    expect(env[SECRET_ENV_VAR]).toBe('key-secret');
+    expect(optionValue(buildSshArgs(config, CAPS, 'true'), 'BatchMode')).toBeUndefined();
+  });
+
+  it('профиль без секретов идёт с BatchMode и без переменной секрета', () => {
+    const config = configFromFile({ privateKeyPath: '/home/deploy/.ssh/id_ed25519' });
+    const env = buildRunnerEnv({ config, askpassScriptPath: '/tmp/askpass.sh', baseEnv: {} });
+
+    expect(optionValue(buildSshArgs(config, CAPS, 'true'), 'BatchMode')).toBe('yes');
+    expect(env[SECRET_ENV_VAR]).toBeUndefined();
   });
 });

@@ -12,7 +12,7 @@
  *    что уже имеет доступ к файлу профилей с паролем внутри.
  */
 
-import { chmodSync, mkdirSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { RunnerConfig } from './ssh-args.js';
 
@@ -33,17 +33,26 @@ printf '%s' "$${SECRET_ENV_VAR}"
 `;
 
 /**
- * Создать (или обновить) askpass-скрипт и вернуть путь к нему
+ * Создать (или обновить) askpass-скрипт и вернуть путь к нему.
+ *
+ * Скрипт пишется рядом и встаёт на место переименованием: управляющий каталог
+ * общий для всех профилей и для всех процессов сервера, поэтому в момент записи
+ * соседний ssh может выполнять тот же файл. Запись прямо в конечный путь сначала
+ * обнуляет файл — клиент получил бы пустой секрет и отказ во входе.
  */
 export function ensureAskpassScript(controlDir: string): string {
   // Каталог мог быть не создан: при выключенном мультиплексировании
   // управляющие сокеты не нужны, а askpass — нужен
   mkdirSync(controlDir, { recursive: true, mode: 0o700 });
   const scriptPath = join(controlDir, ASKPASS_SCRIPT_NAME);
-  writeFileSync(scriptPath, ASKPASS_SCRIPT, { mode: 0o700 });
-  // writeFileSync применяет mode только при создании файла — существующему
-  // файлу права надо выставить явно
-  chmodSync(scriptPath, 0o700);
+  // Имя по номеру процесса: внутри одного процесса запись синхронна, а
+  // соседний процесс сервера пишет в тот же общий каталог
+  const tempPath = `${scriptPath}.${process.pid}`;
+  writeFileSync(tempPath, ASKPASS_SCRIPT, { mode: 0o700 });
+  // writeFileSync применяет mode только при создании файла — уцелевшему от
+  // прошлого запуска временному файлу права надо выставить явно
+  chmodSync(tempPath, 0o700);
+  renameSync(tempPath, scriptPath);
   return scriptPath;
 }
 

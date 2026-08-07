@@ -265,7 +265,7 @@ export class LogTools {
     // Single log - simple result
     if (paths.length === 1) {
       const safePath = await this.buildSafePath(sshConfig, profileName, paths[0], sudo);
-      const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
+      const command = `grep ${grepFlags.join(' ')} ${shellQuote(query)} ${safePath}`;
       const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
       
       // grep exit code 1 = no matches (not an error)
@@ -297,7 +297,7 @@ export class LogTools {
     for (const path of paths) {
       try {
         const safePath = await this.buildSafePath(sshConfig, profileName, path, sudo);
-        const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
+        const command = `grep ${grepFlags.join(' ')} ${shellQuote(query)} ${safePath}`;
         const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
         
         // grep exit code 1 = no matches
@@ -374,12 +374,5 @@ export class LogTools {
     }
 
     return shellQuote(target.path);
-  }
-
-  /**
-   * Escape query for grep
-   */
-  private escapeQuery(query: string): string {
-    return query.replace(/'/g, "'\\''");
   }
 }

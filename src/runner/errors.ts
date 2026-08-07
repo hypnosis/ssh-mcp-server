@@ -119,8 +119,9 @@ export class SSHUnsupportedConfigError extends SSHRunnerError {
 }
 
 /**
- * Достигнут лимит одновременных сессий на сервере (MaxSessions).
- * Лечится однократным повтором без мультиплексирования.
+ * Достигнут лимит одновременных сессий на сервере (MaxSessions), и открыть
+ * отдельное соединение вместо сессии клиенту тоже не удалось: сам по себе
+ * отказ в сессии он лечит без нашего участия.
  */
 export class SSHMuxLimitError extends SSHRunnerError {
   constructor(message: string, details: { exitCode?: number; stderr?: string } = {}) {

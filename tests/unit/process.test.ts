@@ -6,11 +6,17 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { getEventListeners } from 'events';
 import { runProcess } from '../../src/runner/process.js';
 
 /** Запустить фрагмент JS отдельным процессом node */
 function nodeScript(script: string, overrides = {}) {
   return runProcess({ file: process.execPath, args: ['-e', script], ...overrides });
+}
+
+/** Сколько таймеров сейчас удерживают цикл событий */
+function pendingTimers(): number {
+  return process.getActiveResourcesInfo().filter((resource) => resource === 'Timeout').length;
 }
 
 describe('runProcess', () => {
@@ -38,6 +44,49 @@ describe('runProcess', () => {
     it('measures duration', async () => {
       const result = await nodeScript('process.stdout.write("x")');
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
+      // Верхняя граница обязательна: без неё сойдёт и сумма двух отметок времени
+      expect(result.durationMs).toBeLessThan(60_000);
+    });
+  });
+
+  /**
+   * Сервер живёт долго и запускает процессы тысячами. Таймер, оставшийся после
+   * завершившейся команды, держит цикл событий, а слушатель на общем сигнале
+   * отмены накапливается от запуска к запуску — и то и другое видно только со
+   * стороны, самим результатом такое не проверяется.
+   */
+  describe('cleanup after the process is done', () => {
+    // Сравнение нестрогое: чужие таймеры прогона появляются и исчезают сами,
+    // а несобранный срок команды виден ростом — этого достаточно
+    it('drops the timeout timer instead of leaving it pending', async () => {
+      const before = pendingTimers();
+
+      await nodeScript('process.stdout.write("fast")', { timeoutMs: 60_000 });
+
+      expect(pendingTimers()).toBeLessThanOrEqual(before);
+    });
+
+    it('unsubscribes from the cancellation signal', async () => {
+      const controller = new AbortController();
+
+      await nodeScript('process.stdout.write("fast")', { signal: controller.signal });
+
+      expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    });
+
+    it('leaves nothing behind after several runs on one signal', async () => {
+      const controller = new AbortController();
+      const before = pendingTimers();
+
+      for (let run = 0; run < 3; run++) {
+        await nodeScript('process.stdout.write("fast")', {
+          signal: controller.signal,
+          timeoutMs: 60_000,
+        });
+      }
+
+      expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+      expect(pendingTimers()).toBeLessThanOrEqual(before);
     });
   });
 
@@ -81,14 +130,27 @@ describe('runProcess', () => {
       expect(result.signalCode).toBe('SIGTERM');
     });
 
+    /**
+     * Ответ на непроизошедший запуск описывается целиком: «отменено» здесь —
+     * единственная правда, а обрезка, таймаут и код возврата придуманы были бы
+     * на пустом месте.
+     */
     it('does not start a process when the signal is already aborted', async () => {
       const controller = new AbortController();
       controller.abort();
       const result = await nodeScript('process.stdout.write("should not run")', {
         signal: controller.signal,
       });
-      expect(result.aborted).toBe(true);
-      expect(result.stdout).toBe('');
+      expect(result).toEqual({
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+        signalCode: null,
+        timedOut: false,
+        aborted: true,
+        truncated: false,
+        durationMs: 0,
+      });
     });
   });
 
@@ -104,6 +166,22 @@ describe('runProcess', () => {
       expect(result.exitCode).toBe(0);
     });
 
+    /**
+     * Ввод не всегда доходит до конца: команда может закрыть его и выйти,
+     * пока данные ещё пишутся. Такая ошибка приходит на поток отдельным
+     * событием, и без своего обработчика она уносит весь процесс сервера —
+     * не одну команду, а сессию со всеми профилями.
+     */
+    it('survives a write into an input the command has already closed', async () => {
+      const result = await nodeScript('process.exit(0)', {
+        stdin: 'x'.repeat(4_000_000),
+        timeoutMs: 10_000,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.spawnError).toBeUndefined();
+    });
+
     it('accepts a Buffer', async () => {
       const result = await nodeScript('process.stdin.pipe(process.stdout)', {
         stdin: Buffer.from('buffered'),
@@ -117,6 +195,8 @@ describe('runProcess', () => {
       const result = await runProcess({ file: 'definitely-not-a-real-binary-xyz', args: [] });
       expect(result.spawnError?.code).toBe('ENOENT');
       expect(result.exitCode).toBeNull();
+      // Вывода не было вовсе — обрезать было нечего, и говорить обратное нельзя
+      expect(result.truncated).toBe(false);
     });
   });
 
@@ -147,6 +227,21 @@ describe('runProcess', () => {
      * а не от пустого. Один-единственный кусок вывода этого не показывает —
      * при пустом буфере остаток равен всему лимиту.
      */
+    /**
+     * Буфер заполнен ровно, без остатка: сама по себе такая порция целая, и
+     * обрезкой становится только следующая. Пометку ставит вход в накопитель,
+     * а не подрезка куска, — на границе это два разных места.
+     */
+    it('flags output that arrives after the buffer is exactly full', async () => {
+      const script =
+        'process.stdout.write("a".repeat(100));' +
+        'setTimeout(() => process.stdout.write("b".repeat(50)), 50)';
+      const result = await nodeScript(script, { maxOutputBytes: 100, timeoutMs: 5000 });
+
+      expect(result.stdout).toBe('a'.repeat(100));
+      expect(result.truncated).toBe(true);
+    });
+
     it('counts the remaining room against what is already buffered', async () => {
       const script =
         'process.stdout.write("a".repeat(60));' +

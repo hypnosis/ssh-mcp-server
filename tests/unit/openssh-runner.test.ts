@@ -263,21 +263,40 @@ describe('OpenSshRunner closeMaster', () => {
 });
 
 describe('OpenSshRunner multiplexing', () => {
-  it('falls back to a direct connection when the server refuses a multiplexed session', async () => {
-    runProcessMock
-      .mockResolvedValueOnce(
-        ok({
-          exitCode: SSH_FAILURE_EXIT_CODE,
-          stderr: 'mux_client_request_session: session request failed',
-        })
-      )
-      .mockResolvedValueOnce(ok({ stdout: 'recovered' }));
+  // Отказ в сессии клиент лечит сам: открывает отдельное соединение и
+  // возвращает нулевой код, оставляя жалобу в stderr. Своего отката здесь нет
+  // и быть не должно — повторять нечего, команда уже выполнена
+  it('keeps the client own retry to itself and returns the command output alone', async () => {
+    runProcessMock.mockResolvedValue(
+      ok({
+        stdout: 'up 3 days',
+        stderr:
+          'mux_client_request_session: session request failed: Session open refused by peer\r\n' +
+          'ControlSocket /tmp/ctl/s-abc already exists, disabling multiplexing\r\n',
+      })
+    );
 
     const result = await makeRunner().exec('uptime', { remoteTimeout: false });
 
-    expect(result.stdout).toBe('recovered');
-    expect(hasControlMaster(0)).toBe(true);
-    expect(hasControlMaster(1)).toBe(false);
+    expect(result.stdout).toBe('up 3 days');
+    expect(result.stderr.trim()).toBe('');
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the command own diagnostics next to a multiplexing notice', async () => {
+    runProcessMock.mockResolvedValue(
+      ok({
+        exitCode: 1,
+        stderr:
+          'mux_client_request_session: session request failed: Session open refused by peer\r\n' +
+          'uptime: command not found\r\n',
+      })
+    );
+
+    const result = await makeRunner().exec('uptime', { remoteTimeout: false });
+
+    expect(result.stderr).toContain('uptime: command not found');
+    expect(result.stderr).not.toContain('mux_client_request_session');
   });
 
   it('omits control options entirely when multiplexing is unavailable', async () => {

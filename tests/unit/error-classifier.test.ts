@@ -5,7 +5,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { classifySpawnOutcome, SSH_FAILURE_EXIT_CODE } from '../../src/runner/error-classifier.js';
+import {
+  classifySpawnOutcome,
+  stripMuxNotices,
+  SSH_FAILURE_EXIT_CODE,
+} from '../../src/runner/error-classifier.js';
 import {
   SSHAuthError,
   SSHBinaryMissingError,
@@ -140,9 +144,47 @@ describe('error-classifier', () => {
       expect(error).toBeInstanceOf(SSHMuxLimitError);
     });
 
-    it('is not retried by the generic policy — it needs the no-mux fallback instead', () => {
+    // Отдельное соединение вместо отказанной сессии клиент открывает сам, так
+    // что до кода 255 доходит только вместе с отказом самого соединения — и
+    // назвать причиной лимит сессий значило бы подменить диагноз
+    it('names the dropped connection, not the session limit, when both are in the output', () => {
+      const error = classifyFailure(
+        'mux_client_request_session: session request failed: Session open refused by peer\n' +
+        'Connection closed by 1.2.3.4 port 22'
+      );
+
+      expect(error).toBeInstanceOf(SSHTransportError);
+      expect(error?.message).toMatch(/fail2ban/);
+    });
+
+    it('is not retried by the generic policy', () => {
       const error = classifyFailure('mux_client_request_session: session request failed');
       expect(isRetryable(error, true)).toBe(false);
+    });
+  });
+
+  describe('stripMuxNotices', () => {
+    it('drops the notices the client prints about its own control connection', () => {
+      const cleaned = stripMuxNotices(
+        'mux_client_request_session: session request failed: Session open refused by peer\r\n' +
+        'ControlSocket /tmp/ctl/s-abc already exists, disabling multiplexing\r\n'
+      );
+
+      expect(cleaned.trim()).toBe('');
+    });
+
+    it('keeps the output of the command itself, in order', () => {
+      const cleaned = stripMuxNotices(
+        'first line\nmux_client_request_session: session request failed\nsecond line\n'
+      );
+
+      expect(cleaned).toBe('first line\nsecond line\n');
+    });
+
+    it('leaves a line that only mentions multiplexing alone', () => {
+      const text = 'grep: mux_client_request_session: no such file\n';
+
+      expect(stripMuxNotices(text)).toBe(text);
     });
   });
 

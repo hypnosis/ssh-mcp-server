@@ -10,10 +10,9 @@
 import { createHash } from 'crypto';
 import { logger } from '../utils/logger.js';
 import { buildRunnerEnv, ensureAskpassScript } from './askpass.js';
-import { classifySpawnOutcome } from './error-classifier.js';
+import { classifySpawnOutcome, stripMuxNotices } from './error-classifier.js';
 import {
   SSHCancelledError,
-  SSHMuxLimitError,
   SSHRunnerError,
   SSHTimeoutError,
   isRetryable,
@@ -104,13 +103,6 @@ export class OpenSshRunner implements CommandRunner {
         return await this.execGuarded(command, options, { disableMux: false });
       } catch (error) {
         lastError = error;
-
-        // Сессия не открылась — команда точно не выполнялась, поэтому
-        // повтор безопасен даже для мутирующих операций
-        if (error instanceof SSHMuxLimitError) {
-          logger.warn(`[Runner] ${this.destination}: server refused a multiplexed session, retrying without it`);
-          return await this.execGuarded(command, options, { disableMux: true });
-        }
 
         if (isRetryable(error, idempotent) && attempt < maxAttempts) {
           logger.warn(
@@ -309,7 +301,10 @@ export class OpenSshRunner implements CommandRunner {
     // удалённой сессии его нет), так что совпадение всегда случайное, а порча
     // молчаливая: прочитанный так конфиг легко записать обратно уже сломанным.
     const stdout = outcome.stdout;
-    const stderr = outcome.stderr;
+    // Классификатору нужен нетронутый вывод: жалоба на мультиплексирование
+    // вместе с разрывом соединения — часть картины сбоя
+    const rawStderr = outcome.stderr;
+    const stderr = stripMuxNotices(rawStderr);
 
     if (outcome.aborted) {
       throw new SSHCancelledError(`Command cancelled on ${this.destination}`, {
@@ -331,7 +326,7 @@ export class OpenSshRunner implements CommandRunner {
     }
 
     const transportError = classifySpawnOutcome(
-      { spawnError: outcome.spawnError, exitCode: outcome.exitCode, stderr },
+      { spawnError: outcome.spawnError, exitCode: outcome.exitCode, stderr: rawStderr },
       { host: this.config.host, port: this.config.port ?? 22 }
     );
 

@@ -65,6 +65,27 @@ const MUX_LIMIT_PATTERNS = [
 ];
 
 /**
+ * Служебная переписка клиента с собственным управляющим соединением.
+ *
+ * Отказ в сессии клиент лечит сам — открывает отдельное соединение и
+ * возвращает нулевой код (замерено на клиентах 9.2, 9.7 и 10.2). Но жалобу он
+ * при этом печатает, и она попадает в stderr команды: тот, кто судит об успехе
+ * по непустому stderr, увидит ошибку там, где её не было.
+ */
+const MUX_NOTICE_PATTERNS = [
+  /^mux_client_\w+: /,
+  /^ControlSocket .+ already exists, disabling multiplexing$/,
+];
+
+/** Убрать служебные строки мультиплексирования из вывода команды */
+export function stripMuxNotices(stderr: string): string {
+  return stderr
+    .split('\n')
+    .filter((line) => !matchesAny(line.replace(/\r$/, ''), MUX_NOTICE_PATTERNS))
+    .join('\n');
+}
+
+/**
  * Признак того, что сервер разорвал уже установленное соединение.
  * Самая частая причина — защитный механизм вроде fail2ban, и без подсказки
  * такую ошибку легко принять за сетевую неполадку.
@@ -131,14 +152,6 @@ export function classifySpawnOutcome(
     );
   }
 
-  if (matchesAny(stderr, MUX_LIMIT_PATTERNS)) {
-    return new SSHMuxLimitError(
-      `Server refused an additional multiplexed session on ${target} ` +
-      `(MaxSessions reached). Details: ${detail}`,
-      { exitCode, stderr }
-    );
-  }
-
   if (matchesAny(stderr, TRANSPORT_PATTERNS)) {
     const hint = matchesAny(stderr, SERVER_DROPPED_PATTERNS)
       ? ' The server accepted the TCP connection and then dropped it — ' +
@@ -146,6 +159,17 @@ export function classifySpawnOutcome(
       : '';
     return new SSHTransportError(
       `Cannot reach ${target}. Details: ${detail}${hint}`,
+      { exitCode, stderr }
+    );
+  }
+
+  // Ниже транспортных проверок намеренно: до кода 255 дело доходит, только
+  // когда клиенту не удалось и отдельное соединение, а причина отказа там —
+  // не лимит сессий. Стой этот разбор выше, диагноз подменялся бы.
+  if (matchesAny(stderr, MUX_LIMIT_PATTERNS)) {
+    return new SSHMuxLimitError(
+      `Server refused an additional multiplexed session on ${target} ` +
+      `(MaxSessions reached). Details: ${detail}`,
       { exitCode, stderr }
     );
   }

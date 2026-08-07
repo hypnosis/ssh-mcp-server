@@ -1,9 +1,10 @@
 /**
- * Имя файла на сервере остаётся именем, а не становится командой.
+ * Значение на сервере остаётся значением, а не становится командой: имя файла —
+ * именем, строка поиска — строкой поиска.
  *
  * Значение уезжает в строку, которую разбирает shell сервера, и защита у него
- * одна — одинарные кавычки. Пока правило было записано тремя способами в трёх
- * местах, спрашивать «работает ли оно» приходилось про каждое место отдельно.
+ * одна — одинарные кавычки. Пока правило было записано своими словами в каждом
+ * месте, спрашивать «работает ли оно» приходилось про каждое место отдельно.
  *
  * Проверяется последствие на сервере: сколько файлов появилось, что в них лежит
  * и не выполнилось ли по дороге то, чего никто не заказывал. Текст ответа
@@ -48,6 +49,7 @@ process.env.SSH_PROFILES_FILE = profilesPath;
 process.env.SSH_MCP_CONTROL_DIR ??= LAB_CONTROL_DIR;
 
 const { FileTools } = await import('../../src/tools/file-tools.js');
+const { LogTools } = await import('../../src/tools/log-tools.js');
 const { SSHExecutor } = await import('../../src/managers/ssh-executor.js');
 const { closeAllRunners } = await import('../../src/runner/openssh-runner.js');
 
@@ -129,7 +131,7 @@ if (unavailable && LAB_REQUIRED) {
       });
 
       afterAll(async () => {
-        await asRoot(`rm -rf ${openDir} ${guardedDir} ${marker}`).catch(() => undefined);
+        await asRoot(`rm -rf ${openDir} ${guardedDir} ${marker}*`).catch(() => undefined);
         await closeAllRunners();
       });
 
@@ -192,6 +194,79 @@ if (unavailable && LAB_REQUIRED) {
         });
 
         expect((await asRoot(`test -e ${marker} && echo YES || echo NO`)).trim()).toBe('NO');
+      });
+
+      /**
+       * Строка поиска по журналу защищена тем же способом, но доказательство у
+       * неё двойное: значение обязано доехать до `grep` целиком — и найтись, и
+       * не выполниться. Проверка только на маркер прошла бы и там, где строка
+       * не доехала вовсе.
+       */
+      describe('строка поиска по журналу', () => {
+        const logs = new LogTools();
+        const openLog = `${openDir}/search.log`;
+        const guardedLog = `${guardedDir}/search.log`;
+
+        /** Проба каждой ветке своя: общий след первой сорвал бы остальные заодно */
+        const CASES = ['single', 'sudo', 'batch'] as const;
+        const markerFor = (name: string) => `${marker}-${name}`;
+        /** Для shell — готовая команда, для grep — обычный образец */
+        const queryFor = (name: string) => `x' ; touch ${markerFor(name)} ; echo 'y`;
+        /** Строка журнала узнаётся по хвосту, не по самому образцу */
+        const lineFor = (name: string) => `boot ${queryFor(name)} tag-${name}`;
+
+        const search = async (args: Record<string, unknown>): Promise<string> =>
+          JSON.stringify(
+            await logs.handleCall({
+              params: { name: 'ssh_log_search', arguments: args },
+            } as never)
+          );
+
+        const markerState = async (name: string): Promise<string> =>
+          (await asRoot(`test -e ${markerFor(name)} && echo YES || echo NO`)).trim();
+
+        beforeAll(async () => {
+          const lines = CASES.map((name) => `'${lineFor(name).replace(/'/g, "'\\''")}'`).join(' ');
+          await asRoot(
+            `rm -f ${CASES.map(markerFor).join(' ')} && printf '%s\\n' ${lines} > ${openLog} && ` +
+              `cp ${openLog} ${guardedLog} && chmod 600 ${guardedLog} && chmod 644 ${openLog}`
+          );
+        });
+
+        it('находит строку, которая для shell выглядит готовой командой', async () => {
+          const answer = await search({
+            profile: server.name,
+            path: openLog,
+            query: queryFor('single'),
+          });
+
+          expect(answer).toContain('tag-single');
+          expect(await markerState('single')).toBe('NO');
+        });
+
+        it('под sudo, где кавычки накладываются дважды, ищет так же', async () => {
+          const answer = await search({
+            profile: server.name,
+            path: guardedLog,
+            query: queryFor('sudo'),
+            sudo: true,
+          });
+
+          expect(answer).toContain('tag-sudo');
+          expect(await markerState('sudo')).toBe('NO');
+        });
+
+        it('в пачке журналов ищет так же', async () => {
+          const answer = await search({
+            profile: server.name,
+            path: [openLog, guardedLog],
+            query: queryFor('batch'),
+            sudo: true,
+          });
+
+          expect(answer).toContain('tag-batch');
+          expect(await markerState('batch')).toBe('NO');
+        });
       });
     });
   }

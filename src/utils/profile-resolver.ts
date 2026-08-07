@@ -24,7 +24,9 @@
 
 import { homedir } from 'os';
 import { watch, FSWatcher } from 'fs';
-import { logger } from './logger.js';
+import { forgetLoggedSecrets, logger } from './logger.js';
+import { resetRunnerCache } from '../runner/openssh-runner.js';
+import { resetPassportCache } from '../runner/passport.js';
 import type { SSHConfig } from './ssh-config.js';
 import { loadProfilesFile, type SSHProfileData } from './profiles-file.js';
 
@@ -140,11 +142,30 @@ function getProfiles(): ProfilesConfig {
 }
 
 /**
- * Force reload profiles (manual)
+ * Забыть всё, что выведено из прежних профилей.
+ *
+ * Секреты для маскировки, транспорты и паспорта серверов лежат по ключу
+ * назначения и переживают перезапись файла: удалённый профиль остаётся в
+ * памяти вместе с паролем, а сервер, успевший измениться, отвечает по старому
+ * паспорту. Соединения при этом не закрываются — управляющий сокет общий для
+ * машины, и следующая команда садится на него же.
+ *
+ * Зовётся там, где файл действительно мог измениться, а не при каждом
+ * истечении срока кэша: иначе паспорт пересниматься раз в минуту.
+ */
+function forgetDerivedState(): void {
+  forgetLoggedSecrets();
+  resetRunnerCache();
+  resetPassportCache();
+}
+
+/**
+ * Перечитать профили с диска, забыв всё выведённое из прежних
  */
 export function reloadProfiles(): void {
-  logger.info('[Profiles] Manual reload requested');
+  logger.info('[Profiles] Reloading profiles');
   PROFILES_CACHE = null;
+  forgetDerivedState();
   getProfiles(); // Load immediately
 }
 
@@ -168,11 +189,10 @@ function watchProfilesFile(filePath: string): void {
       if (eventType === 'change') {
         logger.info(`[Profiles] SSH_PROFILES_FILE changed, reloading...`);
         
-        // Invalidate cache
-        PROFILES_CACHE = null;
-        
         try {
-          getProfiles(); // Reload
+          // Через ту же дверь, что и ручной вызов: производное состояние
+          // обязано забываться и здесь, а двумя дорогами оно разъезжается
+          reloadProfiles();
           logger.info('[Profiles] ✅ Profiles reloaded successfully');
         } catch (error: any) {
           logger.error(`[Profiles] ❌ Failed to reload profiles: ${error.message}`);

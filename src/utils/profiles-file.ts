@@ -19,6 +19,11 @@ import type { PathSecurityConfig } from './path-validator.js';
  * Проверяется форма, а не содержимое: список путей обязан быть списком строк,
  * иначе валидатор получит мусор и пропустит всё подряд — то есть защита будет
  * числиться включённой, ничего не запрещая.
+ *
+ * Правило обязано быть абсолютным. Валидатор сравнивает его с уже раскрытым
+ * путём, поэтому `~/.ssh` или `logs` не совпадут ни с чем; подставить сюда
+ * чужой домашний или рабочий каталог — то же угадывание, от которого отказался
+ * сам валидатор.
  */
 function describePathSecurityProblem(value: unknown): string | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -32,6 +37,12 @@ function describePathSecurityProblem(value: unknown): string | null {
     if (list === undefined) continue;
     if (!Array.isArray(list) || list.some((item) => typeof item !== 'string' || !item.trim())) {
       return `${key} must be a list of non-empty strings`;
+    }
+
+    const relative = (list as string[]).find((item) => !item.startsWith('/'));
+    if (relative !== undefined) {
+      return `${key} rule "${relative}" must be an absolute path starting with "/": ` +
+        'rules are compared to resolved paths, so "~" and relative prefixes never match';
     }
   }
 
@@ -315,10 +326,6 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       }
     }
 
-    // Если дошли сюда - есть хотя бы один валидный профиль
-    // errors могут содержать только некритичные ошибки валидации структуры (которые мы уже обработали)
-    // Возвращаем config с пустым массивом errors
-
     logger.info(`[Profiles File] ✅ Loaded ${Object.keys(profiles).length} SSH profiles from ${resolvedPath}`);
     if (config.default) {
       logger.info(`[Profiles File] Default SSH profile: "${config.default}"`);
@@ -327,7 +334,9 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       logger.info(`[Profiles File] Skipped ${skippedCount} profiles (not suitable for SSH)`);
     }
 
-    return { config, errors: [] };
+    // Ошибки испорченных профилей едут наверх и при уцелевших соседях: иначе
+    // профиль исчезает молча, а default съезжает на другой сервер
+    return { config, errors };
   } catch (error: any) {
     if (error.name === 'SyntaxError') {
       errors.push(`Invalid JSON in SSH profiles file: ${error.message}`);

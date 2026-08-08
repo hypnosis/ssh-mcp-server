@@ -296,15 +296,17 @@ export function buildRemoteSpec(host: string, remotePath: string): string {
 /**
  * Локальный путь для scp.
  *
- * Путь, содержащий двоеточие до первого слэша, scp примет за удалённый —
- * префикс "./" снимает двусмысленность.
+ * Путь, содержащий двоеточие до первого слэша, scp примет за удалённый, а
+ * путь, начинающийся с дефиса, — за опцию. Префикс "./" снимает обе
+ * двусмысленности.
  */
 export function normalizeLocalSpec(localPath: string): string {
   const firstSlash = localPath.indexOf('/');
   const firstColon = localPath.indexOf(':');
   const colonLooksRemote = firstColon !== -1 && (firstSlash === -1 || firstColon < firstSlash);
+  const looksLikeOption = localPath.startsWith('-');
 
-  if (colonLooksRemote && !localPath.startsWith('/') && !localPath.startsWith('./')) {
+  if ((colonLooksRemote || looksLikeOption) && !localPath.startsWith('/') && !localPath.startsWith('./')) {
     return `./${localPath}`;
   }
   return localPath;

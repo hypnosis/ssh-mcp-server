@@ -13,16 +13,17 @@ import { loadProfilesFile } from '../../src/utils/profiles-file.js';
 import { reloadProfiles, resolveSSHConfig } from '../../src/utils/profile-resolver.js';
 import { buildScpArgs, buildSshArgs, type SshCapabilities } from '../../src/runner/ssh-args.js';
 import { buildRunnerEnv, SECRET_ENV_VAR } from '../../src/runner/askpass.js';
+import { createPathValidator } from '../../src/utils/path-validator.js';
 import type { SSHConfig } from '../../src/utils/ssh-config.js';
 
 const tempDirs: string[] = [];
 
 /** Записать файл профилей и вернуть путь к нему */
-function writeProfiles(profiles: Record<string, unknown>): string {
+function writeProfiles(profiles: Record<string, unknown>, defaultProfile = 'production'): string {
   const dir = mkdtempSync(join(tmpdir(), 'ssh-mcp-profiles-'));
   tempDirs.push(dir);
   const path = join(dir, 'profiles.json');
-  writeFileSync(path, JSON.stringify({ default: 'production', profiles }), 'utf8');
+  writeFileSync(path, JSON.stringify({ default: defaultProfile, profiles }), 'utf8');
   return path;
 }
 
@@ -170,6 +171,12 @@ describe('profiles file: ограничения на пути', () => {
     ['число в списке путей', { allowedPaths: [42] }],
     ['нечисловая длина пути', { maxPathLength: 'много' }],
     ['нелогическое allowTraversal', { allowTraversal: 'no' }],
+    ['тильда в запрете', { deniedPaths: ['~/.ssh'] }],
+    ['тильда в разрешении', { allowedPaths: ['~/data'] }],
+    ['чужой дом в запрете', { deniedPaths: ['~deploy/.ssh'] }],
+    ['относительный запрет', { deniedPaths: ['logs'] }],
+    ['относительное разрешение', { allowedPaths: ['./data'] }],
+    ['пробел перед правилом', { deniedPaths: [' /root'] }],
   ])('испорченные правила (%s) не проходят молча', (_name, pathSecurity) => {
     const path = writeProfiles({
       production: { host: 'example.com', username: 'deploy', pathSecurity },
@@ -182,6 +189,46 @@ describe('profiles file: ограничения на пути', () => {
   });
 
   /**
+   * Правило `~/.ssh` не совпало бы никогда: проверяемый путь приходит
+   * раскрытым, а дом сервера отсюда не виден. Отказ обязан назвать само
+   * правило — иначе человеку нечего исправлять в файле.
+   */
+  it('отказ по неабсолютному правилу называет правило и причину', () => {
+    const path = writeProfiles({
+      production: {
+        host: 'example.com',
+        username: 'deploy',
+        pathSecurity: { deniedPaths: ['/root', '~/.ssh'] },
+      },
+    });
+
+    const { errors } = loadProfilesFile(path);
+
+    expect(errors.join(' ')).toContain('~/.ssh');
+    expect(errors.join(' ')).toMatch(/deniedPaths/);
+    expect(errors.join(' ')).toMatch(/absolute/i);
+  });
+
+  // Правила в непричёсанном виде работали и работают: сужать нечего
+  it('абсолютные правила со сдвоенным слэшем и `.` грузятся', () => {
+    const path = writeProfiles({
+      production: {
+        host: 'example.com',
+        username: 'deploy',
+        pathSecurity: { deniedPaths: ['//root'], allowedPaths: ['/var/./www', '/var/log/'] },
+      },
+    });
+
+    const { config, errors } = loadProfilesFile(path);
+
+    expect(errors).toEqual([]);
+    expect(config?.profiles.production.pathSecurity).toEqual({
+      deniedPaths: ['//root'],
+      allowedPaths: ['/var/./www', '/var/log/'],
+    });
+  });
+
+  /**
    * Второе звено той же цепочки: сборка конфигурации из профиля. Здесь поле
    * терялось отдельно от загрузчика, поэтому проверяется весь путь целиком —
    * от файла до того объекта, у которого инструменты спрашивают правила.
@@ -190,6 +237,15 @@ describe('profiles file: ограничения на пути', () => {
     expect(configFromFile({ pathSecurity: { deniedPaths: ['/root'] } }).pathSecurity).toEqual({
       deniedPaths: ['/root'],
     });
+  });
+
+  // Последнее звено: тот валидатор, который спрашивают инструменты
+  it('запрет из файла доезжает до валидатора и срабатывает', () => {
+    const config = configFromFile({ pathSecurity: { deniedPaths: ['//root'] } });
+    const validator = createPathValidator(config);
+
+    expect(validator?.validate('/root/secret').valid).toBe(false);
+    expect(validator?.validate('/var/log/app.log').valid).toBe(true);
   });
 });
 
@@ -284,5 +340,68 @@ describe('profiles file: поля входа доезжают до трансп�
 
     expect(optionValue(buildSshArgs(config, CAPS, 'true'), 'BatchMode')).toBe('yes');
     expect(env[SECRET_ENV_VAR]).toBeUndefined();
+  });
+});
+
+/**
+ * Испорченный профиль рядом с исправным.
+ *
+ * Пока в файле остаётся хоть один пригодный профиль, ошибка соседнего не должна
+ * теряться: иначе испорченный исчезает молча, а `default` съезжает на другой
+ * сервер — и следующая команда без явного профиля уходит не туда.
+ */
+describe('profiles file: испорченный профиль рядом с исправным', () => {
+  /** Поле, порча которого признаётся ошибкой профиля, и след этой ошибки */
+  const brokenFields: Array<[string, Record<string, unknown>, RegExp]> = [
+    ['порт', { port: 70000 }, /invalid port/],
+    ['политика проверки ключа хоста', { strictHostKeyChecking: 'Yes' }, /strictHostKeyChecking/],
+    ['ограничения на пути', { pathSecurity: { deniedPaths: '/root' } }, /pathSecurity/],
+  ];
+
+  it.each(brokenFields)('ошибка видна, когда испорчен default (%s)', (_name, broken, trace) => {
+    const path = writeProfiles(
+      {
+        production: { host: 'example.com', username: 'deploy', ...broken },
+        staging: { host: 'staging.example.com', username: 'deploy' },
+      },
+      'production'
+    );
+
+    const { config, errors } = loadProfilesFile(path);
+
+    expect(errors.join(' ')).toMatch(trace);
+    expect(errors.join(' ')).toMatch(/production/);
+    expect(config?.profiles.production).toBeUndefined();
+  });
+
+  it.each(brokenFields)('ошибка видна, когда испорчен не default (%s)', (_name, broken, trace) => {
+    const path = writeProfiles(
+      {
+        production: { host: 'example.com', username: 'deploy' },
+        staging: { host: 'staging.example.com', username: 'deploy', ...broken },
+      },
+      'production'
+    );
+
+    const { config, errors } = loadProfilesFile(path);
+
+    expect(errors.join(' ')).toMatch(trace);
+    expect(errors.join(' ')).toMatch(/staging/);
+    expect(config?.profiles.staging).toBeUndefined();
+  });
+
+  it('исправный профиль остаётся пригодным, а не исчезает вместе с ошибкой', () => {
+    const path = writeProfiles(
+      {
+        production: { host: 'example.com', username: 'deploy', port: 70000 },
+        staging: { host: 'staging.example.com', username: 'deploy', port: 2222 },
+      },
+      'production'
+    );
+
+    const { config, errors } = loadProfilesFile(path);
+
+    expect(errors.length).toBeGreaterThan(0);
+    expect(config?.profiles.staging?.port).toBe(2222);
   });
 });

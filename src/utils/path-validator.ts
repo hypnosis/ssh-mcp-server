@@ -3,6 +3,8 @@
  * Optional security layer for validating file paths against whitelist/blacklist rules
  */
 
+import { posix } from 'path';
+
 /**
  * Path security configuration
  * Can be specified per SSH profile for additional security
@@ -61,6 +63,17 @@ export function isCanonical(path: string): boolean {
 }
 
 /**
+ * Каталог из правила в том же виде, в каком приходит проверяемый путь:
+ * без `.`, `..` и сдвоенных слэшей.
+ *
+ * Домашний каталог не подставляется — правило обязано быть абсолютным, это
+ * проверяет загрузчик профилей.
+ */
+function normalizeRule(directory: string): string {
+  return posix.normalize(directory);
+}
+
+/**
  * Лежит ли путь внутри каталога.
  *
  * Сравнение идёт по границе имени, иначе правило цепляет соседей: запрет
@@ -89,8 +102,15 @@ export function isUnder(path: string, directory: string): boolean {
  *   }
  */
 export class PathValidator {
-  constructor(private config?: PathSecurityConfig) {}
-  
+  /** Правила сравнения, приведённые к виду проверяемого пути */
+  private readonly deniedPaths: string[];
+  private readonly allowedPaths: string[];
+
+  constructor(private config?: PathSecurityConfig) {
+    this.deniedPaths = (config?.deniedPaths ?? []).map(normalizeRule);
+    this.allowedPaths = (config?.allowedPaths ?? []).map(normalizeRule);
+  }
+
   /**
    * Validate file path against security rules
    * 
@@ -161,7 +181,7 @@ export class PathValidator {
     }
 
     // 4. Check denied paths (blacklist) - takes priority
-    for (const denied of this.config.deniedPaths ?? []) {
+    for (const denied of this.deniedPaths) {
       if (isUnder(path, denied)) {
         return {
           valid: false,
@@ -171,13 +191,13 @@ export class PathValidator {
     }
 
     // 5. Check allowed paths (whitelist)
-    if (this.config.allowedPaths && this.config.allowedPaths.length > 0) {
-      const isAllowed = this.config.allowedPaths.some(allowed => isUnder(path, allowed));
+    if (this.allowedPaths.length > 0) {
+      const isAllowed = this.allowedPaths.some(allowed => isUnder(path, allowed));
 
       if (!isAllowed) {
         return {
           valid: false,
-          error: `Path not in allowed list. Allowed: ${this.config.allowedPaths.join(', ')}`
+          error: `Path not in allowed list. Allowed: ${this.allowedPaths.join(', ')}`
         };
       }
     }
@@ -187,9 +207,7 @@ export class PathValidator {
 
   /** Есть ли правила, которые сравнивают путь с каталогами */
   private hasRules(): boolean {
-    return (
-      (this.config?.deniedPaths?.length ?? 0) > 0 || (this.config?.allowedPaths?.length ?? 0) > 0
-    );
+    return this.deniedPaths.length > 0 || this.allowedPaths.length > 0;
   }
   
   /**

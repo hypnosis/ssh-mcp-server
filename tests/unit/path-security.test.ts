@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { PathValidator, PathSecurityConfig } from '../../src/utils/path-validator.js';
+import { PathValidator, PathSecurityConfig, isUnder } from '../../src/utils/path-validator.js';
 
 describe('PathValidator', () => {
   describe('Basic validation', () => {
@@ -289,13 +289,86 @@ describe('PathValidator', () => {
       expect(validator.validate('/rootkit/x').valid).toBe(true);
     });
 
-    it('правило `/` накрывает всё', () => {
+    // Корень — единственное правило, у которого хвостовой слэш и есть всё имя:
+    // снять его нельзя, иначе сравнение пойдёт с пустой строкой
+    it('запрет `/` накрывает всё', () => {
       const validator = new PathValidator({ deniedPaths: ['/'] });
 
       expect(validator.validate('/tmp/x').valid).toBe(false);
+      expect(validator.validate('/etc/passwd').valid).toBe(false);
+      expect(validator.validate('/home/deploy/x').valid).toBe(false);
+      expect(validator.validate('/').valid).toBe(false);
+    });
+
+    it('разрешение `/` пропускает всё', () => {
+      const validator = new PathValidator({ allowedPaths: ['/'] });
+
+      expect(validator.validate('/tmp/x').valid).toBe(true);
+      expect(validator.validate('/etc/passwd').valid).toBe(true);
+      expect(validator.validate('/home/deploy/x').valid).toBe(true);
+      expect(validator.validate('/').valid).toBe(true);
     });
   });
-  
+
+  // Проверяемый путь приходит канонический, а правило пишет человек: тот же
+  // каталог в профиле выглядит как `//root`, `/root/./keys`, `/var//log/`.
+  // Правило приводится к тому же виду тем же лексическим приёмом
+  describe('Правило приводится к каноническому виду', () => {
+    it('сдвоенный слэш в запрете не мешает ему сработать', () => {
+      const validator = new PathValidator({ deniedPaths: ['//root'] });
+
+      expect(validator.validate('/root/secret').valid).toBe(false);
+      expect(validator.validate('/rootkit/x').valid).toBe(true);
+    });
+
+    it('сдвоенный слэш в разрешении не превращает его в запрет всего', () => {
+      const validator = new PathValidator({ allowedPaths: ['//var//log'] });
+
+      expect(validator.validate('/var/log/app.log').valid).toBe(true);
+      expect(validator.validate('/etc/passwd').valid).toBe(false);
+    });
+
+    it('`.` внутри запрета сворачивается', () => {
+      const validator = new PathValidator({ deniedPaths: ['/root/./keys'] });
+
+      expect(validator.validate('/root/keys/id_rsa').valid).toBe(false);
+      expect(validator.validate('/root/other').valid).toBe(true);
+    });
+
+    it('`.` внутри разрешения сворачивается', () => {
+      const validator = new PathValidator({ allowedPaths: ['/var/./www'] });
+
+      expect(validator.validate('/var/www/index.html').valid).toBe(true);
+    });
+
+    it('хвостовой слэш в разрешении ничего не меняет', () => {
+      const validator = new PathValidator({ allowedPaths: ['/var/log/'] });
+
+      expect(validator.validate('/var/log/app.log').valid).toBe(true);
+      expect(validator.validate('/var/logs-of-someone-else/x').valid).toBe(false);
+    });
+
+    it('`//` и `/.` — тот же корень: запрещают всё', () => {
+      expect(new PathValidator({ deniedPaths: ['//'] }).validate('/etc/passwd').valid).toBe(false);
+      expect(new PathValidator({ deniedPaths: ['/.'] }).validate('/etc/passwd').valid).toBe(false);
+    });
+
+    it('`//` и `/.` — тот же корень: пропускают всё', () => {
+      expect(new PathValidator({ allowedPaths: ['//'] }).validate('/etc/passwd').valid).toBe(true);
+      expect(new PathValidator({ allowedPaths: ['/.'] }).validate('/etc/passwd').valid).toBe(true);
+    });
+
+    // Дом бывает и /root, и /home/deploy: подстановка была бы тем же угадыванием,
+    // из-за которого валидатор отказывается судить неканонический путь
+    it('домашний каталог за правило не додумывается', () => {
+      const denied = new PathValidator({ deniedPaths: ['~/.ssh'] });
+      const allowed = new PathValidator({ allowedPaths: ['~/data'] });
+
+      expect(denied.validate('/home/deploy/.ssh/id_rsa').valid).toBe(true);
+      expect(allowed.validate('/home/deploy/data/file.txt').valid).toBe(false);
+    });
+  });
+
   describe('Batch validation', () => {
     it('should validate multiple paths', () => {
       const config: PathSecurityConfig = {
@@ -327,6 +400,27 @@ describe('PathValidator', () => {
       expect(result.valid).toBe(false);
       expect(result.error).toContain('not in allowed list');
     });
+  });
+});
+
+/**
+ * Граница каталога сама по себе.
+ *
+ * Внутри валидатора `isUnder` видит только канонический путь, поэтому корневое
+ * правило проверяется здесь: у `/` хвостовой слэш — это всё имя, и снятие его
+ * превращает сравнение в «начинается с пустой строки», то есть в «да» для любой
+ * строки вообще.
+ */
+describe('isUnder: корневое правило', () => {
+  it('корень принимает абсолютный путь', () => {
+    expect(isUnder('/etc/passwd', '/')).toBe(true);
+    expect(isUnder('/', '/')).toBe(true);
+  });
+
+  it('корень не считает своим то, что каталогом не судится', () => {
+    expect(isUnder('relative/x', '/')).toBe(false);
+    expect(isUnder('~/secret', '/')).toBe(false);
+    expect(isUnder('', '/')).toBe(false);
   });
 });
 

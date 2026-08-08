@@ -50,7 +50,6 @@ function result(overrides: Partial<ExecResult> = {}): ExecResult {
     stdout: '',
     stderr: '',
     exitCode: 0,
-    timedOut: false,
     truncated: false,
     durationMs: 1,
     ...overrides,

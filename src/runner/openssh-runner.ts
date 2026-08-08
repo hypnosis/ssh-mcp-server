@@ -346,7 +346,6 @@ export class OpenSshRunner implements CommandRunner {
       stdout,
       stderr,
       exitCode: outcome.exitCode ?? -1,
-      timedOut: false,
       truncated: outcome.truncated,
       durationMs: outcome.durationMs,
     };

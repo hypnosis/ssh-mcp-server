@@ -27,8 +27,6 @@ export interface SpawnOutcome {
   spawnError?: NodeJS.ErrnoException;
   exitCode: number | null;
   stderr: string;
-  /** Процесс убит по нашему таймауту */
-  timedOut?: boolean;
 }
 
 const AUTH_PATTERNS = [

@@ -12,7 +12,14 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { idleWindowSec, listControlSockets } from '../runner/control-sockets.js';
 import { getRunner } from '../runner/get-runner.js';
-import { getAvailableProfiles, getDefaultProfile, reloadProfiles, resolveSSHConfig } from '../utils/profile-resolver.js';
+import {
+  getAvailableProfiles,
+  getBrokenProfiles,
+  getDefaultProfile,
+  reloadProfiles,
+  resolveSSHConfig,
+} from '../utils/profile-resolver.js';
+import { describeBrokenProfile } from '../utils/profiles-file.js';
 import { logger } from '../utils/logger.js';
 
 export class MonitoringTool {
@@ -259,16 +266,28 @@ export class MonitoringTool {
   private async listProfiles() {
     const profiles = getAvailableProfiles();
     const defaultProfile = getDefaultProfile();
-    
+    const broken = getBrokenProfiles();
+
     let output = '📋 Available SSH Profiles\n\n';
-    
+
     for (const profile of profiles) {
       const isDefault = profile === defaultProfile ? ' ⭐ (default)' : '';
       output += `• ${profile}${isDefault}\n`;
     }
-    
-    output += `\nTotal: ${profiles.length} profiles\n`;
-    
+
+    // Сломанные записи — отдельным списком: их нельзя перепутать с рабочими
+    // профилями, а причина отказа видна сразу, без похода в файл
+    if (broken.length > 0) {
+      output += `\n⚠️ Broken (fix in SSH_PROFILES_FILE):\n`;
+      for (const entry of broken) {
+        const isDefault = entry.name === defaultProfile ? ' (default)' : '';
+        output += `• ${entry.name}${isDefault} — ${describeBrokenProfile(entry)}\n`;
+      }
+    }
+
+    output += `\nTotal: ${profiles.length} profiles`;
+    output += broken.length > 0 ? `, ${broken.length} broken\n` : '\n';
+
     return {
       content: [{ type: 'text', text: output }]
     };

@@ -465,3 +465,11 @@ export function getDefaultProfile(): string {
   const PROFILES = getProfiles();
   return PROFILES.default;
 }
+
+/**
+ * Профили, отклонённые загрузчиком при последней загрузке файла
+ */
+export function getBrokenProfiles(): BrokenProfile[] {
+  const PROFILES = getProfiles();
+  return PROFILES.broken;
+}

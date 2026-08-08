@@ -7,8 +7,9 @@
  * - ssh_download — download a file or directory via SFTP (binary-safe).
  *
  * Heredoc / cat>file / base64-chunks are intentionally NOT used here.
- * For sudo writes into protected paths, the file is staged under /tmp
- * (sftp under user) and then `sudo install` moves it into place.
+ * For sudo writes into protected paths, the file travels to /tmp under the
+ * SSH user, is copied next to the target under sudo and takes the target
+ * path by rename.
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -134,7 +135,8 @@ export class TransferTool {
             atomic: {
               type: 'boolean',
               description:
-                'Write to a temp path next to the target and rename on success. Default: true.',
+                'Ignored: the upload always writes next to the target and renames into place. ' +
+                'Accepted so existing calls keep working.',
               default: true,
             },
             verify: {
@@ -146,13 +148,15 @@ export class TransferTool {
             sudo: {
               type: 'boolean',
               description:
-                'Stage in /tmp under the SSH user, then `sudo install -m <mode> src dst`. Default: false.',
+                'Transfer to /tmp under the SSH user, then copy next to the target and rename ' +
+                'into place under sudo. Default: false.',
               default: false,
             },
             owner: {
               type: 'string',
               description:
-                'When sudo=true, owner spec for `install -o <owner>` (e.g. "root:root").',
+                'When sudo=true, owner spec applied with `chown` before the file takes the ' +
+                'target path (e.g. "root:root").',
             },
             overwrite: {
               type: 'boolean',
@@ -276,7 +280,6 @@ export class TransferTool {
         target.path,
         {
           mode,
-          atomic: args.atomic !== false,
           verify: args.verify !== false,
           sudo: !!args.sudo,
           owner,
@@ -301,7 +304,6 @@ export class TransferTool {
       target.path,
       {
         mode,
-        atomic: args.atomic !== false,
         verify: args.verify !== false,
         sudo: !!args.sudo,
         owner,
@@ -349,8 +351,12 @@ export class TransferTool {
   }
 
   /**
-   * Single file upload with optional atomic rename and sha256 verify.
-   * For sudo path: stage in /tmp, sudo install into place.
+   * Загрузка одного файла.
+   *
+   * Оба пути, обычный и под sudo, идут через установщик: данные ложатся на
+   * временный путь рядом с целью и встают на место переименованием. Различие
+   * одно — чем наполняется этот временный путь: передачей напрямую или копией
+   * из /tmp, потому что сама передача под root не ходит.
    */
   private async uploadFile(
     sshConfig: any,
@@ -359,7 +365,6 @@ export class TransferTool {
     remotePath: string,
     opts: {
       mode?: string;
-      atomic: boolean;
       verify: boolean;
       sudo: boolean;
       owner?: string;
@@ -378,48 +383,24 @@ export class TransferTool {
       }
     }
 
-    // sudo path: SFTP into /tmp, then `sudo install` into place
-    if (opts.sudo) {
-      const stage = buildSudoStagingPath();
-      await this.putFile(sshConfig, localPath, stage, opts.timeoutMs);
-      try {
-        await this.sudoInstallFile(sshConfig, profileName, stage, remotePath, opts);
-      } finally {
-        // Best-effort cleanup of the stage file
-        await this.executor
-          .execute(sshConfig, `rm -f ${shellQuote(stage)}`, { profileName })
-          .catch(() => undefined);
-      }
-      const verdict = opts.verify
-        ? await this.verify(
-            sshConfig,
-            profileName,
-            [{ path: remotePath, hash: await localHashPromise! }],
-            'upload',
-            // читать установленный файл приходится под sudo
-            { sudo: true, timeoutMs: opts.timeoutMs }
-          )
-        : { verified: false };
-
-      return {
-        remote_path: remotePath,
-        bytes: localStats.size,
-        sha256: opts.verify ? await localHashPromise! : undefined,
-        ...verdict,
-        atomic: opts.atomic, // install copies, semantically atomic per file
-        sudo: true,
-      };
-    }
-
-    // Non-sudo path: через установщик — он же ловит случай «на месте цели
-    // каталог», где прежний `mv -f` молча клал файл внутрь и рапортовал успех
-    const ops = remotePathOps({ executor: this.executor, config: sshConfig, profileName });
+    // Установщик один на оба пути; под sudo от него отличается только то, чьими
+    // правами идут команды и как наполняется временный путь
+    const ops = remotePathOps({
+      executor: this.executor,
+      config: sshConfig,
+      profileName,
+      sudo: opts.sudo,
+    });
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
     const outcome = await install(ops, {
       finalPath: remotePath,
       kind: 'file',
       stage: async (staging) => {
+        if (opts.sudo) {
+          await this.stageUnderSudo(sshConfig, profileName, localPath, staging, opts.timeoutMs);
+          return;
+        }
         await this.putFile(sshConfig, localPath, staging, opts.timeoutMs);
       },
       verify: async (staging) => {
@@ -429,17 +410,13 @@ export class TransferTool {
           profileName,
           [{ path: staging, hash: await localHashPromise! }],
           'upload',
-          { timeoutMs: opts.timeoutMs }
+          // под sudo копия рядом с целью уже не наша — прочесть её иначе нечем
+          { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
         );
         return null;
       },
       finalize: async (staging) => {
-        if (!opts.mode) return;
-        await this.executor.executeChecked(
-          sshConfig,
-          `chmod ${opts.mode} -- ${shellQuote(staging)}`,
-          { profileName }
-        );
+        await this.applyOwnership(sshConfig, profileName, staging, opts);
       },
     });
 
@@ -449,7 +426,7 @@ export class TransferTool {
       sha256: opts.verify ? await localHashPromise! : undefined,
       ...verdict,
       atomic: true,
-      sudo: false,
+      sudo: opts.sudo,
       warnings: outcome.warnings,
     };
   }
@@ -472,37 +449,66 @@ export class TransferTool {
     await runner.upload(localPath, remotePath, { timeoutMs });
   }
 
-  private async sudoInstallFile(
+  /**
+   * Наполнить временный путь рядом с целью, когда писать туда можно только под root.
+   *
+   * Передача идёт от имени пользователя в /tmp, а рядом с целью файл появляется
+   * копией под sudo: сам транспорт правами root не располагает. Промежуточный
+   * файл убирается в любом исходе.
+   */
+  private async stageUnderSudo(
     sshConfig: any,
     profileName: string,
-    stage: string,
-    target: string,
-    opts: { mode?: string; owner?: string; timeoutMs?: number }
+    localPath: string,
+    staging: string,
+    timeoutMs?: number
   ): Promise<void> {
-    const flags: string[] = [];
-    if (opts.mode) flags.push(`-m ${opts.mode}`);
-    if (opts.owner) flags.push(`-o ${opts.owner.split(':')[0]}`);
-    if (opts.owner && opts.owner.includes(':')) {
-      flags.push(`-g ${opts.owner.split(':')[1]}`);
-    }
-    // ensure parent dir
-    const parent = posixPath.dirname(target);
-    if (parent && parent !== '/' && parent !== '.') {
+    const handoff = buildSudoStagingPath();
+    await this.putFile(sshConfig, localPath, handoff, timeoutMs);
+
+    try {
+      // Названный потолок доходит и сюда: копирование целого файла соразмерно
+      // его размеру
       await this.executor.executeChecked(
         sshConfig,
-        `mkdir -p ${shellQuote(parent)}`,
-        { profileName, sudo: true }
+        `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
+        { profileName, sudo: true, timeout: timeoutMs }
+      );
+    } finally {
+      await this.executor
+        .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, { profileName })
+        .catch(() => undefined);
+    }
+  }
+
+  /**
+   * Права и владелец на временном пути — до того, как он станет целью.
+   *
+   * Иначе на боевом пути возникает окно, в котором данные уже видны, а доступ
+   * к ним ещё чужой. Владелец — только для пути под sudo: под обычным
+   * пользователем `chown` откажет на чужом имени.
+   */
+  private async applyOwnership(
+    sshConfig: any,
+    profileName: string,
+    staging: string,
+    opts: { mode?: string; owner?: string; sudo: boolean }
+  ): Promise<void> {
+    if (opts.mode) {
+      await this.executor.executeChecked(
+        sshConfig,
+        `chmod ${opts.mode} -- ${shellQuote(staging)}`,
+        { profileName, sudo: opts.sudo }
       );
     }
-    // Названный таймаут доходит и сюда — `install` копирует файл целиком, его
-    // время задаёт размер. Но потолок здесь не снимается: это единственная
-    // запись под root, и брошенный без срока `install` дописывал бы боевой
-    // путь уже после того, как вызывающий получил ошибку и начался откат
-    await this.executor.executeChecked(
-      sshConfig,
-      `install ${flags.join(' ')} ${shellQuote(stage)} ${shellQuote(target)}`,
-      { profileName, sudo: true, timeout: opts.timeoutMs }
-    );
+
+    if (opts.owner && opts.sudo) {
+      await this.executor.executeChecked(
+        sshConfig,
+        `chown ${opts.owner} -- ${shellQuote(staging)}`,
+        { profileName, sudo: opts.sudo }
+      );
+    }
   }
 
   private async remoteExists(
@@ -570,7 +576,6 @@ export class TransferTool {
     remoteDir: string,
     opts: {
       mode?: string;
-      atomic: boolean;
       verify: boolean;
       sudo: boolean;
       owner?: string;

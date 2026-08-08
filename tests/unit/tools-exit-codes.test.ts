@@ -187,9 +187,9 @@ describe('передача файлов: неудачный шаг не выда
     rmSync(localDir, { recursive: true, force: true });
   });
 
-  it('sudo install без прав — это ошибка загрузки, а не «Upload OK»', async () => {
+  it('sudo-копия без прав — это ошибка загрузки, а не «Upload OK»', async () => {
     respondWith([
-      [/^install /, { exitCode: 1, stderr: "install: cannot create '/etc/app.conf': Permission denied" }],
+      [/^cp -- /, { exitCode: 1, stderr: "cp: cannot create '/etc/app.conf': Permission denied" }],
     ]);
 
     const response = await new TransferTool().handleCall(

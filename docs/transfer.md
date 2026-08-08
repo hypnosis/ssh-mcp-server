@@ -47,9 +47,9 @@ Key choices:
 
 - **`ssh2.Client.sftp()`** opens an SFTP subsystem on the **same** connection as the command channel — no second TCP handshake, no second auth round-trip. The pool exposes `getSftp(profileName, sshConfig)` to tools.
 - **`fastPut` / `fastGet`** ship file bytes in 32 KB chunks with a configurable `concurrency` (default 4). The library handles flow-control internally.
-- **Atomic rename**: write to `<remote_path>.tmp.<random>` next to the target, then `mv -f tmp final`. Rename within the same filesystem is atomic by POSIX guarantee. The temp file is co-located with the target on purpose — putting it in `/tmp` would cross filesystems on most servers and trigger `EXDEV`, forcing a non-atomic copy.
+- **Atomic rename**: write to a temp file next to the target — for `/etc/nginx/site.conf` that's `/etc/nginx/.upload-<rand>.site.conf` — then rename it onto the final path with `mv -T`, which replaces an existing file but refuses to land inside an existing directory instead of nesting into it. Rename within the same filesystem is atomic by POSIX guarantee. The temp file is co-located with the target on purpose — putting it in `/tmp` would cross filesystems on most servers and trigger `EXDEV`, forcing a non-atomic copy.
 - **sha256 verification**: hash the local file with `crypto.createHash('sha256')` (streamed, constant memory), then run `sha256sum <path>` on the remote (fallback to `openssl dgst -sha256 <path>` if `sha256sum` is missing — common on minimal Alpine images). If neither is present a warning is logged and `verified` returns `false`.
-- **sudo path**: SFTP under `root` is awkward to enable on hardened servers. Instead the file is staged in `/tmp/.ssh-mcp-upload-<rand>` as the SSH user, then moved into place with `sudo install -m <mode> -o <user> -g <group> stage target`. `install` is preferred over `cp + chmod + chown` because it sets mode/owner atomically and creates parent dirs as needed.
+- **sudo path**: SFTP under `root` is awkward to enable on hardened servers. Instead the file travels to `/tmp/.ssh-mcp-upload-<rand>` as the SSH user, is copied next to the target with `sudo cp`, gets its `chmod`/`chown` there, and takes the target path by rename. `install` is not used: it copies over the target, destroying the old content before the new one is written, so an interrupted write would leave a truncated file and no intact copy anywhere.
 
 ---
 
@@ -64,10 +64,10 @@ Key choices:
 | `remote_path` | string | **required** | Remote destination path |
 | `mode` | string | — | Octal file mode, e.g. `"644"` or `"755"` |
 | `recursive` | boolean | auto | Force directory mode. If omitted, auto-detected via local `stat()` |
-| `atomic` | boolean | `true` | Write to `<path>.tmp.<rand>`, then `mv` |
+| `atomic` | boolean | `true` | Ignored: the upload always writes to a temp path next to the target and renames it into place |
 | `verify` | boolean | `true` | Compare local and remote sha256 after upload |
-| `sudo` | boolean | `false` | Stage in `/tmp`, then `sudo install` into target |
-| `owner` | string | — | When `sudo=true`: `"user:group"` for `install -o/-g` |
+| `sudo` | boolean | `false` | Transfer to `/tmp`, copy next to the target under sudo, rename into place |
+| `owner` | string | — | When `sudo=true`: `"user:group"` for `chown` on the temp path |
 | `overwrite` | boolean | `true` | Allow overwriting an existing remote file |
 | `concurrency` | number | `4` | Parallel SFTP chunk concurrency for `fastPut` |
 
@@ -101,7 +101,7 @@ ssh_upload({
 })
 ```
 
-Flow: local sha256 → SFTP `fastPut` to `…tar.gz.tmp.<rand>` → remote sha256 → compare → `mv -f` → `chmod 644`.
+Flow: local sha256 → SFTP `fastPut` to `/srv/releases/.upload-<rand>.app-2026-05.tar.gz` → remote sha256 → compare → `mv -T` onto the target → `chmod 644`.
 
 ### Directory tree (recursive)
 
@@ -115,7 +115,7 @@ ssh_upload({
 })
 ```
 
-Flow: walk local tree (skipping symlinks) → upload each file into a staging dir `<remote>.tmp.<rand>/` → per-file sha256 verify → if all OK, `rm -rf old final` then `mv -f staging final`.
+Flow: walk local tree (skipping symlinks) → upload each file into a staging directory next to the target, e.g. `/var/www/app/.upload-<rand>.current/` → per-file sha256 verify → if the target doesn't exist yet, `mv -T` the staging directory straight onto it; if it does, `mv -T` the existing directory aside to `/var/www/app/.bak-<rand>.current` first, `mv -T` staging onto the target, then remove the set-aside copy.
 
 ### sudo write to /etc/nginx/conf.d/site.conf
 
@@ -130,7 +130,7 @@ ssh_upload({
 })
 ```
 
-Flow: SFTP into `/tmp/.ssh-mcp-upload-<rand>` as the SSH user → `sudo install -m 644 -o root -g root /tmp/… /etc/nginx/conf.d/site.conf` → `rm -f` the stage → optional sudo sha256 verify of the final path.
+Flow: transfer into `/tmp/.ssh-mcp-upload-<rand>` as the SSH user → `sudo cp` it to `/etc/nginx/conf.d/.upload-<rand>.site.conf` → `rm -f` the /tmp copy → optional sudo sha256 verify of the temp path → `sudo chmod 644` + `sudo chown root:root` on it → `sudo mv -T` onto `/etc/nginx/conf.d/site.conf`. The target keeps its previous content until that last rename.
 
 ### Download a binary back
 
@@ -177,7 +177,7 @@ The remote command first tries `sha256sum`. If absent (rare — most distros shi
 
 ### Atomic rename only within the same filesystem
 
-`mv` is atomic only when source and target share a mount point. Putting the temp file in `/tmp` while the target lives on a separate volume would trigger an `EXDEV` cross-device link error and silently degrade to a copy + delete (not atomic). For this reason the temp path is always created **next to** the target, e.g. `/srv/releases/app.tar.gz.tmp.<rand>`. If the target's parent directory is read-only for the SSH user, the upload fails fast — that's intentional.
+`mv` is atomic only when source and target share a mount point. Putting the temp file in `/tmp` while the target lives on a separate volume would trigger an `EXDEV` cross-device link error and silently degrade to a copy + delete (not atomic). For this reason the temp path is always created **next to** the target, e.g. `/srv/releases/.upload-<rand>.app.tar.gz`. If the target's parent directory is read-only for the SSH user, the upload fails fast — that's intentional.
 
 ### Symlinks are ignored on recursive upload
 

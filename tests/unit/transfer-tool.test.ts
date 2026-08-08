@@ -207,12 +207,22 @@ function answer(command: string): SSHExecuteResult {
     return ok();
   }
 
-  if (command.startsWith('install ')) {
+  if (command.startsWith('chown ')) {
+    // Владельца разбирает сама утилита: пустая группа — отказ, а не тихий успех
+    const spec = command.slice('chown '.length).split(' ')[0];
+    if (!/^[A-Za-z0-9_.][A-Za-z0-9_.-]*(:[A-Za-z0-9_.][A-Za-z0-9_.-]*)?$/.test(spec)) {
+      return fail(`chown: invalid spec: '${spec}'`);
+    }
+    if (!server.has(paths[0])) return fail(`chown: cannot access '${paths[0]}'`);
+    return ok();
+  }
+
+  if (command.startsWith('cp -- ')) {
     const [source, target] = paths;
     const node = server.get(source);
-    if (!node || node.kind !== 'file') return fail(`install: cannot stat '${source}'`);
-    if (!server.has(parentOf(target))) return fail(`install: cannot create '${target}'`);
-    server.set(target, node);
+    if (!node || node.kind !== 'file') return fail(`cp: cannot stat '${source}'`);
+    if (!server.has(parentOf(target))) return fail(`cp: cannot create '${target}'`);
+    server.set(target, { ...node });
     return ok();
   }
 
@@ -309,11 +319,12 @@ afterEach(() => {
 });
 
 /**
- * Запись под root идёт единственным путём: файл уезжает в /tmp от имени
- * пользователя, а на место его ставит `install` под sudo. Здесь собирается
- * строка команды по частям, и каждая часть уезжает отдельным словом.
+ * Запись под root идёт через установщик: файл уезжает в /tmp от имени
+ * пользователя, рядом с целью появляется копией уже под root и встаёт на место
+ * переименованием. Боевой путь не переписывается поверх ни на одном шаге —
+ * иначе обрыв посреди записи оставлял бы от прежнего файла огрызок.
  */
-describe('ssh_upload под sudo: сборка команды установки', () => {
+describe('ssh_upload под sudo: как данные встают на место', () => {
   const sudoUpload = (args: Record<string, unknown> = {}) =>
     textOf(
       call('ssh_upload', {
@@ -325,39 +336,121 @@ describe('ssh_upload под sudo: сборка команды установки
       })
     );
 
-  it('файл стадируется в /tmp, а на место его ставит install под sudo', async () => {
-    const text = await sudoUpload({ mode: '644', owner: 'root:root' });
+  /** Временный путь рядом с целью — тот, который назван в переименовании */
+  const staging = (): string => quotedPaths(commandFor(/^mv -T -- /)![0])[0];
 
-    const [stage] = uploadMock.mock.calls[0];
-    expect(uploadMock.mock.calls[0][1]).toMatch(/^\/tmp\/\.ssh-mcp-upload-[0-9a-f]{16}$/);
-    expect(stage).toBe(localFile);
+  it('передача идёт в /tmp, а рядом с целью появляется копия под sudo', async () => {
+    const text = await sudoUpload();
 
-    const staged = uploadMock.mock.calls[0][1] as string;
-    const install = commandFor(/^install /);
-    expect(install![0]).toBe(`install -m 644 -o root -g root '${staged}' '/etc/app.conf'`);
-    expect(install![1]).toMatchObject({ sudo: true });
+    expect(uploadMock.mock.calls[0][0]).toBe(localFile);
+    const handoff = uploadMock.mock.calls[0][1] as string;
+    expect(handoff).toMatch(/^\/tmp\/\.ssh-mcp-upload-[0-9a-f]{16}$/);
+
+    const copy = commandFor(/^cp -- /)!;
+    expect(copy[0]).toBe(`cp -- '${handoff}' '${staging()}'`);
+    expect(copy[1]).toMatchObject({ sudo: true });
     expect(text).toContain('Upload OK');
   });
 
-  it('владелец без группы не превращается в пустой -g', async () => {
-    await sudoUpload({ mode: '600', owner: 'nginx' });
-
-    expect(commandFor(/^install /)![0]).toMatch(/^install -m 600 -o nginx '/);
-  });
-
-  it('без прав и владельца install идёт без флагов', async () => {
+  it('на место файл встаёт переименованием, а не копией поверх цели', async () => {
     await sudoUpload();
 
-    const staged = uploadMock.mock.calls[0][1] as string;
-    expect(commandFor(/^install /)![0]).toBe(`install  '${staged}' '/etc/app.conf'`);
+    const rename = commandFor(/^mv -T -- /)!;
+    expect(rename[0]).toMatch(
+      /^mv -T -- '\/etc\/\.upload-[0-9a-f]+\.app\.conf' '\/etc\/app\.conf'$/
+    );
+    expect(rename[1]).toMatchObject({ sudo: true });
+    expect(commandFor(/^install /)).toBeUndefined();
+    expect(server.get('/etc/app.conf')).toEqual({ kind: 'file', content: 'run();' });
   });
 
-  it('родительский каталог создаётся под sudo, до установки', async () => {
+  it('обрыв записи не оставляет от прежнего файла огрызка', async () => {
+    putFile('/etc/app.conf', 'old config');
+    // `install` копирует поверх: цель обрезается до того, как записано новое.
+    // Сторож времени убивает команду на полпути — 124 у coreutils, 143 у BusyBox
+    executeMock.mockImplementation(async (_config: unknown, command: string) => {
+      if (/^install /.test(command)) {
+        server.set(quotedPaths(command)[1], { kind: 'file', content: '' });
+        return fail('terminated', 124);
+      }
+      if (/^cp -- /.test(command)) return fail('terminated', 124);
+      return answer(command);
+    });
+
+    const text = await sudoUpload();
+
+    expect(text).not.toContain('Upload OK');
+    expect(server.get('/etc/app.conf')).toEqual({ kind: 'file', content: 'old config' });
+  });
+
+  it('расхождение не доходит до боевого пути — там остаётся прежний файл', async () => {
+    putFile('/etc/app.conf', 'old config');
+    uploadMock.mockImplementation(async (_source: string, target: string) => {
+      putFile(target, 'corrupted');
+    });
+
+    const text = await sudoUpload({ verify: true });
+
+    expect(text).toContain('sha256 mismatch after upload');
+    expect(server.get('/etc/app.conf')).toEqual({ kind: 'file', content: 'old config' });
+  });
+
+  it('сверяется копия рядом с целью, под sudo и до замены', async () => {
+    const text = await sudoUpload({ verify: true });
+
+    const hashing = commandFor(/^sha256sum /)!;
+    expect(hashing[0]).toBe(`sha256sum -- '${staging()}'`);
+    // Читать копию рядом с целью иначе нечем: правами она уже не наша
+    expect(hashing[1]).toMatchObject({ sudo: true });
+    expect(text).toContain(`sha256: ${sha256Of('run();')} (verified)`);
+
+    const order = sentCommands().map(([command]) => command);
+    expect(order.findIndex((command) => command.startsWith('sha256sum'))).toBeLessThan(
+      order.findIndex((command) => command.startsWith('mv -T'))
+    );
+  });
+
+  it('сверять было нечем — файл всё равно встаёт на место, причина названа', async () => {
+    passportMock.mockResolvedValue(fullPassport({ sha256: 'none' }));
+
+    const text = await sudoUpload({ verify: true });
+
+    expect(text).toContain('sha256: skipped — neither sha256sum nor openssl');
+    expect(server.get('/etc/app.conf')).toEqual({ kind: 'file', content: 'run();' });
+  });
+
+  it('права и владелец применяются к копии до замены', async () => {
+    await sudoUpload({ mode: '644', owner: 'root:root' });
+
+    expect(commandFor(/^chmod /)![0]).toBe(`chmod 644 -- '${staging()}'`);
+    expect(commandFor(/^chmod /)![1]).toMatchObject({ sudo: true });
+    expect(commandFor(/^chown /)![0]).toBe(`chown root:root -- '${staging()}'`);
+    expect(commandFor(/^chown /)![1]).toMatchObject({ sudo: true });
+
+    const order = sentCommands().map(([command]) => command.split(' ')[0]);
+    expect(order.indexOf('chmod')).toBeLessThan(order.indexOf('mv'));
+    expect(order.indexOf('chown')).toBeLessThan(order.indexOf('mv'));
+  });
+
+  it('владелец без группы уезжает целым словом, без пустой группы', async () => {
+    await sudoUpload({ mode: '600', owner: 'nginx' });
+
+    expect(commandFor(/^chown /)![0]).toBe(`chown nginx -- '${staging()}'`);
+  });
+
+  it('без прав и владельца лишних команд на сервер не уходит', async () => {
+    await sudoUpload();
+
+    expect(commandFor(/^chmod /)).toBeUndefined();
+    expect(commandFor(/^chown /)).toBeUndefined();
+  });
+
+  it('родительский каталог создаётся под sudo, до передачи', async () => {
     await sudoUpload({ remote_path: '/etc/app/app.conf' });
 
     const order = sentCommands().map(([command]) => command.split(' ')[0]);
-    expect(order.indexOf('mkdir')).toBeLessThan(order.indexOf('install'));
-    expect(commandFor(/^mkdir /)![0]).toBe(`mkdir -p '/etc/app'`);
+    expect(order.indexOf('mkdir')).toBeLessThan(order.indexOf('cp'));
+    expect(commandFor(/^mkdir /)![0]).toBe(`mkdir -p -- '/etc/app'`);
     expect(commandFor(/^mkdir /)![1]).toMatchObject({ sudo: true });
   });
 
@@ -367,37 +460,35 @@ describe('ssh_upload под sudo: сборка команды установки
     expect(commandFor(/^mkdir /)).toBeUndefined();
   });
 
-  it('промежуточный файл убирается и тогда, когда установка не удалась', async () => {
-    refusals = [[/^install /, { stderr: 'install: Permission denied' }]];
-
-    const text = await sudoUpload();
-    const staged = uploadMock.mock.calls[0][1] as string;
-
-    expect(text).not.toContain('Upload OK');
-    expect(commandFor(/^rm -f /)![0]).toBe(`rm -f '${staged}'`);
-    expect(server.has(staged)).toBe(false);
-  });
-
-  it('сверяется установленный файл под sudo, а не оставшийся в /tmp', async () => {
-    const text = await sudoUpload({ verify: true });
-
-    const hashing = commandFor(/^sha256sum /);
-    expect(hashing![0]).toBe(`sha256sum -- '/etc/app.conf'`);
-    // Читать файл под root иначе нечем: правами он уже не наш
-    expect(hashing![1]).toMatchObject({ sudo: true });
-    expect(text).toContain(`sha256: ${sha256Of('run();')} (verified)`);
-  });
-
   it('относительная цель не заставляет создавать каталог «.»', async () => {
     await sudoUpload({ remote_path: 'app.conf' });
 
     expect(commandFor(/^mkdir /)).toBeUndefined();
   });
 
-  it('отказ от атомарности называется в ответе, а не подменяется на true', async () => {
+  it('промежуточный файл в /tmp убирается после удачной установки', async () => {
+    await sudoUpload();
+    const handoff = uploadMock.mock.calls[0][1] as string;
+
+    expect(commandFor(/^rm -f /)![0]).toBe(`rm -f -- '${handoff}'`);
+    expect(server.has(handoff)).toBe(false);
+  });
+
+  it('промежуточный файл убирается и тогда, когда копия не удалась', async () => {
+    refusals = [[/^cp -- /, { stderr: 'cp: Permission denied' }]];
+
+    const text = await sudoUpload();
+    const handoff = uploadMock.mock.calls[0][1] as string;
+
+    expect(text).not.toContain('Upload OK');
+    expect(commandFor(/^rm -f -- /)![0]).toBe(`rm -f -- '${handoff}'`);
+    expect(server.has(handoff)).toBe(false);
+  });
+
+  it('атомарность в ответе описывает то, что произошло, а не просьбу', async () => {
     const text = await sudoUpload({ atomic: false });
 
-    expect(text).toContain('  atomic: false');
+    expect(text).toContain('  atomic: true');
   });
 });
 

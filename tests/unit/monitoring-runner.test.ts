@@ -9,15 +9,27 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { RunnerStats } from '../../src/runner/types.js';
 
-const { statsMock, pingMock, closeMasterMock, getRunnerMock, listSocketsMock, resolveConfigMock } =
-  vi.hoisted(() => ({
-    statsMock: vi.fn(),
-    pingMock: vi.fn(),
-    closeMasterMock: vi.fn(),
-    getRunnerMock: vi.fn(),
-    listSocketsMock: vi.fn(),
-    resolveConfigMock: vi.fn(() => ({ host: 'example.com', username: 'deploy', port: 2222 })),
-  }));
+const {
+  statsMock,
+  pingMock,
+  closeMasterMock,
+  getRunnerMock,
+  listSocketsMock,
+  resolveConfigMock,
+  getAvailableProfilesMock,
+  getDefaultProfileMock,
+  getBrokenProfilesMock,
+} = vi.hoisted(() => ({
+  statsMock: vi.fn(),
+  pingMock: vi.fn(),
+  closeMasterMock: vi.fn(),
+  getRunnerMock: vi.fn(),
+  listSocketsMock: vi.fn(),
+  resolveConfigMock: vi.fn(() => ({ host: 'example.com', username: 'deploy', port: 2222 })),
+  getAvailableProfilesMock: vi.fn(() => ['production', 'staging']),
+  getDefaultProfileMock: vi.fn(() => 'production'),
+  getBrokenProfilesMock: vi.fn(() => []),
+}));
 
 vi.mock('../../src/runner/get-runner.js', () => ({ getRunner: getRunnerMock }));
 
@@ -28,8 +40,9 @@ vi.mock('../../src/runner/control-sockets.js', () => ({
 
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: resolveConfigMock,
-  getAvailableProfiles: () => ['production', 'staging'],
-  getDefaultProfile: () => 'production',
+  getAvailableProfiles: getAvailableProfilesMock,
+  getDefaultProfile: getDefaultProfileMock,
+  getBrokenProfiles: getBrokenProfilesMock,
   reloadProfiles: () => undefined,
 }));
 
@@ -62,7 +75,14 @@ beforeEach(() => {
   closeMasterMock.mockResolvedValue('closed');
   listSocketsMock.mockResolvedValue([]);
   getRunnerMock.mockResolvedValue({ stats: statsMock, ping: pingMock, closeMaster: closeMasterMock });
+  getAvailableProfilesMock.mockReturnValue(['production', 'staging']);
+  getDefaultProfileMock.mockReturnValue('production');
+  getBrokenProfilesMock.mockReturnValue([]);
 });
+
+function broken(overrides: Partial<{ name: string; field: string; value: string; reason: string }> = {}) {
+  return { name: 'staging', field: 'port', value: '70000', reason: 'port must be a number between 1 and 65535', ...overrides };
+}
 
 describe('ssh_monitor stats', () => {
   it('называет бэкенд и состояние общего соединения', async () => {
@@ -142,6 +162,49 @@ describe('ssh_monitor test', () => {
 
     expect(response.isError).toBe(true);
     expect(response.content[0].text as string).toContain('Authentication failed');
+  });
+});
+
+describe('ssh_monitor list', () => {
+  it('без сломанных профилей список не обрастает пустой секцией', async () => {
+    const text = (await run({ action: 'list' })).content[0].text as string;
+
+    expect(text).toContain('production');
+    expect(text).toContain('staging');
+    expect(text.toLowerCase()).not.toContain('broken');
+  });
+
+  it('сломанный профиль не по умолчанию назван вместе с причиной', async () => {
+    getBrokenProfilesMock.mockReturnValue([broken({ name: 'typo-host' })]);
+
+    const text = (await run({ action: 'list' })).content[0].text as string;
+
+    expect(text).toContain('typo-host');
+    expect(text).toContain(
+      'Profile "typo-host" has invalid port: port must be a number between 1 and 65535 (got 70000)'
+    );
+  });
+
+  it('сломанный профиль по умолчанию виден как таковой', async () => {
+    getDefaultProfileMock.mockReturnValue('production-typo');
+    getBrokenProfilesMock.mockReturnValue([broken({ name: 'production-typo' })]);
+
+    const text = (await run({ action: 'list' })).content[0].text as string;
+
+    expect(text).toContain('production-typo');
+    expect(text.toLowerCase()).toContain('default');
+  });
+
+  it('несколько сломанных профилей перечисляются все', async () => {
+    getBrokenProfilesMock.mockReturnValue([
+      broken({ name: 'typo-host', field: 'port' }),
+      broken({ name: 'typo-key', field: 'strictHostKeyChecking', reason: 'allowed values are yes, accept-new, no', value: '"maybe"' }),
+    ]);
+
+    const text = (await run({ action: 'list' })).content[0].text as string;
+
+    expect(text).toContain('typo-host');
+    expect(text).toContain('typo-key');
   });
 });
 

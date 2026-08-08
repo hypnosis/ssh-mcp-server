@@ -28,7 +28,12 @@ import { forgetLoggedSecrets, logger } from './logger.js';
 import { resetRunnerCache } from '../runner/openssh-runner.js';
 import { resetPassportCache } from '../runner/passport.js';
 import type { SSHConfig } from './ssh-config.js';
-import { loadProfilesFile, type SSHProfileData } from './profiles-file.js';
+import {
+  describeBrokenProfile,
+  loadProfilesFile,
+  type BrokenProfile,
+  type SSHProfileData,
+} from './profiles-file.js';
 
 /**
  * Profiles configuration structure
@@ -36,6 +41,8 @@ import { loadProfilesFile, type SSHProfileData } from './profiles-file.js';
 interface ProfilesConfig {
   default: string;
   profiles: Record<string, SSHProfileData>;
+  /** Профили, отклонённые загрузчиком: имя, поле, значение, причина */
+  broken: BrokenProfile[];
 }
 
 /**
@@ -79,21 +86,25 @@ function loadProfilesFromEnv(): ProfilesConfig {
     
     try {
       const result = loadProfilesFile(profilesFile);
-      
-      if (result.errors.length > 0) {
-        logger.error('Errors loading SSH profiles file:', result.errors);
-        throw new Error(`Failed to load SSH profiles: ${result.errors.join(', ')}`);
+
+      // Испорченный профиль не отменяет исправных соседей: каждая ошибка уходит
+      // в лог отдельной строкой, а отказ достаётся тому, кто просит именно его
+      for (const message of result.errors) {
+        logger.error(`Error in SSH profiles file: ${message}`);
       }
-      
-      if (result.config) {
-        const profileCount = Object.keys(result.config.profiles).length;
-        logger.info(`Loaded ${profileCount} SSH profiles from file: ${profilesFile}`);
-        
-        return {
-          default: result.config.default || Object.keys(result.config.profiles)[0],
-          profiles: result.config.profiles
-        };
+
+      if (!result.config) {
+        throw new Error(`Failed to load SSH profiles: ${result.errors.join('; ')}`);
       }
+
+      const profileCount = Object.keys(result.config.profiles).length;
+      logger.info(`Loaded ${profileCount} SSH profiles from file: ${profilesFile}`);
+
+      return {
+        default: result.config.default || Object.keys(result.config.profiles)[0],
+        profiles: result.config.profiles,
+        broken: result.broken,
+      };
     } catch (err: any) {
       logger.error(`Exception loading SSH profiles file: ${err.message}`);
       throw err;
@@ -292,6 +303,16 @@ export function resolveSSHConfig(args: {
     const profileData = PROFILES.profiles[args.profile];
     
     if (!profileData) {
+      // Испорченный профиль в файле есть, и «не найден» увело бы искать опечатку
+      // в имени вместо того поля, которое на самом деле мешает
+      const rejected = PROFILES.broken.find((entry) => entry.name === args.profile);
+      if (rejected) {
+        logger.error(`[Profile Resolver] ❌ ${describeBrokenProfile(rejected)}`);
+        throw new Error(
+          `${describeBrokenProfile(rejected)}. Fix it in SSH_PROFILES_FILE.`
+        );
+      }
+
       const available = Object.keys(PROFILES.profiles).join(', ');
       logger.error(`[Profile Resolver] ❌ Profile "${args.profile}" not found in SSH_PROFILES_FILE`);
       logger.error(`[Profile Resolver] Available profiles: ${available}`);
@@ -351,6 +372,18 @@ export function resolveSSHConfig(args: {
   // Priority 2: Default profile (check if suitable for SSH)
   const defaultProfileName = PROFILES.default;
   logger.debug(`[Profile Resolver] No profile specified, using default: "${defaultProfileName}"`);
+
+  // Испорченный default никем не подменяется: соседний профиль — другая машина,
+  // и команда без явного профиля ушла бы туда молча
+  const brokenDefault = PROFILES.broken.find((entry) => entry.name === defaultProfileName);
+  if (brokenDefault) {
+    logger.error(`[Profile Resolver] ❌ ${describeBrokenProfile(brokenDefault)}`);
+    throw new Error(
+      `Default ${describeBrokenProfile(brokenDefault)}. ` +
+      `Fix it in SSH_PROFILES_FILE or name another profile explicitly.`
+    );
+  }
+
   const defaultProfileData = PROFILES.profiles[defaultProfileName];
   
   // If default profile is suitable for SSH - use it

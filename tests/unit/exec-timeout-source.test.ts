@@ -56,7 +56,6 @@ beforeEach(() => {
     stdout: 'ok',
     stderr: '',
     exitCode: 0,
-    timedOut: false,
     truncated: false,
     durationMs: 1,
   });

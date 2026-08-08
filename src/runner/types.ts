@@ -40,8 +40,6 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
-  /** Операция прервана по таймауту (вывод при этом частичный) */
-  timedOut: boolean;
   /** Вывод обрезан по maxOutputBytes */
   truncated: boolean;
   durationMs: number;

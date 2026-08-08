@@ -70,7 +70,6 @@ export function describeRunnerContract(harness: RunnerHarness): void {
       expect(result.stdout).toBe('output');
       expect(result.stderr).toBe('warning');
       expect(result.exitCode).toBe(0);
-      expect(result.timedOut).toBe(false);
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
     });
 

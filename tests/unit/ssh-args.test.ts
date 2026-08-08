@@ -483,6 +483,27 @@ describe('ssh-args', () => {
     it('leaves paths whose colon comes after a slash untouched', () => {
       expect(normalizeLocalSpec('dir/a:b')).toBe('dir/a:b');
     });
+
+    /**
+     * Локальный путь — первый позиционный аргумент scp. Ведущий дефис делает
+     * его похожим на опцию: замерено, `scp -q -oNotARealOption=1 src dst`
+     * съедает `src` как значение опции и копирует не тот файл.
+     */
+    it('disambiguates a relative local path that looks like an option', () => {
+      expect(normalizeLocalSpec('-rf')).toBe('./-rf');
+    });
+
+    it('disambiguates a dashed filename with an extension', () => {
+      expect(normalizeLocalSpec('-oProxyCommand=x')).toBe('./-oProxyCommand=x');
+    });
+
+    it('leaves a path whose dash is not the first character untouched', () => {
+      expect(normalizeLocalSpec('sub/-file')).toBe('sub/-file');
+    });
+
+    it('leaves an already-disambiguated dashed path untouched', () => {
+      expect(normalizeLocalSpec('./-rf')).toBe('./-rf');
+    });
   });
 
   // Срок простоя приходит и в команду ssh, и в ответ о том, что осталось на

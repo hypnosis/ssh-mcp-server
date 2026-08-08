@@ -94,7 +94,8 @@ export class FileTools {
         name: 'ssh_file_write',
         description:
           'Write file(s) to remote server. Supports single file or batch writing. ' +
-          'Optional flags per file: verify (sha256 after write), atomic (write to .tmp + rename), ' +
+          'Optional flags per file: verify (sha256 after write), atomic (ignored — the write always ' +
+          'uses a temp path next to the target and renames into place), ' +
           'binary (content is base64; uploaded via SFTP — required for binaries). ' +
           'For files >256KB, binaries, or directories prefer ssh_upload.',
         inputSchema: {
@@ -120,7 +121,8 @@ export class FileTools {
                     atomic: {
                       type: 'boolean',
                       description:
-                        'Write to a temp path next to target and rename on success. Default: false.',
+                        'Ignored: the write always writes to a temp path next to the target and ' +
+                        'renames into place. Accepted so existing calls keep working.',
                     },
                     binary: {
                       type: 'boolean',

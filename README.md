@@ -24,7 +24,7 @@
 8. **ssh_monitor** - Monitor connections, reload profiles, test connections, close a shared connection
 
 **Transfer — SFTP (2, v1.3.0+):**
-9. **ssh_upload** - Binary-safe file/directory upload (sha256 verify, atomic rename, sudo via `install`)
+9. **ssh_upload** - Binary-safe file/directory upload (sha256 verify, atomic rename)
 10. **ssh_download** - Binary-safe file/directory download (sha256 verify)
 
 **Audit — read-only deep checks (4, v1.3.0+):**
@@ -101,7 +101,6 @@ You can add optional security rules to restrict file access per profile:
       "pathSecurity": {
         "allowedPaths": ["/home/admin", "/var/www", "/var/log"],
         "deniedPaths": ["/etc/shadow", "/root", "/etc/ssh"],
-        "allowTraversal": false,
         "maxPathLength": 1000
       }
     }
@@ -118,10 +117,6 @@ You can add optional security rules to restrict file access per profile:
 - **`deniedPaths`** (optional): Blacklist of forbidden paths. Paths starting with these prefixes will be rejected.
   - Example: `["/etc/shadow", "/root", "/etc/ssh"]`
   - Takes priority over `allowedPaths`
-
-- **`allowTraversal`** (optional): Allow path traversal (`../`) in paths. Default: `true`
-  - Set to `false` to prevent directory traversal attacks
-  - Example: `../../../etc/passwd` ❌ rejected
 
 - **`maxPathLength`** (optional): Maximum allowed path length. Default: unlimited
   - Example: `1000` (paths longer than 1000 chars rejected)
@@ -303,12 +298,12 @@ ssh_file_write({
 
 #### v1.3.0+ Per-File Flags: `verify`, `atomic`, `binary`
 
-`ssh_file_write` is back-compat by default but now supports three new per-file flags. Internally any of these — or content size > 256KB — routes the write through the transfer runner (`scp`, which rides SFTP on client 9.0+) instead of the legacy heredoc fast path.
+`ssh_file_write` is back-compat by default but now supports three new per-file flags. The route is chosen by size alone: content over 256KB travels through the transfer runner (`scp`, which rides SFTP on client 9.0+), smaller content goes through the command's stdin. The flags below do not change that.
 
 | Flag | Default | What it does |
 |------|---------|--------------|
 | `verify` | `false` | Compute local sha256, compare against remote `sha256sum` (fallback `openssl dgst -sha256`) after write |
-| `atomic` | `false` | Write to `<path>.tmp.<rand>` next to target, then `mv` (atomic on the same FS) |
+| `atomic` | `true` (ignored) | Always on: writes to `.upload-<rand>.<name>` next to the target, then `mv -T` into place |
 | `binary` | `false` | `content` is base64; decoded and uploaded via SFTP. Use this for non-text payloads |
 
 ```typescript
@@ -492,7 +487,7 @@ ssh_monitor({
 
 Binary-safe transfer through the system `scp`, over the same multiplexed connection the other tools use. **Use these instead of base64-chunks through ssh_exec** — heredoc / `cat > file` corrupts binaries, has no atomic semantics, no integrity verification, and pulls the whole payload into Node memory.
 
-Defaults: `atomic=true` (write to `<path>.tmp.<rand>`, then `mv`), `verify=true` (local sha256 vs remote `sha256sum` / `openssl dgst -sha256` fallback).
+Every upload writes to a hidden temp file next to the target and renames it into place — this isn't a choice, it's built in (`atomic` is accepted but ignored, kept so existing calls don't break). Default: `verify=true` (local sha256 vs remote `sha256sum` / `openssl dgst -sha256` fallback).
 
 **Servers without an sftp subsystem** (routers, embedded devices, dropbear) are handled automatically: on client 9.0+ `scp` rides SFTP, which such a server refuses, so the transfer falls back to the classic scp protocol once and remembers that destination. Nothing to configure. One limitation there: a remote path containing a newline is rejected instead of being sent — the classic protocol has no safe way to carry it.
 
@@ -512,10 +507,10 @@ For full API and architecture see [docs/transfer.md](docs/transfer.md).
 | `remote_path` | string | **required** | Remote destination path |
 | `mode` | string | — | Octal file mode, e.g. `"644"` |
 | `recursive` | boolean | auto | Force directory mode (auto-detected via local `stat()`) |
-| `atomic` | boolean | `true` | Write to `<path>.tmp.<rand>`, then `mv` |
+| `atomic` | boolean | `true` (ignored) | Always on: writes to `.upload-<rand>.<name>` next to the target, then `mv -T` into place |
 | `verify` | boolean | `true` | Compare local and remote sha256 after upload |
-| `sudo` | boolean | `false` | Stage in `/tmp`, then `sudo install` into target |
-| `owner` | string | — | When `sudo=true`: `"user:group"` for `install -o/-g` |
+| `sudo` | boolean | `false` | Stage in `/tmp` under the SSH user, then `sudo cp` next to the target and rename into place |
+| `owner` | string | — | When `sudo=true`: `"user:group"` applied with `chown` before the file takes the target path |
 | `overwrite` | boolean | `true` | Allow overwriting an existing remote file |
 | `concurrency` | number | — | Deprecated and ignored: `scp` has no chunk concurrency to tune |
 
@@ -527,7 +522,7 @@ ssh_upload({
   remote_path: "/srv/releases/app-2026-05.tar.gz",
   mode: "644"
 })
-// scp → write to .tmp.<rand> → sha256 verify → mv → chmod
+// scp → write to .upload-<rand>.<name> → sha256 verify → mv -T → chmod
 
 // 2) Recursive directory upload (auto-detected from local stat)
 ssh_upload({
@@ -536,9 +531,10 @@ ssh_upload({
   remote_path: "/var/www/app/current",
   mode: "755"
 })
-// walks local tree, uploads to staging dir, atomic mv into place
+// walks local tree, uploads to staging dir, mv -T into place
 
-// 3) sudo write to /etc — staged in /tmp, then `sudo install -m 644 -o root:root`
+// 3) sudo write to /etc — staged in /tmp under the SSH user, then `sudo cp`
+//    next to the target, chmod/chown, and rename into place
 ssh_upload({
   profile: "production",
   local_path: "./nginx-site.conf",
@@ -899,16 +895,10 @@ src/
 
 SSH MCP Server uses a secure quoting strategy to prevent injection attacks:
 
-**Single Quotes (default):**
-- Used for regular paths without tilde
+**Single Quotes:**
+- Used for every path, including paths that contain `~`
 - Prevents ALL expansions (variables, commands, globs)
 - Example: `cat '/etc/hosts'` - safest option
-
-**Double Quotes (for tilde):**
-- Used only when path contains `~` (expanded to `$HOME`)
-- Everything except `$HOME` is escaped
-- Prevents: variable expansion (`$VAR`), command substitution (`` `cmd` ``), history expansion (`!`)
-- Example: `cat "$HOME/.bashrc"` - `$HOME` expands, but `$VAR` in filename won't
 
 **What's Protected:**
 - ✅ Command injection via `;`, `&&`, `||`
@@ -936,7 +926,6 @@ Add `pathSecurity` to profiles for additional protection:
   "pathSecurity": {
     "allowedPaths": ["/home/admin", "/var/www"],
     "deniedPaths": ["/etc/shadow", "/root"],
-    "allowTraversal": false,
     "maxPathLength": 1000
   }
 }

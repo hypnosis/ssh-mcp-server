@@ -83,7 +83,9 @@ export async function listControlSockets(
     const path = join(controlDir, name);
     try {
       const info = await stat(path);
-      sockets.push({ path, since: info.mtime, state: await probeSocket(path) });
+      // Тип файла из stat решает сразу: подключением опрашивают только настоящие сокеты
+      const state = info.isSocket() ? await probeSocket(path) : 'unknown';
+      sockets.push({ path, since: info.mtime, state });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw error;

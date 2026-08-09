@@ -6,13 +6,19 @@
  * различать живое и мёртвое умеет только ядро.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
-import { mkdtempSync, writeFileSync, existsSync, rmSync, symlinkSync, chmodSync } from 'fs';
-import { createServer, type Server } from 'net';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, symlinkSync, chmodSync } from 'fs';
+import { createServer, connect, type Server } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { listControlSockets, idleWindowSec } from '../../src/runner/control-sockets.js';
+
+// Пробует соединение по-настоящему — только счётчик вызовов добавлен поверх
+vi.mock('net', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('net')>();
+  return { ...actual, connect: vi.fn(actual.connect) };
+});
 
 let controlDir: string;
 const servers: Server[] = [];
@@ -21,6 +27,7 @@ const children: ChildProcess[] = [];
 beforeEach(() => {
   // Адрес unix-сокета ограничен 104 байтами, поэтому каталог короткий
   controlDir = mkdtempSync(join(tmpdir(), 'ctl-'));
+  vi.mocked(connect).mockClear();
 });
 
 afterEach(() => {
@@ -132,12 +139,27 @@ describe('listControlSockets', () => {
   });
 
   it('обычный файл с тем же префиксом соединением не объявляет', async () => {
-    writeFileSync(join(controlDir, 's-not-a-socket'), 'текст');
+    const path = join(controlDir, 's-not-a-socket');
+    writeFileSync(path, 'текст');
 
     const sockets = await listControlSockets(controlDir);
 
     expect(sockets).toHaveLength(1);
     expect(sockets[0].state).toBe('unknown');
+    // Тип файла решает дело раньше пробы, поэтому соединение не пытались открыть —
+    // иначе ответ зависел бы от кода ошибки, который платформа даёт на не-сокет
+    expect(connect).not.toHaveBeenCalledWith(path);
+  });
+
+  it('каталог с тем же префиксом соединением не объявляет', async () => {
+    const path = join(controlDir, 's-directory');
+    mkdirSync(path);
+
+    const sockets = await listControlSockets(controlDir);
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].state).toBe('unknown');
+    expect(connect).not.toHaveBeenCalledWith(path);
   });
 });
 

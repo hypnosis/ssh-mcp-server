@@ -646,10 +646,52 @@ describe('ssh_file_write: одиночный файл', () => {
 
   it('сервер без счётчика хэшей не превращает исправную запись в ошибку', async () => {
     passportMock.mockResolvedValue(fullPassport({ sha256: 'none' }));
+
+    const answer = await write({
+      files: { path: '/etc/app.conf', content: 'key=value\n', verify: true },
+    });
+
+    expect(answer).toContain('File written successfully: /etc/app.conf');
+    expect(server.has('/etc/app.conf')).toBe(true);
+  });
+
+  /**
+   * Три исхода сверки различимы по самому ответу: клиент видит только его,
+   * а «сверить было нечем» уходило одной строкой в журнал сервера.
+   */
+  it('сошедшийся хэш назван в ответе', async () => {
     expect(
       await write({ files: { path: '/etc/app.conf', content: 'key=value\n', verify: true } })
-    ).toBe('File written successfully: /etc/app.conf');
-    expect(server.has('/etc/app.conf')).toBe(true);
+    ).toBe('File written successfully: /etc/app.conf (sha256 verified)');
+  });
+
+  it('«сверить нечем» отличается от «сошлось»', async () => {
+    passportMock.mockResolvedValue(fullPassport({ sha256: 'none' }));
+
+    const answer = await write({
+      files: { path: '/etc/app.conf', content: 'key=value\n', verify: true },
+    });
+
+    expect(answer).toContain('NOT verified');
+    expect(answer).not.toContain('sha256 verified');
+  });
+
+  it('без флага verify про сверку не говорится вовсе', async () => {
+    expect(await write({ files: { path: '/etc/app.conf', content: 'key=value\n' } })).toBe(
+      'File written successfully: /etc/app.conf'
+    );
+  });
+
+  it('в сводке по пачке исход сверки стоит у каждой записи', async () => {
+    const answer = await write({
+      files: [
+        { path: '/etc/a.conf', content: 'a\n', verify: true },
+        { path: '/etc/b.conf', content: 'b\n' },
+      ],
+    });
+
+    expect(answer).toContain('✓ /etc/a.conf (2 bytes) (sha256 verified)');
+    expect(answer).toContain('✓ /etc/b.conf (2 bytes)\n');
   });
 
   it('без флага verify сервер о хэшах не спрашивают вовсе', async () => {

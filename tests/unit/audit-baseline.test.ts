@@ -277,7 +277,9 @@ describe('ssh_audit_baseline: «проверить нечем» отделяет
 
   it('живые сокеты в непроверенное не попадают', async () => {
     const ss = 'tcp   LISTEN 0      128    0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=700))';
-    const unavailable = structure(await baseline({ df: DF_OUTPUT, listeners: ss })).unavailable;
+    const unavailable = structure(
+      await baseline({ df: DF_OUTPUT, listeners: ss, ufw: 'NO_UFW', iptables: 'NO_IPTABLES' })
+    ).unavailable;
 
     expect(unavailable).toEqual([]);
   });
@@ -393,7 +395,7 @@ describe('ssh_audit_baseline: docker', () => {
     const text = await baseline({ docker_ps: 'NO_DOCKER' });
 
     expect(text).toContain('docker: not installed or not accessible');
-    expect(structure(text).docker).toBeUndefined();
+    expect(structure(text).docker).toBeNull();
   });
 });
 
@@ -574,7 +576,7 @@ describe('ssh_audit_baseline: системные поля', () => {
       load: '',
       disk: [],
       services: { failed: [], running_count: 0 },
-      firewall: { ufw: '', iptables_rules: 0 },
+      firewall: { ufw: { status: 'no_access' }, iptables: { status: 'no_access' } },
       updates: { upgradable: 0, reboot_required: false },
     });
     expect(parsed.net.listeners).toEqual([]);
@@ -587,6 +589,8 @@ describe('ssh_audit_baseline: системные поля', () => {
     expect(parsed.unavailable).toEqual([
       'disk (df gave no output)',
       'listeners (neither ss nor netstat on the server)',
+      'firewall/ufw (installed, but its status is not readable — needs sudo?)',
+      'firewall/iptables (installed, but its rules are not readable — needs sudo?)',
     ]);
     expect(parsed.red_flags).toEqual({ critical: [], warning: [], ok: [] });
   });
@@ -618,11 +622,39 @@ describe('ssh_audit_baseline: межсетевой экран', () => {
   it('состояние ufw читается из его же вывода', async () => {
     const text = await baseline({ ufw: 'Status: active\nLogging: on (low)' });
 
-    expect(text).toContain('ufw_active=true');
+    expect(text).toContain('ufw=active');
   });
 
   it('выключенный ufw не выдаётся за включённый', async () => {
-    expect(await baseline({ ufw: 'Status: inactive' })).toContain('ufw_active=false');
+    expect(await baseline({ ufw: 'Status: inactive' })).toContain('ufw=inactive');
+  });
+
+  /**
+   * Три исхода у каждого экрана, и смешивать их нельзя: сервера без ufw и
+   * сервера с выключенным ufw защищают разные вещи, а «посмотреть не дали» —
+   * вообще не утверждение о сервере.
+   */
+  it('отсутствие ufw не выдаётся за выключенный', async () => {
+    const text = await baseline({ ufw: 'NO_UFW' });
+
+    expect(text).toContain('ufw=not installed');
+    expect(structure(text).firewall.ufw.status).toBe('not_installed');
+  });
+
+  it('отказ по правам не выдаётся за выключенный', async () => {
+    const text = await baseline({ ufw: 'NO_UFW_ACCESS' });
+
+    expect(text).toContain('ufw=NOT CHECKED');
+    expect(structure(text).unavailable).toContain(
+      'firewall/ufw (installed, but its status is not readable — needs sudo?)'
+    );
+  });
+
+  it('отсутствие iptables не выдаётся за пустой набор правил', async () => {
+    const text = await baseline({ iptables: 'NO_IPTABLES' });
+
+    expect(text).toContain('iptables=not installed');
+    expect(structure(text).firewall.iptables.status).toBe('not_installed');
   });
 
   /**
@@ -630,7 +662,7 @@ describe('ssh_audit_baseline: межсетевой экран', () => {
    * через собственную обрезку и прощают её пропажу в разборе разделов.
    */
   it('перевод строки от сервера не прилипает к значению', async () => {
-    expect(structure(await baseline({ ufw: 'Status: active\n' })).firewall.ufw).toBe(
+    expect(structure(await baseline({ ufw: 'Status: active\n' })).firewall.ufw.text).toBe(
       'Status: active'
     );
   });
@@ -638,22 +670,24 @@ describe('ssh_audit_baseline: межсетевой экран', () => {
   it('краткий вид оставляет от вывода ufw двенадцать строк', async () => {
     const long = Array.from({ length: 20 }, (_, index) => `rule ${index}`).join('\n');
 
-    expect(structure(await baseline({ ufw: long })).firewall.ufw.split('\n')).toHaveLength(12);
+    expect(structure(await baseline({ ufw: long })).firewall.ufw.text.split('\n')).toHaveLength(12);
   });
 
   it('полный вид ufw не режет', async () => {
     const long = Array.from({ length: 20 }, (_, index) => `rule ${index}`).join('\n');
     const parsed = structure(await baseline({ ufw: long }, { compact: false }));
 
-    expect(parsed.firewall.ufw.split('\n')).toHaveLength(20);
+    expect(parsed.firewall.ufw.text.split('\n')).toHaveLength(20);
   });
 
   it('счётчик правил iptables — число', async () => {
-    expect(structure(await baseline({ iptables: '37' })).firewall.iptables_rules).toBe(37);
+    expect(structure(await baseline({ iptables: '37' })).firewall.iptables.rules).toBe(37);
   });
 
-  it('нечитаемый счётчик правил становится нулём, а не NaN', async () => {
-    expect(structure(await baseline({ iptables: 'permission denied' })).firewall.iptables_rules).toBe(0);
+  it('нечитаемый счётчик правил — это «нечем проверить», а не ноль правил', async () => {
+    const parsed = structure(await baseline({ iptables: 'permission denied' }));
+
+    expect(parsed.firewall.iptables).toEqual({ status: 'no_access' });
   });
 });
 
@@ -707,7 +741,7 @@ describe('ssh_audit_baseline: сводка для чтения', () => {
         '',
         'docker: not installed or not accessible',
         '',
-        'firewall: ufw_active=true, iptables_rules=37',
+        'firewall: ufw=active, iptables=37 rule line(s)',
         'updates:  upgradable=3, reboot_required=false',
         '',
         '',
@@ -764,6 +798,7 @@ describe('ssh_audit_baseline: сводка для чтения', () => {
         '',
         'NOT CHECKED:',
         '  - listeners (neither ss nor netstat on the server)',
+        '  - firewall/iptables (installed, but its rules are not readable — needs sudo?)',
         '',
         'disk:',
         '  /data: 38G/50G (75%)',
@@ -782,7 +817,7 @@ describe('ssh_audit_baseline: сводка для чтения', () => {
         `  ${'web'.padEnd(30)} ${'Up 3 days'.padEnd(20)} nginx`,
         `  ${'job'.padEnd(30)} ${'Exited (1) 2 hours ago'.padEnd(20)} worker`,
         '',
-        'firewall: ufw_active=false, iptables_rules=0',
+        'firewall: ufw=inactive, iptables=NOT CHECKED',
         'updates:  upgradable=60, reboot_required=true',
         '',
         '',

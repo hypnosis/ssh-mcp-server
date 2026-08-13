@@ -32,6 +32,22 @@ import { truncatedReadMessage, withTruncationNote } from '../utils/output-notes.
 const INLINE_WRITE_LIMIT = 256 * 1024;
 
 /**
+ * Что стало со сверкой записанного: сверяли и сошлось, сверить было нечем,
+ * сверки не просили. Три исхода не смешиваются.
+ */
+type VerificationOutcome =
+  | { status: 'verified' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'skipped' };
+
+/** Пометка о сверке для ответа; у несверявшейся записи её нет */
+function verificationNote(outcome: VerificationOutcome): string {
+  if (outcome.status === 'verified') return ' (sha256 verified)';
+  if (outcome.status === 'unavailable') return ` (NOT verified: ${outcome.reason})`;
+  return '';
+}
+
+/**
  * File Tools
  */
 export class FileTools {
@@ -391,7 +407,12 @@ export class FileTools {
       const notes = written.warnings.map((warning) => `\n⚠ ${warning}`).join('');
 
       return {
-        content: [{ type: 'text', text: `File written successfully: ${written.path}${notes}` }],
+        content: [
+          {
+            type: 'text',
+            text: `File written successfully: ${written.path}${verificationNote(written.verification)}${notes}`,
+          },
+        ],
       };
     }
 
@@ -401,6 +422,7 @@ export class FileTools {
       success: boolean;
       bytesWritten: number;
       warnings?: string[];
+      verification?: VerificationOutcome;
       error?: string;
     }> = [];
 
@@ -411,6 +433,7 @@ export class FileTools {
           path: written.path,
           success: true,
           warnings: written.warnings,
+          verification: written.verification,
           bytesWritten: file.binary
             ? Buffer.from(file.content || '', 'base64').length
             : Buffer.byteLength(file.content, 'utf8'),
@@ -430,7 +453,8 @@ export class FileTools {
     
     for (const result of results) {
       if (result.success) {
-        output += `✓ ${result.path} (${result.bytesWritten} bytes)\n`;
+        const verified = result.verification ? verificationNote(result.verification) : '';
+        output += `✓ ${result.path} (${result.bytesWritten} bytes)${verified}\n`;
         for (const warning of result.warnings || []) {
           output += `  ⚠ ${warning}\n`;
         }
@@ -472,7 +496,7 @@ export class FileTools {
     /** Раскрытый и уже проверенный правилами путь назначения */
     target: ExpandedPath,
     profileName: string
-  ): Promise<{ path: string; warnings: string[] }> {
+  ): Promise<{ path: string; warnings: string[]; verification: VerificationOutcome }> {
     const buf = file.binary
       ? Buffer.from(file.content || '', 'base64')
       : Buffer.from(file.content || '', 'utf8');
@@ -482,6 +506,9 @@ export class FileTools {
     const mode = file.mode ? shellMode(file.mode, 'mode') : undefined;
 
     const expectedHash = sha256OfBuffer(buf);
+    // Исход сверки уезжает в ответ: без него «сошлось» и «сверить было нечем»
+    // выглядят для клиента одинаково успешной записью
+    let verification: VerificationOutcome = { status: 'skipped' };
     const ops = remotePathOps({
       executor: this.executor,
       config: sshConfig,
@@ -515,6 +542,9 @@ export class FileTools {
         // без sha256sum и openssl
         if (result.status === 'unavailable') {
           logger.warn(`[file-tools] verification skipped: ${result.reason}`);
+          verification = { status: 'unavailable', reason: result.reason };
+        } else {
+          verification = { status: 'verified' };
         }
 
         return null;
@@ -529,7 +559,11 @@ export class FileTools {
       },
     });
 
-    return { path: outcome.path, warnings: [...target.warnings, ...outcome.warnings] };
+    return {
+      path: outcome.path,
+      warnings: [...target.warnings, ...outcome.warnings],
+      verification,
+    };
   }
 
   /**

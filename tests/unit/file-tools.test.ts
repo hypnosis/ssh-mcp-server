@@ -1102,3 +1102,43 @@ describe('ssh_file_read: двоичное чтение', () => {
     }
   });
 });
+
+/**
+ * Байты, не сложившиеся в текст, приходили знаком замены — и уходили дальше как
+ * содержимое: записанный обратно файл оказывался другим. Приёмка ловила это на
+ * файле в 4096 случайных байт: 1736 знаков замены в ответе, ни слова о потере.
+ */
+describe('ssh_file_read: испорченный текст не выдаётся за содержимое', () => {
+  beforeEach(() => {
+    putFile('/srv/app.bin', Buffer.from([0x00, 0xff, 0xfe, 0x7f, 0x10]));
+    putFile('/srv/plain.txt', 'первая строка\nвторая 🚀\n');
+    putFile('/srv/other.txt', 'ещё текст\n');
+  });
+
+  it('чтение двоичного файла отказывает и советует binary', async () => {
+    const text = await read({ path: '/srv/app.bin' });
+
+    expect(text).toContain('is not valid UTF-8 text');
+    expect(text).toContain('binary: true');
+    expect(text).not.toContain('�');
+  });
+
+  it('кириллица и эмодзи испорченными не считаются', async () => {
+    expect(await read({ path: '/srv/plain.txt' })).toBe('первая строка\nвторая 🚀\n');
+  });
+
+  it('в пачке отказ достаётся одному файлу, остальные читаются', async () => {
+    const text = await read({ path: ['/srv/plain.txt', '/srv/app.bin', '/srv/other.txt'] });
+
+    expect(text).toContain('✓ /srv/plain.txt');
+    expect(text).toContain('✗ /srv/app.bin');
+    expect(text).toContain('is not valid UTF-8 text');
+    expect(text).toContain('✓ /srv/other.txt');
+  });
+
+  it('с флагом binary тот же файл читается по-прежнему', async () => {
+    expect(await read({ path: '/srv/app.bin', binary: true })).toBe(
+      Buffer.from([0x00, 0xff, 0xfe, 0x7f, 0x10]).toString('base64')
+    );
+  });
+});

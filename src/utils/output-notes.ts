@@ -60,6 +60,24 @@ export function truncatedReadMessage(path: string): string {
   );
 }
 
+/**
+ * Байты, не сложившиеся в текст, приходят знаком замены — файл уже испорчен,
+ * и записанный обратно даст другой файл. Поэтому здесь тоже отказ с обходным
+ * путём, а не пометка поверх содержимого.
+ */
+export function binaryReadMessage(path: string): string {
+  return (
+    `${path} is not valid UTF-8 text: reading it as command output replaces the ` +
+    'bytes that do not form characters, so the content would come back damaged. ' +
+    'Read it with binary: true to get base64, or fetch the file with ssh_download.'
+  );
+}
+
+/** Есть ли в прочитанном знак замены — след потерянных байтов */
+export function looksDamagedAsText(text: string): boolean {
+  return text.includes('�');
+}
+
 /** Пояснение к коду возврата, если голое число вводит в заблуждение */
 export function exitCodeHint(exitCode: number): string {
   if (TIMEOUT_GUARD_EXIT_CODES.includes(exitCode)) {

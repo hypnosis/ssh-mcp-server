@@ -52,6 +52,7 @@ const BASELINE_REST = {
   load: '0.55 0.66 0.76 1/776 3607',
   free: '              total        used        free\nMem:           7.7G        2.9G        2.9G',
   interfaces: 'eth0  UP  172.17.0.2/16',
+  sshd: 'port 22\npermitrootlogin prohibit-password\npasswordauthentication no\npubkeyauthentication yes',
   failed: '',
   running_count: '0',
   docker_ps: 'NO_DOCKER',

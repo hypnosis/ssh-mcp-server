@@ -278,7 +278,13 @@ describe('ssh_audit_baseline: «проверить нечем» отделяет
   it('живые сокеты в непроверенное не попадают', async () => {
     const ss = 'tcp   LISTEN 0      128    0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=700))';
     const unavailable = structure(
-      await baseline({ df: DF_OUTPUT, listeners: ss, ufw: 'NO_UFW', iptables: 'NO_IPTABLES' })
+      await baseline({
+        df: DF_OUTPUT,
+        listeners: ss,
+        ufw: 'NO_UFW',
+        iptables: 'NO_IPTABLES',
+        sshd: 'port 22\npasswordauthentication no',
+      })
     ).unavailable;
 
     expect(unavailable).toEqual([]);
@@ -286,7 +292,7 @@ describe('ssh_audit_baseline: «проверить нечем» отделяет
 });
 
 describe('ssh_audit_baseline: настройки sshd', () => {
-  /** Раздел sshd уезжает только вместе с правами на него — иначе его нет и в ответе */
+  /** `include_sudo_sections` меняет способ чтения конфига, а не наличие раздела */
   const sshd = (lines: string[]) =>
     baseline({ sshd: lines.join('\n') }, { include_sudo_sections: true });
 
@@ -449,14 +455,14 @@ describe('ssh_audit_baseline: службы и обновления', () => {
 });
 
 describe('ssh_audit_baseline: сборка команды', () => {
-  it('без просьбы про sshd раздел не запрашивается и sudo не поднимается', async () => {
+  it('sshd спрашивается и без sudo: под root он читается и так', async () => {
     await baseline({ df: DF_OUTPUT });
 
-    expect(sentCommand()).not.toContain('sshd -T');
+    expect(sentCommand()).toContain('sshd -T');
     expect(executeMock.mock.calls[0][2].sudo).toBe(false);
   });
 
-  it('раздел sshd запрашивается только вместе с правами на него', async () => {
+  it('просьба о правах поднимает sudo, а не добавляет раздел', async () => {
     await baseline({ df: DF_OUTPUT }, { include_sudo_sections: true });
 
     expect(sentCommand()).toContain('sshd -T');
@@ -591,6 +597,7 @@ describe('ssh_audit_baseline: системные поля', () => {
       'listeners (neither ss nor netstat on the server)',
       'firewall/ufw (installed, but its status is not readable — needs sudo?)',
       'firewall/iptables (installed, but its rules are not readable — needs sudo?)',
+      'sshd config (sshd -T gave no output — run with include_sudo_sections: true)',
     ]);
     expect(parsed.red_flags).toEqual({ critical: [], warning: [], ok: [] });
   });
@@ -708,6 +715,7 @@ describe('ssh_audit_baseline: сводка для чтения', () => {
       df: 'Filesystem Type Size Used Avail Use% Mounted on\n/dev/sda1 ext4 50G 45G 2.5G 95% /',
       free: FREE_OUTPUT,
       listeners: 'tcp LISTEN 0 128 0.0.0.0:22 sshd',
+      sshd: 'port 22\npermitrootlogin prohibit-password\npasswordauthentication no\npubkeyauthentication yes',
       running_count: '42',
       docker_ps: 'NO_DOCKER',
       ufw: 'Status: active',
@@ -736,6 +744,9 @@ describe('ssh_audit_baseline: сводка для чтения', () => {
         '',
         'listeners (1):',
         '  tcp   0.0.0.0:22                   sshd',
+        '',
+        'sshd:',
+        '  port=22 root=prohibit-password pwauth=no pubkey=yes',
         '',
         'services: running=42, failed=0',
         '',

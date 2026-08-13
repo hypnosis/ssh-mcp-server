@@ -25,6 +25,6 @@
 | TD-13 | Названный срок и объём ответа не соблюдаются | 🔴 открыт | [limits-time-and-volume_13.md](limits-time-and-volume_13.md) |
 | TD-14 | Разбор чужого вывода теряет строки и путает колонки | 🟡 открыт | [parsing-foreign-output_14.md](parsing-foreign-output_14.md) |
 | TD-15 | В ответах видно внутреннюю кухню | 🟡 открыт | [internal-names-in-answers_15.md](internal-names-in-answers_15.md) |
-| TD-16 | Проглоченная ошибка читается как факт | 🟡 открыт | [swallowed-errors_16.md](swallowed-errors_16.md) |
+| TD-16 | Проглоченная ошибка читается как факт | ✅ закрыт | [archive/swallowed-errors_16.md](archive/swallowed-errors_16.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.

@@ -208,24 +208,26 @@ export class SnapshotTool {
     if (systemctl !== 'yes') return { checked: false, items: [] };
 
     for (const service of services) {
-      try {
-        const status = await this.read(
+      const status = await this.read(
+        config,
+        `systemctl is-active ${service} 2>/dev/null || echo inactive`,
+        profileName
+      );
+
+      // Пустой ответ — это сорванное чтение, а не остановленная служба:
+      // молча пропав из списка, она выглядела бы проверенной
+      if (!status) {
+        results.push({ name: service, status: 'unknown', uptime: null });
+        continue;
+      }
+
+      if (status === 'active') {
+        const startedAt = await this.read(
           config,
-          `systemctl is-active ${service} 2>/dev/null || echo inactive`,
+          `systemctl show ${service} --property=ActiveEnterTimestamp --value 2>/dev/null || echo ""`,
           profileName
         );
-
-        if (status === 'active') {
-          // Get uptime
-          const startedAt = await this.read(
-            config,
-            `systemctl show ${service} --property=ActiveEnterTimestamp --value 2>/dev/null || echo ""`,
-            profileName
-          );
-          results.push({ name: service, status, uptime: startedAt || null });
-        }
-      } catch {
-        // Service not found, skip
+        results.push({ name: service, status, uptime: startedAt || null });
       }
     }
 
@@ -409,33 +411,44 @@ export class SnapshotTool {
   /**
    * Get recent errors
    */
-  private async getRecentErrors(config: any, profileName: string): Promise<Array<{ source: string; message: string; time: string }>> {
-    const errors: Array<{ source: string; message: string; time: string }> = [];
-    
-    // Errors from syslog
-    try {
-      const output = await this.read(
-        config,
-        'tail -n 100 /var/log/syslog 2>/dev/null | grep -iE "error|fatal|critical" | tail -n 3 || echo ""',
-        profileName,
-        { sudo: true }
-      );
+  private async getRecentErrors(
+    config: any,
+    profileName: string
+  ): Promise<{ checked: boolean; reason?: string; items: Array<{ source: string; message: string; time: string }> }> {
+    // Молчание журнала имеет три причины, и раньше все три выглядели как
+    // «ошибок нет»: файла нет, читать нечем, читали и не нашли
+    const command =
+      'if [ ! -f /var/log/syslog ]; then echo NO_SYSLOG; ' +
+      'elif [ ! -r /var/log/syslog ]; then echo SYSLOG_UNREADABLE; ' +
+      'else tail -n 100 /var/log/syslog | grep -iE "error|fatal|critical" | tail -n 3; fi';
 
-      if (output) {
-        const lines = output.split('\n');
-        lines.forEach(line => {
-          if (line.length > 0) {
-            errors.push({
-              source: 'syslog',
-              message: line.substring(0, 100),
-              time: 'recent',
-            });
-          }
-        });
-      }
-    } catch {}
-    
-    return errors;
+    // Сперва под sudo — журнал обычно закрыт от обычного пользователя. Там, где
+    // sudo нет вовсе (root на BusyBox), команда падает целиком, и без второй
+    // попытки причина звучала бы «не прошло» даже на сервере без журнала
+    let output = await this.read(config, command, profileName, {
+      sudo: true,
+      fallback: 'READ_FAILED',
+    });
+    if (output === 'READ_FAILED') {
+      output = await this.read(config, command, profileName, { fallback: 'READ_FAILED' });
+    }
+
+    if (output === 'NO_SYSLOG') {
+      return { checked: false, reason: 'no /var/log/syslog on the server', items: [] };
+    }
+    if (output === 'SYSLOG_UNREADABLE') {
+      return { checked: false, reason: '/var/log/syslog is not readable', items: [] };
+    }
+    if (output === 'READ_FAILED') {
+      return { checked: false, reason: 'the read did not go through', items: [] };
+    }
+
+    const items = output
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => ({ source: 'syslog', message: line.substring(0, 100), time: 'recent' }));
+
+    return { checked: true, items };
   }
   
   /**
@@ -476,7 +489,9 @@ export class SnapshotTool {
       output += '  NOT CHECKED: no systemctl on the server\n';
     } else if (snapshot.services.items.length > 0) {
       snapshot.services.items.forEach((svc: any) => {
-        output += `  ${svc.name.padEnd(15)} ${svc.status === 'active' ? '✓' : '✗'} ${svc.status}\n`;
+        const mark = svc.status === 'active' ? '✓' : svc.status === 'unknown' ? '?' : '✗';
+        const label = svc.status === 'unknown' ? 'NOT CHECKED' : svc.status;
+        output += `  ${svc.name.padEnd(15)} ${mark} ${label}\n`;
       });
     } else {
       output += '  No active services detected\n';
@@ -535,13 +550,17 @@ export class SnapshotTool {
     }
     output += '\n';
     
-    if (snapshot.recentErrors.length > 0) {
+    if (!snapshot.recentErrors.checked || snapshot.recentErrors.items.length > 0) {
       output += '─'.repeat(70) + '\n';
       output += 'RECENT ERRORS\n';
       output += '─'.repeat(70) + '\n';
-      snapshot.recentErrors.forEach((err: any) => {
-        output += `  [${err.source}] ${err.message}\n`;
-      });
+      if (snapshot.recentErrors.checked) {
+        snapshot.recentErrors.items.forEach((err: any) => {
+          output += `  [${err.source}] ${err.message}\n`;
+        });
+      } else {
+        output += `  NOT CHECKED: ${snapshot.recentErrors.reason}\n`;
+      }
       output += '\n';
     }
     

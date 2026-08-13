@@ -124,7 +124,7 @@ describe('ssh-args', () => {
     it('sets ControlMaster, ControlPath and ControlPersist when supported', () => {
       const args = buildCommonOptions(KEY_PROFILE, CAPS);
       expect(optionValue(args, 'ControlMaster')).toBe('auto');
-      expect(optionValue(args, 'ControlPath')).toBe('/home/user/.ssh/ssh-mcp/s-%C');
+      expect(optionValue(args, 'ControlPath')).toBe(buildControlPath(CAPS.controlDir, KEY_PROFILE));
       expect(optionValue(args, 'ControlPersist')).toBe('600');
     });
 
@@ -146,9 +146,41 @@ describe('ssh-args', () => {
     });
 
     it('keeps the control socket path short enough for a unix socket address', () => {
-      // Лимит адреса unix-сокета на macOS — 104 байта. %C разворачивается в 40 hex-символов.
-      const path = buildControlPath('/home/user/.ssh/ssh-mcp').replace('%C', 'a'.repeat(40));
+      // Лимит адреса unix-сокета на macOS — 104 байта
+      const path = buildControlPath('/home/user/.ssh/ssh-mcp', KEY_PROFILE);
       expect(path.length).toBeLessThan(104);
+    });
+
+    it('даёт разным учётным данным разные сокеты: иначе профиль без ключа проедет по чужому', () => {
+      const noCreds: RunnerConfig = { host: KEY_PROFILE.host, username: KEY_PROFILE.username };
+      const otherKey: RunnerConfig = { ...KEY_PROFILE, privateKeyPath: '/home/user/.ssh/other' };
+
+      expect(buildControlPath(CAPS.controlDir, noCreds)).not.toBe(
+        buildControlPath(CAPS.controlDir, KEY_PROFILE)
+      );
+      expect(buildControlPath(CAPS.controlDir, otherKey)).not.toBe(
+        buildControlPath(CAPS.controlDir, KEY_PROFILE)
+      );
+      expect(buildControlPath(CAPS.controlDir, PASSWORD_PROFILE)).not.toBe(
+        buildControlPath(CAPS.controlDir, KEY_PROFILE)
+      );
+    });
+
+    it('даёт одинаковым учётным данным один сокет: ради этого мультиплексирование и заводили', () => {
+      const sameByAnotherName: RunnerConfig = { ...KEY_PROFILE };
+
+      expect(buildControlPath(CAPS.controlDir, sameByAnotherName)).toBe(
+        buildControlPath(CAPS.controlDir, KEY_PROFILE)
+      );
+    });
+
+    it('разделяет назначения: тот же ключ на другом порту — другой сокет', () => {
+      expect(buildControlPath(CAPS.controlDir, { ...KEY_PROFILE, port: 2222 })).not.toBe(
+        buildControlPath(CAPS.controlDir, KEY_PROFILE)
+      );
+      expect(buildControlPath(CAPS.controlDir, { ...KEY_PROFILE, username: 'root' })).not.toBe(
+        buildControlPath(CAPS.controlDir, KEY_PROFILE)
+      );
     });
   });
 
@@ -303,7 +335,7 @@ describe('ssh-args', () => {
 
     it('reuses the same control socket as ssh', () => {
       const args = buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/etc/b');
-      expect(optionValue(args, 'ControlPath')).toBe(buildControlPath(CAPS.controlDir));
+      expect(optionValue(args, 'ControlPath')).toBe(buildControlPath(CAPS.controlDir, KEY_PROFILE));
     });
 
     /**

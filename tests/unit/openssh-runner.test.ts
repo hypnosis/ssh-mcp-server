@@ -22,8 +22,9 @@ vi.mock('../../src/runner/runtime-check.js', async (importOriginal) => {
   return { ...actual, detectRuntime: detectRuntimeMock };
 });
 
-const { OpenSshRunner, getOpenSshRunner, runnerKey, configFingerprint, resetRunnerCache } =
+const { OpenSshRunner, getOpenSshRunner, runnerKey, resetRunnerCache } =
   await import('../../src/runner/openssh-runner.js');
+const { configFingerprint } = await import('../../src/runner/ssh-args.js');
 const { SSHAuthError, SSHCancelledError, SSHTimeoutError, SSHTransportError, SSHRunnerError } =
   await import('../../src/runner/errors.js');
 const { SSH_FAILURE_EXIT_CODE } = await import('../../src/runner/error-classifier.js');
@@ -824,18 +825,26 @@ describe('runner cache', () => {
     expect(second).toBe(first);
   });
 
-  it('replaces the runner and closes the old connection when credentials change', async () => {
+  it('даёт другим учётным данным свой транспорт, не трогая соединение прежнего', async () => {
     runProcessMock.mockResolvedValue(ok());
 
     const first = await getOpenSshRunner(CONFIG);
     const second = await getOpenSshRunner({ ...CONFIG, privateKeyPath: '/home/user/.ssh/new_key' });
 
     expect(second).not.toBe(first);
-    // Старое соединение погашено явно: иначе оно продолжило бы ходить со старым ключом
+    // Соединение прежнего профиля не гасим: сокет у нового свой, а этот канал
+    // может держать соседнее окно
     const controlExit = runProcessMock.mock.calls.some(([options]) =>
       (options as ProcessRunOptions).args.includes('exit')
     );
-    expect(controlExit).toBe(true);
+    expect(controlExit).toBe(false);
+  });
+
+  it('профиль без учётных данных не получает транспорт профиля с ключом', async () => {
+    const withKey = await getOpenSshRunner(CONFIG);
+    const noCreds = await getOpenSshRunner({ host: CONFIG.host, port: CONFIG.port, username: CONFIG.username });
+
+    expect(noCreds).not.toBe(withKey);
   });
 });
 

@@ -8,12 +8,7 @@
 
 import { getRunner } from '../runner/get-runner.js';
 import { DEFAULT_EXEC_TIMEOUT_MS } from '../runner/openssh-runner.js';
-import {
-  getServerPassport,
-  passportKey,
-  PASSPORT_PROBE_COMMAND,
-  type ServerPassport,
-} from '../runner/passport.js';
+import { type ServerPassport } from '../runner/passport.js';
 import { logger } from '../utils/logger.js';
 import { exitCodeHint } from '../utils/output-notes.js';
 import { shellQuote } from '../utils/shell-arg.js';
@@ -21,8 +16,6 @@ import type { SSHConfig } from '../utils/ssh-config.js';
 
 /** Дверь к сроку транспорта для инструментов: они берут его здесь, а не в раннере */
 export const DEFAULT_TIMEOUT_MS = DEFAULT_EXEC_TIMEOUT_MS;
-/** Сколько ждём ответа на пробу паспорта */
-const PASSPORT_PROBE_TIMEOUT_MS = 15000;
 
 export interface SSHExecuteOptions {
   /**
@@ -147,22 +140,13 @@ export class SSHExecutor {
   /**
    * Паспорт сервера: что на нём есть из утилит.
    *
-   * Проба идёт мимо `execute` прямо в транспорт и без удалённого сторожа.
-   * Иначе вышел бы замкнутый круг: сторож сам спрашивает паспорт, чтобы
-   * выбрать язык команд, и ждал бы пробу, которая ждёт сторожа.
-   *
-   * Ключ кэша общий с транспортом — проба на назначение одна.
+   * Спрашивается у транспорта, а не собирается здесь своей командой: только он
+   * умеет провести пробу мимо шлюза первой команды. Проба через `exec` замыкала
+   * круг — команды, стоящие в шлюзе, ждут паспорт, а паспорт ждёт шлюз.
    */
   async passport(config: SSHConfig): Promise<ServerPassport> {
-    return getServerPassport(passportKey(config), async () => {
-      const runner = await getRunner(config);
-      const result = await runner.exec(PASSPORT_PROBE_COMMAND, {
-        timeoutMs: PASSPORT_PROBE_TIMEOUT_MS,
-        remoteTimeout: false,
-        idempotent: true,
-      });
-      return result.stdout;
-    });
+    const runner = await getRunner(config);
+    return runner.passport();
   }
 
   /**

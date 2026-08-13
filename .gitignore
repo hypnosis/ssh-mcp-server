@@ -67,6 +67,9 @@ temp/
 # Записи о ходе сессий — локальные, в репозиторий не едут
 .remember/
 
+# Архив замеров приёмки: логи вызовов, наборы кейсов, harness
+.acceptance/
+
 # SSH profiles (never commit!)
 *.profiles.json
 ssh-profiles.json

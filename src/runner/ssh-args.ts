@@ -9,6 +9,7 @@
  * видны в `ps` любому пользователю системы. Секрет доставляется через askpass.
  */
 
+import { createHash } from 'crypto';
 import { logger } from '../utils/logger.js';
 import type { SSHConfig, StrictHostKeyChecking } from '../utils/ssh-config.js';
 
@@ -111,15 +112,42 @@ export function needsAskpass(config: RunnerConfig): boolean {
 }
 
 /**
+ * Отпечаток учётных данных: профили с разными ключами не делят соединение.
+ */
+export function configFingerprint(config: RunnerConfig): string {
+  const material = [
+    config.privateKeyPath ?? '',
+    config.password ?? '',
+    config.passphrase ?? '',
+    config.strictHostKeyChecking ?? '',
+    config.ignoreUserConfig ? '1' : '0',
+  ].join('\u0000');
+
+  return createHash('sha256').update(material).digest('hex').slice(0, 16);
+}
+
+/**
  * Путь к управляющему сокету.
  *
- * %C — хэш от (локальный хост, удалённый хост, порт, пользователь): короткий,
- * детерминированный и одинаковый во всех процессах, поэтому разные окна
- * клиента попадают на один и тот же сокет. Длина пути важна: лимит адреса
- * unix-сокета на macOS — 104 байта.
+ * Имя — хэш от назначения и учётных данных. Назначение делает сокет общим для
+ * всех процессов клиента: разные окна попадают на одно соединение, ради этого
+ * мультиплексирование и заводили. Учётные данные в имени обязательны: без них
+ * профиль без ключа проезжает по соединению, поднятому чужим ключом, — сокет
+ * доступ не проверяет, он его уже даёт.
+ *
+ * Считаем сами, а не через `%C` клиента: тот знает только хост, порт и
+ * пользователя. Длина пути важна — лимит адреса unix-сокета на macOS 104 байта.
  */
-export function buildControlPath(controlDir: string): string {
-  return `${controlDir}/${CONTROL_SOCKET_PREFIX}%C`;
+export function buildControlPath(controlDir: string, config: RunnerConfig): string {
+  const material = [
+    config.host,
+    String(config.port ?? 22),
+    config.username,
+    configFingerprint(config),
+  ].join('\u0000');
+
+  const fingerprint = createHash('sha256').update(material).digest('hex').slice(0, 24);
+  return `${controlDir}/${CONTROL_SOCKET_PREFIX}${fingerprint}`;
 }
 
 /**
@@ -154,7 +182,7 @@ export function buildCommonOptions(
   // на окно ControlPersist вместо одной на каждую команду.
   if (caps.multiplexing) {
     args.push('-o', 'ControlMaster=auto');
-    args.push('-o', `ControlPath=${buildControlPath(caps.controlDir)}`);
+    args.push('-o', `ControlPath=${buildControlPath(caps.controlDir, config)}`);
     args.push('-o', `ControlPersist=${resolveControlPersistSec()}`);
   }
 

@@ -24,13 +24,24 @@ const CONFIG: SSHConfig = {
   privateKeyPath: '/home/user/.ssh/id_ed25519',
 };
 
+const RUNTIME = {
+  available: true,
+  version: { major: 10, minor: 2, raw: 'OpenSSH_10.2p1' },
+  multiplexing: true,
+  askpassForce: true,
+  controlDir: '/home/user/.ssh/ssh-mcp',
+};
+
+let detectCallCount = 0;
+
 beforeEach(() => {
-  detectRuntimeMock.mockResolvedValue({
-    available: true,
-    version: { major: 10, minor: 2, raw: 'OpenSSH_10.2p1' },
-    multiplexing: true,
-    askpassForce: true,
-    controlDir: '/home/user/.ssh/ssh-mcp',
+  detectCallCount = 0;
+  // Обнаружение отвечает не в том же тике и вразнобой: на живой машине каждый
+  // вызов запускает свой `ssh -V`, и они заканчиваются в произвольном порядке.
+  // Именно на этом ожидании вызовы расходятся между проверкой кэша и записью.
+  detectRuntimeMock.mockImplementation(() => {
+    const delayMs = 10 - (detectCallCount++ % 10);
+    return new Promise((resolve) => setTimeout(() => resolve({ ...RUNTIME }), delayMs));
   });
   resetRunnerCache();
 });
@@ -45,6 +56,14 @@ describe('getRunner', () => {
     const first = await getRunner(CONFIG);
     const second = await getRunner(CONFIG);
     expect(second).toBe(first);
+  });
+
+  it('одному назначению даёт один транспорт и на волне одновременных вызовов', async () => {
+    const runners = await Promise.all(Array.from({ length: 10 }, () => getRunner(CONFIG)));
+
+    for (const runner of runners) {
+      expect(runner).toBe(runners[0]);
+    }
   });
 
   it('разным серверам даёт разные транспорты', async () => {

@@ -7,7 +7,6 @@
  * Сервер видит один вход вместо одного входа на команду.
  */
 
-import { createHash } from 'crypto';
 import { logger } from '../utils/logger.js';
 import { buildRunnerEnv, ensureAskpassScript } from './askpass.js';
 import { classifySpawnOutcome, stripMuxNotices } from './error-classifier.js';
@@ -35,6 +34,7 @@ import {
   buildControlArgs,
   buildScpArgs,
   buildSshArgs,
+  configFingerprint,
   needsAskpass,
   resolveControlPersistSec,
   type RunnerConfig,
@@ -380,10 +380,11 @@ export class OpenSshRunner implements CommandRunner {
   /**
    * Паспорт сервера: одна проба за сессию на назначение.
    *
-   * Сама проба идёт без сторожа — иначе получилась бы курица и яйцо, ведь
-   * язык команд как раз ею и выясняется.
+   * Проба идёт мимо шлюза первой команды и без сторожа — иначе получилась бы
+   * курица и яйцо: язык команд выясняется ею же, а команды, стоящие в шлюзе,
+   * сами ждут паспорт.
    */
-  private async passport(): Promise<ServerPassport> {
+  async passport(): Promise<ServerPassport> {
     const passport = await getServerPassport(passportKey(this.config), async () => {
       const result = await this.execOnce(
         PASSPORT_PROBE_COMMAND,
@@ -499,7 +500,7 @@ export class OpenSshRunner implements CommandRunner {
 }
 
 /**
- * Ключ кэша: одно назначение — один транспорт.
+ * Назначение: имя профиля в него не входит.
  *
  * Именно здесь чинится давняя проблема, из-за которой профиль "production"
  * и опущенный профиль (тот же сервер по умолчанию) держали два отдельных
@@ -509,53 +510,25 @@ export function runnerKey(config: RunnerConfig): string {
   return `${config.username}@${config.host}:${config.port ?? 22}`;
 }
 
-/**
- * Отпечаток учётных данных: при их смене переиспользовать соединение нельзя
- */
-export function configFingerprint(config: RunnerConfig): string {
-  const material = [
-    config.privateKeyPath ?? '',
-    config.password ?? '',
-    config.passphrase ?? '',
-    config.strictHostKeyChecking ?? '',
-    config.ignoreUserConfig ? '1' : '0',
-  ].join('\u0000');
-
-  return createHash('sha256').update(material).digest('hex').slice(0, 16);
-}
-
-interface CachedRunner {
-  runner: OpenSshRunner;
-  fingerprint: string;
-}
-
-const runnerCache = new Map<string, CachedRunner>();
+const runnerCache = new Map<string, OpenSshRunner>();
 
 /**
  * Получить транспорт для профиля.
  *
- * Транспорты кэшируются по назначению, а не по имени профиля: два профиля,
- * смотрящие на один сервер под одним пользователем, должны делить соединение.
+ * Ключ — назначение вместе с отпечатком учётных данных, тот же, что стоит в
+ * имени общего сокета. Два профиля с одним ключом на один сервер делят
+ * соединение; профиль с другими учётными данными получает своё, а не
+ * переиспользует чужое и не выгоняет его.
  */
 export async function getOpenSshRunner(config: RunnerConfig): Promise<OpenSshRunner> {
   const runtime = await detectRuntime();
-  const key = runnerKey(config);
-  const fingerprint = configFingerprint(config);
-  const cached = runnerCache.get(key);
+  const key = `${runnerKey(config)}#${configFingerprint(config)}`;
 
-  if (cached) {
-    if (cached.fingerprint === fingerprint) {
-      return cached.runner;
-    }
-    // Учётные данные изменились — иначе старый master продолжил бы
-    // ходить на сервер под прежним ключом
-    logger.info(`[Runner] ${key}: credentials changed, closing the existing master connection`);
-    await cached.runner.closeMaster().catch(() => undefined);
-    runnerCache.delete(key);
-  }
+  const cached = runnerCache.get(key);
+  if (cached) return cached;
 
   const runner = new OpenSshRunner(config, runtime);
-  runnerCache.set(key, { runner, fingerprint });
+  runnerCache.set(key, runner);
   return runner;
 }
 
@@ -563,7 +536,7 @@ export async function getOpenSshRunner(config: RunnerConfig): Promise<OpenSshRun
 export async function closeAllRunners(): Promise<void> {
   const runners = [...runnerCache.values()];
   runnerCache.clear();
-  await Promise.all(runners.map(({ runner }) => runner.closeMaster().catch(() => undefined)));
+  await Promise.all(runners.map((runner) => runner.closeMaster().catch(() => undefined)));
 }
 
 /** Сбросить кэш транспортов, не трогая соединения */

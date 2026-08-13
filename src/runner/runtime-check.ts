@@ -49,7 +49,12 @@ const MIN_ASKPASS_FORCE_VERSION = { major: 8, minor: 4 };
 /** С OpenSSH 9.0 scp по умолчанию гоняет файлы поверх SFTP */
 const MIN_SFTP_TRANSFER_VERSION = { major: 9, minor: 0 };
 
-let cachedRuntime: SshRuntime | undefined;
+/**
+ * Кэшируется сам вызов, а не его результат: между проверкой кэша и запуском
+ * `ssh -V` стоит ожидание, и волна параллельных команд успевает проскочить
+ * проверку целиком — каждая со своим обнаружением.
+ */
+let cachedRuntime: Promise<SshRuntime> | undefined;
 
 /**
  * Разобрать вывод `ssh -V`
@@ -164,6 +169,19 @@ export async function detectRuntime(options: { force?: boolean } = {}): Promise<
     return cachedRuntime;
   }
 
+  // Запись до первого ожидания: конкуренты застают её на месте и ждут тот же
+  // вызов, вместо того чтобы завести каждый свой
+  const pending = readRuntime().catch((error: Error) => {
+    cachedRuntime = undefined;
+    throw error;
+  });
+
+  cachedRuntime = pending;
+  return pending;
+}
+
+/** Спросить систему о клиенте ssh и подготовить каталог сокетов */
+async function readRuntime(): Promise<SshRuntime> {
   const controlDir = resolveControlDir();
   const output = await readSshVersion();
   const version = output ? parseSshVersion(output) : undefined;
@@ -181,7 +199,6 @@ export async function detectRuntime(options: { force?: boolean } = {}): Promise<
     }
   }
 
-  cachedRuntime = runtime;
   return runtime;
 }
 

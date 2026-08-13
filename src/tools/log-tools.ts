@@ -8,7 +8,13 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
-import { TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
+import {
+  TRUNCATED_OUTPUT_NOTE,
+  withTruncationNote,
+  DEFAULT_MAX_MATCHES,
+  limitMatches,
+  matchLimitNote,
+} from '../utils/output-notes.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
 import { requireText, requireTextList } from '../utils/tool-args.js';
 import { resolveRemotePath } from '../managers/path-guard.js';
@@ -92,6 +98,11 @@ export class LogTools {
               type: 'boolean',
               description: 'Case sensitive search. Default: false',
               default: false,
+            },
+            maxMatches: {
+              type: 'number',
+              description: `Maximum matches per log file. Default: ${DEFAULT_MAX_MATCHES}`,
+              default: DEFAULT_MAX_MATCHES,
             },
             sudo: {
               type: 'boolean',
@@ -251,6 +262,7 @@ export class LogTools {
     const query = requireText(args.query, 'query', '"error"');
     const context = shellCount(args.context ?? 0, 'context');
     const caseSensitive = args.caseSensitive || false;
+    const maxMatches = shellCount(args.maxMatches ?? DEFAULT_MAX_MATCHES, 'maxMatches');
     const sudo = args.sudo || false;
 
     // Правила профиля проверяет buildSafePath — уже на раскрытом пути
@@ -261,6 +273,10 @@ export class LogTools {
     if (!caseSensitive) grepFlags.push('-i'); // Case insensitive
     if (context > 0) grepFlags.push(`-C ${context}`); // Context lines
     grepFlags.push('-n'); // Line numbers
+    // Одно совпадение сверх предела — признак, что в журнале есть ещё.
+    // Предел ставит сама grep, а не хвостовой `head`: он вернул бы ноль и за
+    // отсутствующий файл, и «нечего искать» стало бы неотличимо от ошибки
+    grepFlags.push(`-m ${maxMatches + 1}`);
     
     // Single log - simple result
     if (paths.length === 1) {
@@ -279,8 +295,17 @@ export class LogTools {
         };
       }
       
+      const limited = limitMatches(result.stdout, maxMatches);
+
       return {
-        content: [{ type: 'text', text: withTruncationNote(result.stdout, result.truncated) }],
+        content: [
+          {
+            type: 'text',
+            text: limited.limited
+              ? `${withTruncationNote(limited.text, result.truncated)}\n\n${matchLimitNote(maxMatches)}`
+              : withTruncationNote(limited.text, result.truncated),
+          },
+        ],
       };
     }
 
@@ -291,6 +316,7 @@ export class LogTools {
       matchCount: number;
       success: boolean;
       truncated?: boolean;
+      limited?: boolean;
       error?: string;
     }> = [];
     
@@ -302,13 +328,15 @@ export class LogTools {
         
         // grep exit code 1 = no matches
         if (result.exitCode === 0 || result.exitCode === 1) {
-          const matchCount = result.stdout ? result.stdout.split('\n').filter(line => line.length > 0).length : 0;
+          const limited = limitMatches(result.stdout, maxMatches);
+          const matchCount = limited.text ? limited.text.split('\n').filter(line => line.length > 0).length : 0;
           results.push({
             path,
-            matches: result.stdout || '(no matches)',
+            matches: limited.text || '(no matches)',
             matchCount,
             success: true,
             truncated: result.truncated,
+            limited: limited.limited,
           });
         } else {
           results.push({
@@ -338,6 +366,7 @@ export class LogTools {
         output += `=== ${result.path} (${result.matchCount} matches) ===\n`;
         output += result.matches + '\n';
         if (result.truncated) output += `${TRUNCATED_OUTPUT_NOTE}\n`;
+        if (result.limited) output += `${matchLimitNote(maxMatches)}\n`;
         output += '\n';
       } else {
         output += `=== ${result.path} (ERROR) ===\n`;

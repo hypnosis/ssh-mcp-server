@@ -414,6 +414,15 @@ ssh_log_search({
   context: 3
 })
 
+// A busy log: at most 200 matches per file come back by default,
+// and the answer says when it was cut
+ssh_log_search({
+  profile: "production",
+  path: "/var/log/syslog",
+  query: "error",
+  maxMatches: 1000
+})
+
 // Multiple logs
 ssh_log_search({
   profile: "production",

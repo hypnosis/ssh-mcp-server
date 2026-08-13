@@ -157,11 +157,11 @@
 заново»; если появятся похожие — искать ту же причину.
 
 Долг: пять новых записей — [TD-12](../tech-debt/archive/snapshot-parallel-sessions_12.md),
-[TD-13](../tech-debt/limits-time-and-volume_13.md),
+[TD-13](../tech-debt/archive/limits-time-and-volume_13.md),
 [TD-14](../tech-debt/archive/parsing-foreign-output_14.md),
 [TD-15](../tech-debt/internal-names-in-answers_15.md),
-[TD-16](../tech-debt/archive/swallowed-errors_16.md); из них TD-12, TD-14 и TD-16 уже
-закрыты. AC-02 и AC-03 дописаны в TD-03. Таблица
+[TD-16](../tech-debt/archive/swallowed-errors_16.md); открытым остался только TD-15.
+AC-02 и AC-03 дописаны в TD-03. Таблица
 «какая находка куда ушла» — в конце баг-репорта. Известные ограничения перечислены в
 CHANGELOG отдельной секцией.
 

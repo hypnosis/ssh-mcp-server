@@ -73,6 +73,41 @@ export function binaryReadMessage(path: string): string {
   );
 }
 
+/**
+ * Сколько совпадений поиска по журналу помещается в один ответ.
+ *
+ * Без предела поиск по настоящему журналу отдавал 3736 строк одним ответом:
+ * единственной границей был буфер транспорта, а он лежит в тридцать раз выше.
+ */
+export const DEFAULT_MAX_MATCHES = 200;
+
+/** Что вывод обрезан по числу совпадений, а не по объёму буфера */
+export function matchLimitNote(max: number): string {
+  return (
+    `⚠️ Showing the first ${max} matches — the log has more. ` +
+    'Raise maxMatches or narrow the query.'
+  );
+}
+
+/**
+ * Оставить не больше `max` совпадений.
+ *
+ * Совпадение отличается от строки контекста знаком после номера: `12:` у
+ * найденной строки и `12-` у соседней, поэтому считаются только первые.
+ */
+export function limitMatches(text: string, max: number): { text: string; limited: boolean } {
+  const lines = text.split('\n');
+  let matches = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^(.*:)?\d+:/.test(lines[i])) continue;
+    matches += 1;
+    if (matches > max) return { text: lines.slice(0, i).join('\n').replace(/\n--$/, ''), limited: true };
+  }
+
+  return { text, limited: false };
+}
+
 /** Есть ли в прочитанном знак замены — след потерянных байтов */
 export function looksDamagedAsText(text: string): boolean {
   return text.includes('�');

@@ -105,6 +105,6 @@ describe('журналы', () => {
     await new LogTools().handleCall(
       call('ssh_log_search', { path: '~/app.log', query: 'boot' })
     );
-    expect(sentCommands()[0]).toBe(`grep -E -i -n 'boot' '/home/deploy/app.log'`);
+    expect(sentCommands()[0]).toBe(`grep -E -i -n -m 201 'boot' '/home/deploy/app.log'`);
   });
 });

@@ -382,8 +382,14 @@ export class TransferTool {
 
     if (!opts.overwrite) {
       const exists = await this.remoteExists(sshConfig, profileName, remotePath);
-      if (exists) {
+      if (exists === 'yes') {
         throw new Error(`remote_path already exists and overwrite=false: ${remotePath}`);
+      }
+      if (exists === 'unknown') {
+        throw new Error(
+          `cannot tell whether ${remotePath} already exists, and overwrite=false ` +
+            'forbids writing over an unknown target. Retry, or pass overwrite: true.'
+        );
       }
     }
 
@@ -523,20 +529,28 @@ export class TransferTool {
     return [];
   }
 
+  /**
+   * Есть ли путь на сервере. «Проверить не вышло» — отдельный исход: раньше
+   * сорванная проверка отвечала «нет файла», и защита `overwrite: false`
+   * пропускала запись поверх того, чего не сумела разглядеть.
+   */
   private async remoteExists(
     sshConfig: any,
     profileName: string,
     remotePath: string
-  ): Promise<boolean> {
+  ): Promise<'yes' | 'no' | 'unknown'> {
     try {
       const r = await this.executor.execute(
         sshConfig,
         `test -e ${shellQuote(remotePath)} && echo YES || echo NO`,
-        { profileName }
+        { profileName, idempotent: true }
       );
-      return r.stdout.trim() === 'YES';
+      const answer = r.stdout.trim();
+      if (answer === 'YES') return 'yes';
+      if (answer === 'NO') return 'no';
+      return 'unknown';
     } catch {
-      return false;
+      return 'unknown';
     }
   }
 
@@ -606,9 +620,15 @@ export class TransferTool {
 
     if (!opts.overwrite) {
       const exists = await this.remoteExists(sshConfig, profileName, finalDir);
-      if (exists) {
+      if (exists === 'yes') {
         throw new Error(
           `remote directory already exists and overwrite=false: ${finalDir}`
+        );
+      }
+      if (exists === 'unknown') {
+        throw new Error(
+          `cannot tell whether ${finalDir} already exists, and overwrite=false ` +
+            'forbids writing over an unknown target. Retry, or pass overwrite: true.'
         );
       }
     }

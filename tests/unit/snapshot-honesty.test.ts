@@ -306,3 +306,92 @@ describe('ssh_snapshot: сорванное чтение не рушит отчё
     expect(text).not.toMatch(/^Error:/);
   });
 });
+
+/**
+ * Раздел «RECENT ERRORS» исчезал одинаково во всех случаях: журнала нет, читать
+ * нечем, читали и не нашли. Пустой раздел читается как «в журнале чисто».
+ */
+describe('ssh_snapshot: журнал ошибок', () => {
+  const syslog = /var\/log\/syslog/;
+
+  it('журнала нет — так и сказано', async () => {
+    respondWith([[syslog, 'NO_SYSLOG']]);
+
+    const text = await snapshot();
+
+    expect(text).toContain('RECENT ERRORS');
+    expect(text).toContain('NOT CHECKED: no /var/log/syslog on the server');
+  });
+
+  it('журнал есть, но закрыт — это не «ошибок нет»', async () => {
+    respondWith([[syslog, 'SYSLOG_UNREADABLE']]);
+
+    expect(await snapshot()).toContain('NOT CHECKED: /var/log/syslog is not readable');
+  });
+
+  it('сорванное чтение не выдаётся за чистый журнал', async () => {
+    executeMock.mockImplementation(async (_config: unknown, command: string) => {
+      if (syslog.test(String(command))) throw new Error('connection reset');
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    });
+
+    expect(await snapshot()).toContain('NOT CHECKED: the read did not go through');
+  });
+
+  it('найденные строки печатаются как ошибки', async () => {
+    respondWith([[syslog, 'Aug 13 20:00:00 host app[1]: ERROR первая беда']]);
+
+    expect(await snapshot()).toContain('[syslog] Aug 13 20:00:00 host app[1]: ERROR первая беда');
+  });
+
+  it('прочитанный пустой журнал раздела не печатает', async () => {
+    respondWith([[syslog, '']]);
+
+    expect(await snapshot()).not.toContain('RECENT ERRORS');
+  });
+
+  /**
+   * Под sudo журнал доступнее, но там, где sudo нет вовсе (root на BusyBox),
+   * первая попытка падает целиком — и причина звучала бы «не прошло».
+   */
+  it('когда sudo не сработал, журнал спрашивают ещё раз без него', async () => {
+    const asked: Array<boolean | undefined> = [];
+    executeMock.mockImplementation(async (_config: unknown, command: string, options: any) => {
+      if (!syslog.test(String(command))) {
+        return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+      }
+      asked.push(options?.sudo);
+      return options?.sudo
+        ? { stdout: '', stderr: 'sudo: not found', exitCode: 127, truncated: false }
+        : { stdout: 'NO_SYSLOG', stderr: '', exitCode: 0, truncated: false };
+    });
+
+    const text = await snapshot();
+
+    expect(asked).toEqual([true, undefined]);
+    expect(text).toContain('NOT CHECKED: no /var/log/syslog on the server');
+  });
+});
+
+/** Сорванная проверка службы — не остановленная служба */
+describe('ssh_snapshot: служба, о которой не спросили', () => {
+  it('пустой ответ про службу печатается как непроверенная', async () => {
+    executeMock.mockImplementation(async (_config: unknown, command: string) => {
+      const text = String(command);
+      if (/command -v systemctl/.test(text)) {
+        return { stdout: 'yes', stderr: '', exitCode: 0, truncated: false };
+      }
+      if (/is-active nginx/.test(text)) {
+        return { stdout: '', stderr: '', exitCode: 255, truncated: false };
+      }
+      if (/is-active/.test(text)) {
+        return { stdout: 'inactive', stderr: '', exitCode: 0, truncated: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    });
+
+    const text = await snapshot();
+
+    expect(text).toMatch(/nginx\s+\?\s+NOT CHECKED/);
+  });
+});

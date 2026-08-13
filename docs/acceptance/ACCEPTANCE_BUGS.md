@@ -691,7 +691,7 @@ IPv4, и порт всё равно попадает в список с друг
 | AC-01, AC-09 | [TD-13](../tech-debt/limits-time-and-volume_13.md) — срок и объём |
 | AC-13, AC-26, AC-27, AC-28 | [TD-14](../tech-debt/parsing-foreign-output_14.md) — разбор чужого вывода |
 | AC-06, AC-08, AC-16, AC-17, AC-29, AC-30 | [TD-15](../tech-debt/internal-names-in-answers_15.md) — внутренние имена и метки |
-| AC-05, AC-24, AC-25 | [TD-16](../tech-debt/swallowed-errors_16.md) — проглоченная ошибка |
+| AC-05, AC-24, AC-25 | исправлено, [TD-16](../tech-debt/archive/swallowed-errors_16.md) |
 
 Появилось после приёмки, замерено при регрессе и там же починено:
 [TD-12](../tech-debt/archive/snapshot-parallel-sessions_12.md) — снимок шлёт чтения залпом,

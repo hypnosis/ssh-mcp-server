@@ -55,6 +55,9 @@ pool, so `SSH_MCP_BACKEND` no longer selects anything.
 - `~user/path` is rejected instead of being written to a guessed location; under
   `sudo: true`, `~` means the login user's home and the answer says so.
 - `ssh_file_read` refuses truncated output instead of returning a partial file.
+- `ssh_upload` with `overwrite: false` refuses when it cannot tell whether the target
+  exists, instead of taking a failed check for "the file is not there" and writing over
+  it. Pass `overwrite: true` if that is what you mean.
 
 ### Security
 - Tool argument values (`mode`, `owner`, `pattern`, `lines`, `context`, `top_n`,
@@ -104,6 +107,18 @@ done, failed, nothing to check with — are now distinct in the answer itself.
   empty report, and an unread core count or load average says `NOT CHECKED` instead of
   showing `0 cores`. Measured: twelve consecutive router snapshots, twelve complete
   answers, unchanged timing elsewhere.
+- `ssh_file_read` refuses a file that is not valid UTF-8 instead of returning it as
+  damaged text, and points at `binary: true`. A 4096-byte random file used to come back
+  with 1736 replacement characters and no warning; written back, it was a different file.
+  In a batch only the damaged file is refused. Text with Cyrillic or emoji is unaffected.
+- `ssh_snapshot` says why the error log is silent instead of leaving the section out:
+  no `/var/log/syslog`, not readable, or the read did not go through. A read that fails
+  under `sudo` is retried without it, so a server that has no `sudo` at all still gets a
+  precise answer. A service whose status could not be read is printed as `? NOT CHECKED`
+  rather than vanishing from the list.
+- `ssh_audit_baseline` asks about the sshd config always. It used to appear only with
+  `include_sudo_sections: true`, so a full audit under root stayed silent about password
+  login; that flag now selects how the config is read, not whether the section exists.
 
 ### Known limitations
 Acceptance found more than this release fixes. The rest is recorded in
@@ -120,9 +135,6 @@ Acceptance found more than this release fixes. The rest is recorded in
 - Error texts can show the internal staging name instead of the path you asked for, raw
   Node exceptions (`ENOENT`, `EACCES`) and raw `systemctl` messages in report fields;
   `ssh_disk_breakdown` leaks its `__SSH_MCP_DISK_SEP__` markers into the answer (`TD-15`).
-- `ssh_file_read` returns a binary file as damaged text unless `binary: true` is passed;
-  a swallowed error while reading the log makes `RECENT ERRORS` look empty; a failed
-  existence check is read as "the file is not there" and allows an overwrite (`TD-16`).
 
 ## [1.3.2] - 2026-06-20
 

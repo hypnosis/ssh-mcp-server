@@ -1010,7 +1010,11 @@ describe('форма ответа и отказы до первой команд
     expect(uploadMock.mock.calls[0][2]?.timeoutMs).toBeUndefined();
   });
 
-  it('недоступная проверка существования не отменяет загрузку', async () => {
+  /**
+   * Сорванная проверка раньше отвечала «файла нет», и запрет перезаписи
+   * пропускал запись поверх цели, которую не сумел разглядеть.
+   */
+  it('сорванная проверка существования не выдаётся за «файла нет»', async () => {
     refusals = [[/^test -e /, { stderr: 'test: command not found', exitCode: 127 }]];
     executeMock.mockImplementation(async (_config: unknown, command: string) => {
       if (/^test -e /.test(command)) throw new Error('connection reset');
@@ -1022,6 +1026,25 @@ describe('форма ответа и отказы до первой команд
         local_path: localFile,
         remote_path: '/srv/app.js',
         overwrite: false,
+        verify: false,
+      })
+    );
+
+    expect(text).toContain('cannot tell whether /srv/app.js already exists');
+    expect(text).not.toContain('Upload OK');
+  });
+
+  it('с разрешённой перезаписью та же неудача загрузку не останавливает', async () => {
+    executeMock.mockImplementation(async (_config: unknown, command: string) => {
+      if (/^test -e /.test(command)) throw new Error('connection reset');
+      return answer(command);
+    });
+
+    const text = await textOf(
+      call('ssh_upload', {
+        local_path: localFile,
+        remote_path: '/srv/app.js',
+        overwrite: true,
         verify: false,
       })
     );

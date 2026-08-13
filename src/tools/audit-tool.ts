@@ -198,9 +198,11 @@ export class AuditTool {
     const args = request.params.arguments as any;
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
+    // Настройки sshd спрашиваются всегда: под root они читаются и без sudo, а
+    // раньше раздела просто не было — полный аудит молчал о парольном входе.
+    // `include_sudo_sections` выбирает способ чтения, а не наличие раздела
     const include: string[] = args.include || [
-      'system', 'disk', 'mem', 'net', 'services', 'docker', 'firewall', 'updates',
-      ...(args.include_sudo_sections ? ['ssh'] : []),
+      'system', 'disk', 'mem', 'net', 'ssh', 'services', 'docker', 'firewall', 'updates',
     ];
     const unknown = include.filter((name) => !AuditTool.BASELINE_SECTIONS.includes(name));
     if (unknown.length > 0) {

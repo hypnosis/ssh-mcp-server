@@ -21,7 +21,12 @@ import { resolveRemotePath, type ExpandedPath } from '../managers/path-guard.js'
 import { buildSudoStagingPath } from '../utils/tmp-name.js';
 import { shellGlob, shellMode, shellQuote } from '../utils/shell-arg.js';
 import { requireEntryList, requireText, requireTextList } from '../utils/tool-args.js';
-import { truncatedReadMessage, withTruncationNote } from '../utils/output-notes.js';
+import {
+  binaryReadMessage,
+  looksDamagedAsText,
+  truncatedReadMessage,
+  withTruncationNote,
+} from '../utils/output-notes.js';
 
 /**
  * До какого размера содержимое едет прямо в канале команды.
@@ -281,6 +286,10 @@ export class FileTools {
         throw new Error(`Failed to read file: ${truncatedReadMessage(paths[0])}`);
       }
 
+      if (encoding === 'utf8' && looksDamagedAsText(result.stdout)) {
+        throw new Error(`Failed to read file: ${binaryReadMessage(paths[0])}`);
+      }
+
       return {
         content: [{ type: 'text', text: result.stdout }],
       };
@@ -322,6 +331,14 @@ export class FileTools {
             size: 0,
             success: false,
             error: truncatedReadMessage(path),
+          });
+        } else if (result.exitCode === 0 && encoding === 'utf8' && looksDamagedAsText(result.stdout)) {
+          results.push({
+            path,
+            content: '',
+            size: 0,
+            success: false,
+            error: binaryReadMessage(path),
           });
         } else if (result.exitCode === 0) {
           results.push({

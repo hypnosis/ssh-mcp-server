@@ -97,6 +97,20 @@ export class SnapshotTool {
   }
   
   /**
+   * Сколько чтений снимка идёт по соединению одновременно.
+   *
+   * Залп из десяти мгновенных команд dropbear обрывает: часть каналов
+   * возвращается кодом 255 с пустым выводом и без текста ошибки. Обрыв лечит
+   * повтор в транспорте, а очередь нужна, чтобы не устраивать сервер этот залп:
+   * замер на стенде с dropbear дал шесть срывов на шесть снимков вместо
+   * тринадцати. OpenSSH-серверы десять одновременных чтений держат без потерь.
+   */
+  private static readonly READ_CONCURRENCY = 4;
+
+  /** Хвост очереди чтений: следующее ждёт, пока освободится место */
+  private readSlots: Array<Promise<void>> = [];
+
+  /**
    * Read a value from the server.
    *
    * Снимок состоит из независимых чтений: неудача одного не должна отменять
@@ -109,18 +123,47 @@ export class SnapshotTool {
     profileName: string,
     options: { sudo?: boolean; fallback?: string } = {}
   ): Promise<string> {
-    const result = await this.executor.execute(config, command, {
-      profileName,
-      sudo: options.sudo,
-      idempotent: true,
-    });
+    return this.withSlot(async () => {
+      try {
+        const result = await this.executor.execute(config, command, {
+          profileName,
+          sudo: options.sudo,
+          idempotent: true,
+        });
 
-    if (result.exitCode !== 0) {
-      logger.debug(`[Snapshot] "${command}" exited with ${result.exitCode}: ${result.stderr.trim()}`);
-      return options.fallback ?? '';
+        if (result.exitCode !== 0) {
+          logger.debug(`[Snapshot] "${command}" exited with ${result.exitCode}: ${result.stderr.trim()}`);
+          return options.fallback ?? '';
+        }
+
+        return result.stdout.trim();
+      } catch (error: any) {
+        // Сорванное чтение — это пустой показатель, а не пустой снимок:
+        // оборвись канал дважды подряд, отчёт целиком заменялся строкой ошибки
+        logger.debug(`[Snapshot] "${command}" failed: ${error?.message ?? error}`);
+        return options.fallback ?? '';
+      }
+    });
+  }
+
+  /** Пропустить работу, когда одновременных чтений станет меньше предела */
+  private async withSlot<T>(work: () => Promise<T>): Promise<T> {
+    while (this.readSlots.length >= SnapshotTool.READ_CONCURRENCY) {
+      await Promise.race(this.readSlots);
     }
 
-    return result.stdout.trim();
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.readSlots.push(slot);
+
+    try {
+      return await work();
+    } finally {
+      this.readSlots = this.readSlots.filter((s) => s !== slot);
+      release();
+    }
   }
 
   /**
@@ -192,7 +235,10 @@ export class SnapshotTool {
   /**
    * Get CPU information
    */
-  private async getCPU(config: any, profileName: string): Promise<{ cores: number; usage: number | null; loadAvg: string }> {
+  private async getCPU(
+    config: any,
+    profileName: string
+  ): Promise<{ cores: number | null; usage: number | null; loadAvg: string | null }> {
     const coresOutput = await this.read(config, 'nproc', profileName);
     const loadOutput = await this.read(config, 'cat /proc/loadavg', profileName);
     // Строка сводки разбирается здесь, а не колонкой в awk: у procps она
@@ -200,12 +246,14 @@ export class SnapshotTool {
     // вторая колонка на BusyBox приносила число из таблицы процессов
     const topOutput = await this.read(config, 'top -bn1 2>/dev/null | head -6', profileName);
 
-    // `|| 0` обязателен: без него недоступный nproc даёт NaN прямо в отчёте
-    const cores = parseInt(coresOutput) || 0;
+    // Нечитанное число ядер — это не ноль ядер: пустой ответ обрыва выглядел
+    // исправной машиной без процессоров
+    const parsedCores = parseInt(coresOutput);
+    const cores = isNaN(parsedCores) ? null : parsedCores;
     const usage = SnapshotTool.parseCpuUsage(topOutput);
-    const loadAvg = loadOutput.split(' ').slice(0, 3).join(' ');
+    const load = loadOutput.split(' ').slice(0, 3).join(' ').trim();
 
-    return { cores, usage, loadAvg };
+    return { cores, usage, loadAvg: load || null };
   }
 
   /**
@@ -446,7 +494,12 @@ export class SnapshotTool {
       snapshot.resources.memory.percent === null
         ? 'usage NOT CHECKED'
         : `${snapshot.resources.memory.percent}% used`;
-    output += `  CPU:    ${snapshot.resources.cpu.cores} cores, ${cpuUsage}, load: ${snapshot.resources.cpu.loadAvg}\n`;
+    const cores =
+      snapshot.resources.cpu.cores === null
+        ? 'cores NOT CHECKED'
+        : `${snapshot.resources.cpu.cores} cores`;
+    const load = snapshot.resources.cpu.loadAvg ?? 'NOT CHECKED';
+    output += `  CPU:    ${cores}, ${cpuUsage}, load: ${load}\n`;
     output += `  Memory: ${snapshot.resources.memory.used} / ${snapshot.resources.memory.total} (${memPercent})\n`;
     output += `  Disk:\n`;
     snapshot.resources.disk.forEach((d: any) => {

@@ -13,6 +13,7 @@ import {
   SSHHostKeyError,
   SSHMuxLimitError,
   SSHRunnerError,
+  SSHChannelClosedError,
   SSHTransportError,
 } from './errors.js';
 
@@ -27,6 +28,8 @@ export interface SpawnOutcome {
   spawnError?: NodeJS.ErrnoException;
   exitCode: number | null;
   stderr: string;
+  /** Нужен, чтобы отличить оборванный канал от команды, вернувшей 255 */
+  stdout?: string;
 }
 
 const AUTH_PATTERNS = [
@@ -109,7 +112,7 @@ function looksLikeSshDiagnostic(stderr: string): boolean {
  */
 export function classifySpawnOutcome(
   outcome: SpawnOutcome,
-  context: { host: string; port: number }
+  context: { host: string; port: number; idempotent?: boolean }
 ): SSHRunnerError | null {
   const { spawnError, exitCode, stderr } = outcome;
 
@@ -177,6 +180,18 @@ export function classifySpawnOutcome(
   if (looksLikeSshDiagnostic(stderr)) {
     return new SSHTransportError(
       `ssh failed for ${target}. Details: ${detail}`,
+      { exitCode, stderr }
+    );
+  }
+
+  // Код 255 и ни знака вывода — оборванный канал: команда не успела ничего
+  // напечатать, потому что не запускалась. Так отвечает dropbear на залп
+  // коротких команд по общему соединению. Признак нестрогий, поэтому он читается
+  // только там, где повтор объявлен безопасным: команда, вернувшая 255 сама,
+  // остаётся обычным результатом для всех остальных вызовов.
+  if (context.idempotent && !stderr.trim() && !(outcome.stdout ?? '').trim()) {
+    return new SSHChannelClosedError(
+      `The channel to ${target} closed before the command produced output.`,
       { exitCode, stderr }
     );
   }

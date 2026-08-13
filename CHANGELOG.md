@@ -119,6 +119,18 @@ done, failed, nothing to check with — are now distinct in the answer itself.
 - `ssh_audit_baseline` asks about the sshd config always. It used to appear only with
   `include_sudo_sections: true`, so a full audit under root stayed silent about password
   login; that flag now selects how the config is read, not whether the section exists.
+- A timeout is answered in the time it names. `ssh_exec` with `timeout: 3000` used to answer
+  after ~8 s: the ssh client dies on SIGTERM within milliseconds, but its streams are held
+  open by the shared master process, which only lets go when the remote command ends — so
+  the answer waited for the server-side guard instead. A process we killed is now awaited by
+  its own exit, with 200 ms for the tail of its output. Measured: 8123 ms → 3231 ms
+  (debian), 8117 → 3218 (alpine), 8071 → 3220 (router); a 200 000-line output still arrives
+  whole.
+- `ssh_log_search` takes `maxMatches` (default 200 per log file). The limit is set by grep
+  itself (`-m`), not by a trailing `head` that would return 0 for a missing file and make
+  "no matches" indistinguishable from a failed read, and the answer says when it was cut.
+  A real journal used to come back as 3736 lines in one answer. Context lines do not count
+  against the limit.
 - Disk, memory and listener readings are no longer taken by column position. The disk
   overview of `ssh_snapshot` picked its rows by device name (`^/dev/`), so the root
   filesystem was missing on every container — where it sits on overlay — and the list
@@ -135,9 +147,6 @@ Acceptance found more than this release fixes. The rest is recorded in
 `docs/tech-debt/` with measurements, and scheduled for v2.1:
 - No answer carries `isError`, so a failure is not machine-distinguishable from content,
   and output printed before a timeout kill is dropped (`TD-03`).
-- `ssh_exec` answers a timeout about 5 s later than the value passed, because the kill
-  escalates to `SIGKILL` after a fixed grace period; `ssh_log_search` has no way to limit
-  its output and returned 3736 lines in one answer on a real journal (`TD-13`).
 - Error texts can show the internal staging name instead of the path you asked for, raw
   Node exceptions (`ENOENT`, `EACCES`) and raw `systemctl` messages in report fields;
   `ssh_disk_breakdown` leaks its `__SSH_MCP_DISK_SEP__` markers into the answer (`TD-15`).

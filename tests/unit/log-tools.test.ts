@@ -100,7 +100,10 @@ function answer(command: string): SSHExecuteResult {
     const expression = new RegExp(query, flags.includes('-i') ? 'i' : '');
     const context = /-C (\d+)/.exec(flags);
     const numbered = lines.map((line, index) => [index + 1, line] as const);
-    const hits = numbered.filter(([, line]) => expression.test(line));
+    const limit = /-m (\d+)/.exec(flags);
+    const found = numbered.filter(([, line]) => expression.test(line));
+    // Предел ставит сама grep: дальше него она не читает
+    const hits = limit ? found.slice(0, Number(limit[1])) : found;
     if (hits.length === 0) return fail('', 1);
 
     const around = new Set<number>();
@@ -108,9 +111,17 @@ function answer(command: string): SSHExecuteResult {
       const span = context ? Number(context[1]) : 0;
       for (let n = number - span; n <= number + span; n++) around.add(n);
     }
-    const shown = numbered
-      .filter(([number]) => around.has(number))
-      .map(([number, line]) => (flags.includes('-n') ? `${number}:${line}` : line));
+    const matched = new Set(hits.map(([number]) => number));
+    // Совпадение отделяется от номера двоеточием, строка контекста — дефисом,
+    // а разрыв между группами обозначается `--`: так печатает живой grep
+    const shown: string[] = [];
+    let previous = 0;
+    for (const [number, line] of numbered) {
+      if (!around.has(number)) continue;
+      if (context && previous && number > previous + 1) shown.push('--');
+      previous = number;
+      shown.push(flags.includes('-n') ? `${number}${matched.has(number) ? ':' : '-'}${line}` : line);
+    }
     return ok(`${shown.join('\n')}\n`);
   }
 
@@ -214,10 +225,12 @@ describe('объявление инструментов', () => {
       'query',
       'context',
       'caseSensitive',
+      'maxMatches',
       'sudo',
     ]);
     expect(schema.properties.context.default).toBe(0);
     expect(schema.properties.caseSensitive.default).toBe(false);
+    expect(schema.properties.maxMatches.default).toBe(200);
     expect(schema.properties.sudo.default).toBe(false);
   });
 
@@ -376,26 +389,27 @@ describe('ssh_log_tail: несколько журналов', () => {
 describe('ssh_log_search: один журнал', () => {
   it('запрос уходит в кавычках, а флаги собираются в объявленном порядке', async () => {
     await search({ path: '/var/log/syslog', query: 'ERROR' });
-    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n 'ERROR' '/var/log/syslog'");
+    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n -m 201 'ERROR' '/var/log/syslog'");
   });
 
   it('поиск с учётом регистра идёт без -i', async () => {
     await search({ path: '/var/log/syslog', query: 'ERROR', caseSensitive: true });
-    expect(commandFor(/^grep /)![0]).toBe("grep -E -n 'ERROR' '/var/log/syslog'");
+    expect(commandFor(/^grep /)![0]).toBe("grep -E -n -m 201 'ERROR' '/var/log/syslog'");
   });
 
   it('контекст добавляется отдельным флагом, а нулевой не добавляется вовсе', async () => {
     await search({ path: '/var/log/syslog', query: 'ERROR', context: 1 });
-    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -C 1 -n 'ERROR' '/var/log/syslog'");
+    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -C 1 -n -m 201 'ERROR' '/var/log/syslog'");
 
     vi.clearAllMocks();
     await search({ path: '/var/log/syslog', query: 'ERROR', context: 0 });
-    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n 'ERROR' '/var/log/syslog'");
+    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n -m 201 'ERROR' '/var/log/syslog'");
   });
 
   it('строки нумеруются, и контекст приходит вместе с совпадением', async () => {
+    // Двоеточие у совпадения, дефис у соседей — так их разделяет сама grep
     expect(await search({ path: '/var/log/syslog', query: 'ERROR', context: 1 })).toBe(
-      '1:boot\n2:ERROR disk full\n3:ready\n'
+      '1-boot\n2:ERROR disk full\n3-ready\n'
     );
   });
 
@@ -427,6 +441,46 @@ describe('ssh_log_search: один журнал', () => {
     expect(await search({ path: '/var/log/syslog', query: 'ERROR' })).toBe(
       `2:ERROR disk full\n\n\n${TRUNCATED_OUTPUT_NOTE}`
     );
+  });
+
+  it('выдача обрывается на пределе и подписана', async () => {
+    logs.set('/var/log/big.log', Array.from({ length: 12 }, (_, n) => `error ${n + 1}`));
+
+    const text = await search({ path: '/var/log/big.log', query: 'error', maxMatches: 3 });
+
+    expect(text.split('\n').filter((line) => /^\d+:/.test(line))).toHaveLength(3);
+    expect(text).toContain('Showing the first 3 matches');
+  });
+
+  it('совпадений ровно столько, сколько разрешено, — пометки нет', async () => {
+    logs.set('/var/log/big.log', Array.from({ length: 3 }, (_, n) => `error ${n + 1}`));
+
+    const text = await search({ path: '/var/log/big.log', query: 'error', maxMatches: 3 });
+
+    expect(text.split('\n').filter((line) => /^\d+:/.test(line))).toHaveLength(3);
+    expect(text).not.toContain('Showing the first');
+  });
+
+  it('строки контекста в предел не считаются', async () => {
+    logs.set('/var/log/big.log', ['тихо', 'error 1', 'тихо', 'тихо', 'error 2', 'тихо']);
+
+    const text = await search({
+      path: '/var/log/big.log',
+      query: 'error',
+      context: 1,
+      maxMatches: 2,
+    });
+
+    expect(text).toContain('2:error 1');
+    expect(text).toContain('5:error 2');
+    expect(text).not.toContain('Showing the first');
+  });
+
+  it('предел просят у самой grep, а не режут хвостом конвейера', async () => {
+    await search({ path: '/var/log/syslog', query: 'ERROR', maxMatches: 7 });
+
+    expect(commandFor(/^grep /)![0]).toContain('-m 8');
+    expect(commandFor(/^grep /)![0]).not.toContain('head');
   });
 
   it('поиск помечен безопасным для повтора и идёт по запрошенному профилю', async () => {
@@ -513,14 +567,25 @@ describe('ssh_log_search: несколько журналов', () => {
     await search({ path: both, query: 'error', profile: 'staging', context: 2, sudo: true });
     const searches = sentCommands().filter(([command]) => command.startsWith('grep '));
     expect(searches.map(([command]) => command)).toEqual([
-      "grep -E -i -C 2 -n 'error' '/var/log/syslog'",
-      "grep -E -i -C 2 -n 'error' '/var/log/nginx.log'",
+      "grep -E -i -C 2 -n -m 201 'error' '/var/log/syslog'",
+      "grep -E -i -C 2 -n -m 201 'error' '/var/log/nginx.log'",
     ]);
     for (const [, options] of searches) {
       expect(options.profileName).toBe('staging');
       expect(options.sudo).toBe(true);
       expect(options.idempotent).toBe(true);
     }
+  });
+
+  it('предел считается на каждый журнал, и подписан тот, где он сработал', async () => {
+    logs.set('/var/log/syslog', Array.from({ length: 6 }, (_, n) => `error ${n + 1}`));
+    logs.set('/var/log/nginx.log', ['error once']);
+
+    const text = await search({ path: both, query: 'error', maxMatches: 2 });
+
+    expect(text).toContain('=== /var/log/syslog (2 matches) ===');
+    expect(text).toContain('=== /var/log/nginx.log (1 matches) ===');
+    expect(text.match(/Showing the first 2 matches/g)).toHaveLength(1);
   });
 });
 
@@ -575,7 +640,7 @@ describe('раскрытие пути и правила профиля', () => {
 
   it('поиск раскрывает тильду тем же способом', async () => {
     await search({ path: '~/app.log', query: 'ERROR' });
-    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n 'ERROR' '/home/deploy/app.log'");
+    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n -m 201 'ERROR' '/home/deploy/app.log'");
   });
 
   it('чужой домашний каталог — отказ, а не догадка', async () => {

@@ -119,6 +119,53 @@ describe('runProcess', () => {
     });
   });
 
+  /**
+   * Клиент ssh отдаёт свои потоки общему master-процессу, и тот держит их
+   * открытыми до конца удалённой команды. Ответ по `close` из-за этого приходил
+   * не через названный срок, а через срок сторожа на сервере: 3 с превращались
+   * в 8. Здесь ту же картину рисует переживший потомок.
+   */
+  describe('the streams outlive the process we killed', () => {
+    /** Потомок наследует stdout и держит его дольше, чем живёт родитель */
+    const HOLDS_STREAMS = [
+      'const { spawn } = require("child_process");',
+      'spawn(process.execPath, ["-e", "setTimeout(() => {}, 3000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });',
+      'setTimeout(() => {}, 60000)',
+    ].join('\n');
+
+    it('таймаут отвечает в свой срок, а не когда отпустят потоки', async () => {
+      const result = await nodeScript(HOLDS_STREAMS, { timeoutMs: 300 });
+
+      expect(result.timedOut).toBe(true);
+      expect(result.durationMs).toBeLessThan(1500);
+    });
+
+    it('отмена отвечает так же быстро', async () => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 300);
+
+      const result = await nodeScript(HOLDS_STREAMS, { signal: controller.signal });
+
+      expect(result.aborted).toBe(true);
+      expect(result.durationMs).toBeLessThan(1500);
+    });
+
+    it('вывод, напечатанный до убийства, всё равно доезжает', async () => {
+      const script = `process.stdout.write("partial");\n${HOLDS_STREAMS}`;
+
+      const result = await nodeScript(script, { timeoutMs: 300 });
+
+      expect(result.stdout).toContain('partial');
+    });
+
+    it('процесс, закончившийся сам, ответа не ждёт', async () => {
+      const result = await nodeScript('process.stdout.write("done")', { timeoutMs: 5000 });
+
+      expect(result.stdout).toBe('done');
+      expect(result.durationMs).toBeLessThan(1000);
+    });
+  });
+
   describe('cancellation', () => {
     it('terminates the process when the signal fires', async () => {
       const controller = new AbortController();

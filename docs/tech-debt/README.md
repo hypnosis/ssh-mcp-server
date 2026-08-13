@@ -22,7 +22,7 @@
 | TD-10 | Имя профиля течёт через стек, потребителя нет | 🟡 открыт | [profile-name-flows-nowhere_10.md](profile-name-flows-nowhere_10.md) |
 | TD-11 | Экспорты, которых никто не зовёт | 🟡 открыт | [unused-exports_11.md](unused-exports_11.md) |
 | TD-12 | Снимок шлёт десять чтений разом и теряет часть молча | ✅ закрыт | [archive/snapshot-parallel-sessions_12.md](archive/snapshot-parallel-sessions_12.md) |
-| TD-13 | Названный срок и объём ответа не соблюдаются | 🔴 открыт | [limits-time-and-volume_13.md](limits-time-and-volume_13.md) |
+| TD-13 | Названный срок и объём ответа не соблюдаются | ✅ закрыт | [archive/limits-time-and-volume_13.md](archive/limits-time-and-volume_13.md) |
 | TD-14 | Разбор чужого вывода теряет строки и путает колонки | ✅ закрыт | [archive/parsing-foreign-output_14.md](archive/parsing-foreign-output_14.md) |
 | TD-15 | В ответах видно внутреннюю кухню | 🟡 открыт | [internal-names-in-answers_15.md](internal-names-in-answers_15.md) |
 | TD-16 | Проглоченная ошибка читается как факт | ✅ закрыт | [archive/swallowed-errors_16.md](archive/swallowed-errors_16.md) |

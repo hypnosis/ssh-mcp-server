@@ -15,6 +15,16 @@ import { OUTPUT_LIMIT_BYTES } from '../utils/output-notes.js';
 /** Сколько ждать после SIGTERM, прежде чем послать SIGKILL */
 const DEFAULT_KILL_GRACE_MS = 5000;
 
+/**
+ * Сколько ждать хвост вывода после того, как убитый процесс завершился.
+ *
+ * Дальше ответ отдаётся без ожидания `close`: потоки убитого клиента ssh
+ * держит открытыми общий master-процесс, унаследовавший те же дескрипторы, и
+ * закрывает их только вместе с удалённой командой. Названный срок из-за этого
+ * растягивался до срабатывания сторожа на сервере — 3 с превращались в 8.
+ */
+const OUTPUT_FLUSH_MS = 200;
+
 export interface ProcessRunOptions {
   /** Исполняемый файл: ssh, scp */
   file: string;
@@ -113,6 +123,8 @@ export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcom
     let settled = false;
     let timeoutTimer: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
+    let flushTimer: NodeJS.Timeout | undefined;
+    let terminated = false;
 
     if (signal?.aborted) {
       resolve({
@@ -132,6 +144,7 @@ export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcom
 
     /** Остановить процесс: сначала вежливо, затем принудительно */
     const terminate = (): void => {
+      terminated = true;
       child.kill('SIGTERM');
       killTimer = setTimeout(() => {
         child.kill('SIGKILL');
@@ -150,6 +163,7 @@ export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcom
     const cleanup = (): void => {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
+      if (flushTimer) clearTimeout(flushTimer);
       signal?.removeEventListener('abort', onAbort);
     };
 
@@ -194,6 +208,24 @@ export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcom
         aborted,
         truncated: stdout.truncated || stderr.truncated,
       });
+    });
+
+    // Процесс, который остановили мы, ждать по `close` нельзя: его потоки
+    // держит открытыми чужой master-процесс. Своей смерти дожидаемся, хвост
+    // вывода добираем коротким сроком.
+    child.on('exit', (code, signalCode) => {
+      if (!terminated || settled) return;
+      flushTimer = setTimeout(() => {
+        finish({
+          stdout: stdout.toString(),
+          stderr: stderr.toString(),
+          exitCode: code,
+          signalCode,
+          timedOut,
+          aborted,
+          truncated: stdout.truncated || stderr.truncated,
+        });
+      }, OUTPUT_FLUSH_MS);
     });
 
     if (child.stdin) {

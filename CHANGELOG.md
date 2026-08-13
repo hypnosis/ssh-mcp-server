@@ -63,6 +63,63 @@ pool, so `SSH_MCP_BACKEND` no longer selects anything.
 - Passwords and passphrases are stripped from everything the server logs itself, at any
   length. Server output is left untouched — masking it corrupted file contents.
 
+### Fixed — found by acceptance testing (251 real MCP calls on four servers)
+- `ssh_snapshot` no longer hangs on a connection that is not up yet. Its ten parallel
+  reads and the server passport deadlocked behind the first-command gate, and the hang
+  took the whole server down with it. The passport now comes from the transport, whose
+  probe bypasses the gate; a cold snapshot answers in 200–300 ms.
+- A profile with no key and no password could run commands as `root` **(security)**. The
+  shared socket was named after host, port and user only, so such a profile rode the
+  connection another profile had opened — and closed that connection on its way out. The
+  socket name now includes a fingerprint of the credentials: the profile is refused by
+  authentication and the neighbouring window keeps its channel. Profiles that share
+  credentials still share one connection.
+
+### Fixed — answers that no longer claim more than was checked
+Every tool below used to report a check it had not performed. The three outcomes —
+done, failed, nothing to check with — are now distinct in the answer itself.
+- `ssh_audit_baseline`: sections that were not requested are no longer printed as facts
+  ("firewall inactive", "0 updates"); an unknown name in `include` is refused with the
+  list of valid sections instead of yielding an empty report; `ufw` and `iptables` report
+  `not installed` / `NOT CHECKED` / their real state separately; unreadable `sshd -T`
+  says so and points at `include_sudo_sections` instead of printing empty fields.
+- `ssh_tls_check`: the Let's Encrypt renewal hook has four distinct answers — not
+  readable (retry with `sudo`), Let's Encrypt not installed, installed without a hook,
+  hook configured. The tool accepts `sudo` for this check.
+- `ssh_snapshot`: memory percentage is computed after converting units, so a server
+  reporting `506Mi` of `3.8Gi` no longer shows `13316% used`; CPU usage is derived from
+  the idle share and parses both procps and BusyBox `top`; missing `systemctl` and
+  missing `ss`/`netstat` are reported as `NOT CHECKED` rather than "no services, no
+  ports". The `ss || netstat` fallback never actually ran (the trailing `sort` returned
+  0), so BusyBox servers now list their listening ports for the first time.
+- `ssh_file_write`: the answer says whether the sha256 was verified, could not be
+  verified (no `sha256sum`, no `openssl`), or was not requested.
+- `ssh_upload`: `owner` without `sudo: true` is reported as not applied — for single
+  files and for directories, where `chown` was not even attempted.
+
+### Known limitations
+Acceptance found more than this release fixes. The rest is recorded in
+`docs/tech-debt/` with measurements, and scheduled for v2.1:
+- No answer carries `isError`, so a failure is not machine-distinguishable from content,
+  and output printed before a timeout kill is dropped (`TD-03`).
+- `ssh_exec` answers a timeout about 5 s later than the value passed, because the kill
+  escalates to `SIGKILL` after a fixed grace period; `ssh_log_search` has no way to limit
+  its output and returned 3736 lines in one answer on a real journal (`TD-13`).
+- `ssh_snapshot` issues ten parallel reads on one connection. A server that allows fewer
+  sessions per connection (dropbear, or any `MaxSessions` below the OpenSSH default of
+  ten) drops some of them silently, and the empty read is printed as `0 cores` or an
+  empty load average (`TD-12`).
+- Output of `df`, `free` and `ss` is parsed by column position: files mounted into a
+  container appear in the disk list, a long filesystem name drops its row entirely, an
+  IPv6-only listener is skipped, and `available` memory can be the cache size on
+  pre-2014 `free` (`TD-14`).
+- Error texts can show the internal staging name instead of the path you asked for, raw
+  Node exceptions (`ENOENT`, `EACCES`) and raw `systemctl` messages in report fields;
+  `ssh_disk_breakdown` leaks its `__SSH_MCP_DISK_SEP__` markers into the answer (`TD-15`).
+- `ssh_file_read` returns a binary file as damaged text unless `binary: true` is passed;
+  a swallowed error while reading the log makes `RECENT ERRORS` look empty; a failed
+  existence check is read as "the file is not there" and allows an overwrite (`TD-16`).
+
 ## [1.3.2] - 2026-06-20
 
 ### Fixed

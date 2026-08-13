@@ -21,5 +21,10 @@
 | TD-09 | Проверка точки монтирования не знает BSD и macOS | 🟡 открыт | [mountpoint-check-bsd_09.md](mountpoint-check-bsd_09.md) |
 | TD-10 | Имя профиля течёт через стек, потребителя нет | 🟡 открыт | [profile-name-flows-nowhere_10.md](profile-name-flows-nowhere_10.md) |
 | TD-11 | Экспорты, которых никто не зовёт | 🟡 открыт | [unused-exports_11.md](unused-exports_11.md) |
+| TD-12 | Снимок шлёт десять чтений разом и теряет часть молча | 🔴 открыт | [snapshot-parallel-sessions_12.md](snapshot-parallel-sessions_12.md) |
+| TD-13 | Названный срок и объём ответа не соблюдаются | 🔴 открыт | [limits-time-and-volume_13.md](limits-time-and-volume_13.md) |
+| TD-14 | Разбор чужого вывода теряет строки и путает колонки | 🟡 открыт | [parsing-foreign-output_14.md](parsing-foreign-output_14.md) |
+| TD-15 | В ответах видно внутреннюю кухню | 🟡 открыт | [internal-names-in-answers_15.md](internal-names-in-answers_15.md) |
+| TD-16 | Проглоченная ошибка читается как факт | 🟡 открыт | [swallowed-errors_16.md](swallowed-errors_16.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.

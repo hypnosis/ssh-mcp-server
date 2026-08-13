@@ -119,6 +119,16 @@ done, failed, nothing to check with — are now distinct in the answer itself.
 - `ssh_audit_baseline` asks about the sshd config always. It used to appear only with
   `include_sudo_sections: true`, so a full audit under root stayed silent about password
   login; that flag now selects how the config is read, not whether the section exists.
+- Disk, memory and listener readings are no longer taken by column position. The disk
+  overview of `ssh_snapshot` picked its rows by device name (`^/dev/`), so the root
+  filesystem was missing on every container — where it sits on overlay — and the list
+  showed the files bind-mounted over it instead. It now reads `df -hT`, drops kernel
+  pseudo filesystems by type and shows one row per device. A filesystem name too long for
+  its column, which `df` wraps onto a second line, keeps its name; a row neither tool can
+  read is printed as `NOT CHECKED` instead of disappearing. `available` memory is read by
+  column name, so `free` from procps older than 2014 — which has no such column — reports
+  `n/a` rather than its cache size. A listening port is taken after the last colon of the
+  address, so an IPv6-only listener (`[::]:4847`) is no longer skipped.
 
 ### Known limitations
 Acceptance found more than this release fixes. The rest is recorded in
@@ -128,10 +138,6 @@ Acceptance found more than this release fixes. The rest is recorded in
 - `ssh_exec` answers a timeout about 5 s later than the value passed, because the kill
   escalates to `SIGKILL` after a fixed grace period; `ssh_log_search` has no way to limit
   its output and returned 3736 lines in one answer on a real journal (`TD-13`).
-- Output of `df`, `free` and `ss` is parsed by column position: files mounted into a
-  container appear in the disk list, a long filesystem name drops its row entirely, an
-  IPv6-only listener is skipped, and `available` memory can be the cache size on
-  pre-2014 `free` (`TD-14`).
 - Error texts can show the internal staging name instead of the path you asked for, raw
   Node exceptions (`ENOENT`, `EACCES`) and raw `systemctl` messages in report fields;
   `ssh_disk_breakdown` leaks its `__SSH_MCP_DISK_SEP__` markers into the answer (`TD-15`).

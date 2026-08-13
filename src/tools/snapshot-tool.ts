@@ -7,6 +7,7 @@ import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
+import { parseDfTable, dedupeByDevice } from '../utils/df-table.js';
 
 /**
  * Snapshot Tool
@@ -320,21 +321,32 @@ export class SnapshotTool {
   
   /**
    * Get Disk information
+   *
+   * Тип тома нужен, чтобы отсечь служебные системы ядра: отбор по имени
+   * устройства (`^/dev/`) выбрасывал из обзора корень везде, где он лежит
+   * на overlay, — то есть в любом контейнере.
    */
-  private async getDisk(config: any, profileName: string): Promise<Array<{ mount: string; size: string; used: string; avail: string; percent: string }>> {
-    const output = await this.read(config, 'df -h | grep -E "^/dev/"', profileName);
-    if (!output) return [];
+  private async getDisk(
+    config: any,
+    profileName: string
+  ): Promise<{
+    items: Array<{ mount: string; size: string; used: string; avail: string; percent: string }>;
+    unparsed: string[];
+  }> {
+    const output = await this.read(config, 'df -hT', profileName);
+    if (!output) return { items: [], unparsed: [] };
 
-    return output.split('\n').map(line => {
-      const parts = line.split(/\s+/);
-      return {
-        mount: parts[5] || '?',
-        size: parts[1] || '?',
-        used: parts[2] || '?',
-        avail: parts[3] || '?',
-        percent: parts[4] || '?',
-      };
-    });
+    const table = parseDfTable(output);
+    return {
+      items: dedupeByDevice(table.rows).map((row) => ({
+        mount: row.mount,
+        size: row.size,
+        used: row.used,
+        avail: row.avail,
+        percent: `${row.pct}%`,
+      })),
+      unparsed: table.unparsed,
+    };
   }
   
   /**
@@ -383,8 +395,8 @@ export class SnapshotTool {
     // «смотреть было нечем», и запасной netstat не звали никогда
     const portsOutput = await this.read(
       config,
-      'if command -v ss >/dev/null 2>&1; then ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u; ' +
-        'elif command -v netstat >/dev/null 2>&1; then netstat -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u; ' +
+      'if command -v ss >/dev/null 2>&1; then ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | sort -u; ' +
+        'elif command -v netstat >/dev/null 2>&1; then netstat -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | sort -u; ' +
         'else echo NO_NET_TOOL; fi',
       profileName
     );
@@ -393,9 +405,15 @@ export class SnapshotTool {
       return { checked: false, listening: [], connections: 0 };
     }
 
-    const ports = portsOutput.split('\n')
-      .filter(port => port.length > 0 && !isNaN(parseInt(port)))
-      .map(port => ({ port, service: this.getServiceByPort(port) }));
+    // Порт отделяется последним двоеточием, а не первым: у адреса IPv6
+    // (`[::]:4847`, `:::22`) двоеточий несколько, и по первому порт был пуст
+    const seen = new Set<string>();
+    for (const address of portsOutput.split('\n')) {
+      const port = address.slice(address.lastIndexOf(':') + 1).trim();
+      if (port && /^\d+$/.test(port)) seen.add(port);
+    }
+
+    const ports = [...seen].map(port => ({ port, service: this.getServiceByPort(port) }));
 
     // Connection count
     const connectionsOutput = await this.read(
@@ -517,8 +535,11 @@ export class SnapshotTool {
     output += `  CPU:    ${cores}, ${cpuUsage}, load: ${load}\n`;
     output += `  Memory: ${snapshot.resources.memory.used} / ${snapshot.resources.memory.total} (${memPercent})\n`;
     output += `  Disk:\n`;
-    snapshot.resources.disk.forEach((d: any) => {
+    snapshot.resources.disk.items.forEach((d: any) => {
       output += `    ${d.mount.padEnd(10)} ${d.used.padEnd(8)} / ${d.size.padEnd(8)} (${d.percent})\n`;
+    });
+    snapshot.resources.disk.unparsed.forEach((line: string) => {
+      output += `    NOT CHECKED: df printed a row in an unexpected shape: ${line}\n`;
     });
     output += '\n';
     

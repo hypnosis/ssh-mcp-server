@@ -165,6 +165,85 @@ describe('ssh_audit_baseline: раздел диска на BusyBox', () => {
     expect(text).toContain('/ disk 95% full');
     expect(text).not.toContain('NOT CHECKED');
   });
+
+  it('том с длинным именем df переносит на две строки — запись собирается целиком', async () => {
+    serverSays(
+      baseline({
+        df: [
+          'Filesystem     Type      Size  Used Avail Use% Mounted on',
+          'nfs-storage.internal.example.com:/export/media/library',
+          '               nfs4      2.0T  1.7T  300G  85% /mnt/media',
+        ].join('\n'),
+      })
+    );
+
+    const text = await answer('ssh_audit_baseline');
+    const result = JSON.parse(text.slice(text.indexOf('{')));
+
+    expect(result.disk).toHaveLength(1);
+    expect(result.disk[0]).toMatchObject({
+      filesystem: 'nfs-storage.internal.example.com:/export/media/library',
+      mount: '/mnt/media',
+      pct: 85,
+    });
+  });
+
+  it('строка df чужого вида попадает в «нечем проверить»', async () => {
+    serverSays(
+      baseline({
+        df: 'Filesystem Type Size Used Available Use% Mounted on\ndf: /mnt/cold: Permission denied',
+      })
+    );
+
+    const text = await answer('ssh_audit_baseline');
+
+    expect(text).toContain('disk row df printed in an unexpected shape: df: /mnt/cold: Permission denied');
+  });
+});
+
+/**
+ * У `free` из procps старше 2014 года колонки `available` нет вовсе, и
+ * последней идёт `cached`: взятая по позиции, она выдавала кэш за свободную
+ * память.
+ */
+describe('ssh_audit_baseline: показатели памяти', () => {
+  const OLD_FREE = [
+    '             total       used       free     shared    buffers     cached',
+    'Mem:          7.7G       6.9G       800M        79M       120M       3.4G',
+    '-/+ buffers/cache:       3.4G       4.3G',
+    'Swap:         1.0G          0       1.0G',
+  ].join('\n');
+
+  const MODERN_FREE = [
+    '               total        used        free      shared  buff/cache   available',
+    'Mem:           7.7Gi       3.2Gi       3.3Gi        79Mi       1.5Gi       4.6Gi',
+    'Swap:          1.0Gi          0B       1.0Gi',
+  ].join('\n');
+
+  it('free без колонки available не выдаёт кэш за доступную память', async () => {
+    serverSays(baseline({ free: OLD_FREE }));
+
+    const text = await answer('ssh_audit_baseline', { include: ['mem'] });
+
+    expect(text).toContain('memory: total=7.7G used=6.9G avail=n/a');
+    expect(text).not.toContain('avail=3.4G');
+  });
+
+  it('free с колонкой available читает именно её', async () => {
+    serverSays(baseline({ free: MODERN_FREE }));
+
+    const text = await answer('ssh_audit_baseline', { include: ['mem'] });
+
+    expect(text).toContain('memory: total=7.7Gi used=3.2Gi avail=4.6Gi');
+  });
+
+  it('вывод без заголовка разбирается по порядку колонок', async () => {
+    serverSays(baseline({ free: 'Mem:  7.7G  2.9G  2.9G' }));
+
+    const text = await answer('ssh_audit_baseline', { include: ['mem'] });
+
+    expect(text).toContain('memory: total=7.7G used=2.9G avail=n/a');
+  });
 });
 
 describe('ssh_audit_baseline: слушающие сокеты', () => {

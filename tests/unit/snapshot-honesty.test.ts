@@ -211,6 +211,64 @@ describe('ssh_snapshot: службы и порты', () => {
     expect(text).toMatch(/22\s+ssh/);
     expect(text).toMatch(/443\s+https/);
   });
+
+  it('порт берётся после последнего двоеточия, иначе слушатель IPv6 пропадает', async () => {
+    respondWith([[/LISTEN/, '0.0.0.0:22\n[::]:4847\n:::9090']]);
+
+    const text = await snapshot();
+
+    expect(text).toMatch(/4847\s+unknown/);
+    expect(text).toMatch(/9090\s+unknown/);
+  });
+
+  it('один порт на IPv4 и IPv6 печатается одной строкой', async () => {
+    respondWith([[/LISTEN/, '0.0.0.0:22\n:::22']]);
+
+    const text = await snapshot();
+
+    expect(text.match(/^\s+22\s+ssh$/gm)).toHaveLength(1);
+  });
+});
+
+/**
+ * Обзор дисков читал `df -h | grep "^/dev/"`: корень контейнера лежит на
+ * overlay и в список не попадал, зато попадали файлы, подмонтированные внутрь.
+ */
+describe('ssh_snapshot: список дисков', () => {
+  const CONTAINER_DF = [
+    'Filesystem           Type            Size      Used Available Use% Mounted on',
+    'overlay              overlay       487.1G      5.7G    456.6G   1% /',
+    'tmpfs                tmpfs          64.0M         0     64.0M   0% /dev',
+    '/dev/vda1            ext4          487.1G      5.7G    456.6G   1% /etc/resolv.conf',
+    '/dev/vda1            ext4          487.1G      5.7G    456.6G   1% /etc/hosts',
+  ].join('\n');
+
+  it('корень на overlay в обзоре есть', async () => {
+    respondWith([[/^df /, CONTAINER_DF]]);
+
+    expect(await snapshot()).toMatch(/\/\s+5\.7G\s+\/ 487\.1G\s+\(1%\)/);
+  });
+
+  it('одно устройство под несколькими точками показывается один раз', async () => {
+    respondWith([[/^df /, CONTAINER_DF]]);
+
+    const text = await snapshot();
+
+    expect(text).toContain('/etc/hosts');
+    expect(text).not.toContain('/etc/resolv.conf');
+  });
+
+  it('строка чужого вида печатается как непроверенная, а не пропадает', async () => {
+    respondWith([
+      [/^df /, 'Filesystem Type Size\ndf: /mnt/cold: Permission denied'],
+    ]);
+
+    const text = await snapshot();
+
+    expect(text).toContain(
+      'NOT CHECKED: df printed a row in an unexpected shape: df: /mnt/cold: Permission denied'
+    );
+  });
 });
 
 /**

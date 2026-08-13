@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
+import { parseDfTable } from '../utils/df-table.js';
 
 /**
  * Разделы отчёта. Отсутствующее поле значит «раздел не запрашивали»:
@@ -346,7 +347,10 @@ export class AuditTool {
 
     if (include.has('disk')) {
       if (!(s.get('df') || '').trim()) unavailable.push('disk (df gave no output)');
-      result.disk = this.parseDf(s.get('df') || '');
+      const df = this.parseDf(s.get('df') || '');
+      result.disk = df.disk;
+      for (const line of df.unparsed)
+        unavailable.push(`disk row df printed in an unexpected shape: ${line}`);
     }
 
     if (include.has('mem')) {
@@ -458,32 +462,19 @@ export class AuditTool {
     return result;
   }
 
-  /**
-   * Ровно те системы, что раньше отсекались флагами `-x` у самой df.
-   * Список не расширяем: overlay — это корень контейнера, и его исчезновение
-   * из отчёта было бы новой потерей данных вместо исправленной.
-   */
-  private static readonly PSEUDO_FS = new Set(['tmpfs', 'devtmpfs', 'squashfs']);
-
-  private parseDf(text: string): BaselineResult['disk'] {
-    const out: BaselineResult['disk'] = [];
-    const lines = text.split('\n').slice(1); // skip header
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const cols = line.split(/\s+/);
-      if (cols.length < 7) continue;
-      if (AuditTool.PSEUDO_FS.has(cols[1])) continue;
-      const pct = parseInt(cols[5].replace('%', ''), 10);
-      out.push({
-        filesystem: cols[0],
-        size: cols[2],
-        used: cols[3],
-        avail: cols[4],
-        pct: isNaN(pct) ? 0 : pct,
-        mount: cols.slice(6).join(' '),
-      });
-    }
-    return out;
+  private parseDf(text: string): { disk: BaselineResult['disk']; unparsed: string[] } {
+    const table = parseDfTable(text);
+    return {
+      disk: table.rows.map(({ filesystem, size, used, avail, pct, mount }) => ({
+        filesystem,
+        size,
+        used,
+        avail,
+        pct,
+        mount,
+      })),
+      unparsed: table.unparsed,
+    };
   }
 
   /**
@@ -512,14 +503,31 @@ export class AuditTool {
     };
   }
 
+  /**
+   * Показатели памяти по именам колонок заголовка.
+   *
+   * У `free` из procps старше 2014 года колонки `available` нет вовсе, и
+   * последней идёт `cached`: взятая по позиции, она выдавала кэш за свободную
+   * память — вдвое больше, чем есть.
+   */
   private parseFree(text: string): BaselineResult['memory'] {
-    const memLine = text.split('\n').find((l) => /^Mem:/.test(l)) || '';
-    const c = memLine.split(/\s+/);
+    const lines = text.split('\n');
+    const names = (lines.find((l) => /^\s+total\b/.test(l)) || '').trim().split(/\s+/).filter(Boolean);
+    const values = (lines.find((l) => /^Mem:/.test(l)) || '').trim().split(/\s+/).slice(1);
+
+    // Без заголовка остаётся только порядок колонок, общий для всех free;
+    // `available` в этом порядке места не имеет — его и печатают не все
+    const column = (name: string, position?: number) => {
+      if (names.length === 0) return (position === undefined ? '' : values[position]) || 'n/a';
+      const at = names.indexOf(name);
+      return (at >= 0 ? values[at] : '') || 'n/a';
+    };
+
     return {
-      total: c[1] || 'n/a',
-      used: c[2] || 'n/a',
-      free: c[3] || 'n/a',
-      available: c[c.length - 1] || 'n/a',
+      total: column('total', 0),
+      used: column('used', 1),
+      free: column('free', 2),
+      available: column('available'),
     };
   }
 

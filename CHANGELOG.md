@@ -96,6 +96,14 @@ done, failed, nothing to check with — are now distinct in the answer itself.
   verified (no `sha256sum`, no `openssl`), or was not requested.
 - `ssh_upload`: `owner` without `sudo: true` is reported as not applied — for single
   files and for directories, where `chown` was not even attempted.
+- `ssh_snapshot` no longer loses readings on a server that cuts channels opened in a
+  burst (dropbear does). Exit code 255 with no output at all is now recognised as a
+  closed channel rather than a value, and retried immediately for reads that declared
+  themselves safe to repeat — `ssh_exec` running `exit 255` still answers `Exit code:
+  255`. Reads run four at a time, a lost reading yields an empty metric instead of an
+  empty report, and an unread core count or load average says `NOT CHECKED` instead of
+  showing `0 cores`. Measured: twelve consecutive router snapshots, twelve complete
+  answers, unchanged timing elsewhere.
 
 ### Known limitations
 Acceptance found more than this release fixes. The rest is recorded in
@@ -105,10 +113,6 @@ Acceptance found more than this release fixes. The rest is recorded in
 - `ssh_exec` answers a timeout about 5 s later than the value passed, because the kill
   escalates to `SIGKILL` after a fixed grace period; `ssh_log_search` has no way to limit
   its output and returned 3736 lines in one answer on a real journal (`TD-13`).
-- `ssh_snapshot` issues ten parallel reads on one connection. A server that allows fewer
-  sessions per connection (dropbear, or any `MaxSessions` below the OpenSSH default of
-  ten) drops some of them silently, and the empty read is printed as `0 cores` or an
-  empty load average (`TD-12`).
 - Output of `df`, `free` and `ss` is parsed by column position: files mounted into a
   container appear in the disk list, a long filesystem name drops its row entirely, an
   IPv6-only listener is skipped, and `available` memory can be the cache size on

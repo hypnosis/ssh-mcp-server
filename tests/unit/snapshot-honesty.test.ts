@@ -212,3 +212,97 @@ describe('ssh_snapshot: службы и порты', () => {
     expect(text).toMatch(/443\s+https/);
   });
 });
+
+/**
+ * Оборванное чтение приходит пустым ответом, и снимок печатал его как факт:
+ * машина с нулём процессоров и пустой строкой нагрузки. Замер на стенде с
+ * dropbear давал такой ответ в двух снимках из шести.
+ */
+describe('ssh_snapshot: оборванное чтение — не значение', () => {
+  it('нечитанное число ядер не выдаётся за ноль ядер', async () => {
+    respondWith([
+      [/loadavg/, '0.10 0.20 0.30 1/100 42'],
+      [/^top -bn1/, TOP_PROCPS],
+    ]);
+
+    const text = await snapshot();
+
+    expect(text).toContain('cores NOT CHECKED');
+    expect(text).not.toContain('0 cores');
+  });
+
+  it('нечитанная нагрузка не выдаётся за пустую', async () => {
+    respondWith([
+      [/nproc/, '4'],
+      [/^top -bn1/, TOP_PROCPS],
+    ]);
+
+    expect(await snapshot()).toContain('load: NOT CHECKED');
+  });
+
+  it('прочитанные ядра и нагрузка печатаются как есть', async () => {
+    respondWith([
+      [/nproc/, '4'],
+      [/loadavg/, '0.15 0.22 0.19 1/512 30412'],
+      [/^top -bn1/, TOP_PROCPS],
+    ]);
+
+    const text = await snapshot();
+
+    expect(text).toContain('4 cores');
+    expect(text).toContain('load: 0.15 0.22 0.19');
+  });
+});
+
+/**
+ * Залп из десяти мгновенных команд dropbear обрывает, поэтому чтения снимка
+ * идут очередью. Предел проверяется по числу одновременно висящих вызовов.
+ */
+describe('ssh_snapshot: очередь чтений', () => {
+  it('одновременных чтений не больше четырёх', async () => {
+    let running = 0;
+    let peak = 0;
+
+    executeMock.mockImplementation(async () => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running -= 1;
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    });
+
+    await snapshot();
+
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(executeMock.mock.calls.length).toBeGreaterThan(4);
+  });
+});
+
+/**
+ * Снимок собирается из независимых чтений, и сорванное чтение — это пустой
+ * показатель, а не пустой отчёт: двойной обрыв канала на стенде с dropbear
+ * заменял снимок целиком одной строкой ошибки.
+ */
+describe('ssh_snapshot: сорванное чтение не рушит отчёт', () => {
+  it('исключение одного чтения оставляет остальные на месте', async () => {
+    executeMock.mockImplementation(async (_config: unknown, command: string) => {
+      if (/nproc/.test(String(command))) {
+        throw new Error('The channel to example.com:22 closed before the command produced output.');
+      }
+      if (/hostname/.test(String(command))) {
+        return { stdout: 'router', stderr: '', exitCode: 0, truncated: false };
+      }
+      if (/loadavg/.test(String(command))) {
+        return { stdout: '0.10 0.20 0.30 1/100 42', stderr: '', exitCode: 0, truncated: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    });
+
+    const text = await snapshot();
+
+    expect(text).toContain('router');
+    expect(text).toContain('cores NOT CHECKED');
+    expect(text).toContain('load: 0.10 0.20 0.30');
+    expect(text).not.toMatch(/^Error:/);
+  });
+});

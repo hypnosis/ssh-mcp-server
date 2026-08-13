@@ -34,6 +34,17 @@ export class SSHTransportError extends SSHRunnerError {
 }
 
 /**
+ * Канал закрылся, не дав команде ничего напечатать. Соединение при этом живо,
+ * поэтому повтор идёт сразу — паузу здесь ждать нечего и некого.
+ */
+export class SSHChannelClosedError extends SSHTransportError {
+  constructor(message: string, details: { exitCode?: number; stderr?: string } = {}) {
+    super(message, details);
+    this.name = 'SSHChannelClosedError';
+  }
+}
+
+/**
  * Ошибка аутентификации — повторять бессмысленно и вредно:
  * каждая попытка засчитывается сервером как неудачный вход
  */

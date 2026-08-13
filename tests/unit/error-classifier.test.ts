@@ -13,6 +13,7 @@ import {
 import {
   SSHAuthError,
   SSHBinaryMissingError,
+  SSHChannelClosedError,
   SSHHostKeyError,
   SSHMuxLimitError,
   SSHTransportError,
@@ -206,6 +207,53 @@ describe('error-classifier', () => {
         CONTEXT
       );
       expect(error?.message).toMatch(/example\.com:22/);
+    });
+  });
+
+  /**
+   * Так отвечает dropbear на залп коротких команд по общему соединению: код 255,
+   * ни знака вывода, ни строки диагностики. Снимок печатал это как «0 ядер».
+   */
+  describe('оборванный канал без единого знака вывода', () => {
+    const CLOSED = { exitCode: SSH_FAILURE_EXIT_CODE, stderr: '', stdout: '' };
+
+    it('у идемпотентной команды это транспортный сбой', () => {
+      const error = classifySpawnOutcome(CLOSED, { ...CONTEXT, idempotent: true });
+      expect(error).toBeInstanceOf(SSHChannelClosedError);
+      expect(error?.message).toMatch(/closed before the command produced output/);
+    });
+
+    it('такой сбой повторяется, потому что он транспортный', () => {
+      const error = classifySpawnOutcome(CLOSED, { ...CONTEXT, idempotent: true });
+      expect(isRetryable(error, true)).toBe(true);
+    });
+
+    it('без пометки об идемпотентности остаётся обычным результатом', () => {
+      expect(classifySpawnOutcome(CLOSED, CONTEXT)).toBeNull();
+      expect(classifySpawnOutcome(CLOSED, { ...CONTEXT, idempotent: false })).toBeNull();
+    });
+
+    it('команда, напечатавшая хоть что-то, обрывом не считается', () => {
+      const withStdout = { ...CLOSED, stdout: 'before' };
+      const withStderr = { ...CLOSED, stderr: 'nope' };
+      expect(classifySpawnOutcome(withStdout, { ...CONTEXT, idempotent: true })).toBeNull();
+      expect(classifySpawnOutcome(withStderr, { ...CONTEXT, idempotent: true })).toBeNull();
+    });
+
+    it('пробелы выводом не считаются', () => {
+      const error = classifySpawnOutcome(
+        { exitCode: SSH_FAILURE_EXIT_CODE, stderr: ' \n', stdout: '  ' },
+        { ...CONTEXT, idempotent: true }
+      );
+      expect(error).toBeInstanceOf(SSHChannelClosedError);
+    });
+
+    it('другой код возврата обрывом не считается', () => {
+      const error = classifySpawnOutcome(
+        { exitCode: 1, stderr: '', stdout: '' },
+        { ...CONTEXT, idempotent: true }
+      );
+      expect(error).toBeNull();
     });
   });
 });

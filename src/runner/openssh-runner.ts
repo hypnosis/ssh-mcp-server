@@ -12,6 +12,7 @@ import { buildRunnerEnv, ensureAskpassScript } from './askpass.js';
 import { classifySpawnOutcome, stripMuxNotices } from './error-classifier.js';
 import {
   SSHCancelledError,
+  SSHChannelClosedError,
   SSHRunnerError,
   SSHTimeoutError,
   isRetryable,
@@ -109,7 +110,7 @@ export class OpenSshRunner implements CommandRunner {
             `[Runner] ${this.destination}: attempt ${attempt}/${maxAttempts} failed ` +
             `(${(error as Error).message}), retrying`
           );
-          await sleep(RETRY_DELAY_MS);
+          await sleep(error instanceof SSHChannelClosedError ? 0 : RETRY_DELAY_MS);
           continue;
         }
 
@@ -326,8 +327,12 @@ export class OpenSshRunner implements CommandRunner {
     }
 
     const transportError = classifySpawnOutcome(
-      { spawnError: outcome.spawnError, exitCode: outcome.exitCode, stderr: rawStderr },
-      { host: this.config.host, port: this.config.port ?? 22 }
+      { spawnError: outcome.spawnError, exitCode: outcome.exitCode, stderr: rawStderr, stdout },
+      {
+        host: this.config.host,
+        port: this.config.port ?? 22,
+        idempotent: options.idempotent ?? false,
+      }
     );
 
     if (transportError) {

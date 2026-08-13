@@ -148,10 +148,22 @@ export class SnapshotTool {
   /**
    * Get service status
    */
-  private async getServices(config: any, profileName: string): Promise<Array<{ name: string; status: string; uptime: string | null }>> {
+  private async getServices(
+    config: any,
+    profileName: string
+  ): Promise<{ checked: boolean; items: Array<{ name: string; status: string; uptime: string | null }> }> {
     const services = ['nginx', 'apache2', 'docker', 'postgresql', 'mysql', 'redis', 'mongodb'];
     const results: Array<{ name: string; status: string; uptime: string | null }> = [];
-    
+
+    // Без systemctl каждая проверка отвечает «inactive», и сервер без systemd
+    // выглядит сервером, где ни одна служба не работает
+    const systemctl = await this.read(
+      config,
+      'command -v systemctl >/dev/null 2>&1 && echo yes || echo no',
+      profileName
+    );
+    if (systemctl !== 'yes') return { checked: false, items: [] };
+
     for (const service of services) {
       try {
         const status = await this.read(
@@ -173,42 +185,87 @@ export class SnapshotTool {
         // Service not found, skip
       }
     }
-    
-    return results;
+
+    return { checked: true, items: results };
   }
   
   /**
    * Get CPU information
    */
-  private async getCPU(config: any, profileName: string): Promise<{ cores: number; usage: number; loadAvg: string }> {
+  private async getCPU(config: any, profileName: string): Promise<{ cores: number; usage: number | null; loadAvg: string }> {
     const coresOutput = await this.read(config, 'nproc', profileName);
     const loadOutput = await this.read(config, 'cat /proc/loadavg', profileName);
-    const usageOutput = await this.read(
-      config,
-      'top -bn1 | grep "Cpu(s)" | awk \'{print $2}\' | cut -d"%" -f1',
-      profileName
-    );
+    // Строка сводки разбирается здесь, а не колонкой в awk: у procps она
+    // «%Cpu(s): … 95.1 id», у BusyBox «CPU: … 99% idle», и вырезанная вслепую
+    // вторая колонка на BusyBox приносила число из таблицы процессов
+    const topOutput = await this.read(config, 'top -bn1 2>/dev/null | head -6', profileName);
 
     // `|| 0` обязателен: без него недоступный nproc даёт NaN прямо в отчёте
     const cores = parseInt(coresOutput) || 0;
-    const usage = parseFloat(usageOutput) || 0;
+    const usage = SnapshotTool.parseCpuUsage(topOutput);
     const loadAvg = loadOutput.split(' ').slice(0, 3).join(' ');
 
     return { cores, usage, loadAvg };
+  }
+
+  /**
+   * Занятость процессора из сводной строки `top`: считается от простоя, потому
+   * что доля простоя есть в обоих форматах. `null` — строки не нашлось.
+   */
+  private static parseCpuUsage(topOutput: string): number | null {
+    const line = topOutput
+      .split('\n')
+      .find((l) => /^\s*%?cpu(\(s\))?\s*:/i.test(l));
+    if (!line) return null;
+
+    const idle = line.match(/([\d.]+)\s*%?\s*id(?:le)?\b/);
+    if (!idle) return null;
+
+    const usage = 100 - parseFloat(idle[1]);
+    if (isNaN(usage)) return null;
+
+    return Math.min(100, Math.max(0, usage));
   }
   
   /**
    * Get Memory information
    */
-  private async getMemory(config: any, profileName: string): Promise<{ total: string; used: string; free: string; percent: number }> {
+  private async getMemory(config: any, profileName: string): Promise<{ total: string; used: string; free: string; percent: number | null }> {
     const parts = (await this.read(config, 'free -h | grep Mem', profileName)).split(/\s+/);
-    
+    const total = SnapshotTool.parseSize(parts[1]);
+    const used = SnapshotTool.parseSize(parts[2]);
+
     return {
       total: parts[1] || 'unknown',
       used: parts[2] || 'unknown',
       free: parts[3] || 'unknown',
-      percent: parts[2] && parts[1] ? Math.round((parseFloat(parts[2]) / parseFloat(parts[1])) * 100) : 0,
+      percent: total && used ? Math.round((used / total) * 100) : null,
     };
+  }
+
+  /** Множители суффиксов `free -h`: и `Gi` от coreutils, и `G` от BusyBox — степени 1024 */
+  private static readonly SIZE_FACTOR: Record<string, number> = {
+    b: 1,
+    k: 1024,
+    m: 1024 ** 2,
+    g: 1024 ** 3,
+    t: 1024 ** 4,
+    p: 1024 ** 5,
+  };
+
+  /**
+   * Размер с суффиксом в байты. Без приведения к общей единице `506Mi` и
+   * `3.8Gi` делились как 506 и 3.8 — отчёт объявлял 13316% занятой памяти.
+   */
+  private static parseSize(text: string | undefined): number | null {
+    const parsed = (text ?? '').match(/^([\d.]+)\s*([a-zA-Z]?)/);
+    if (!parsed) return null;
+
+    const value = parseFloat(parsed[1]);
+    if (isNaN(value)) return null;
+
+    const factor = parsed[2] ? SnapshotTool.SIZE_FACTOR[parsed[2].toLowerCase()] : 1;
+    return factor ? value * factor : null;
   }
   
   /**
@@ -267,13 +324,24 @@ export class SnapshotTool {
   /**
    * Get Network information
    */
-  private async getNetwork(config: any, profileName: string): Promise<{ listening: Array<{ port: string; service: string }>; connections: number }> {
-    // Open ports
+  private async getNetwork(
+    config: any,
+    profileName: string
+  ): Promise<{ checked: boolean; listening: Array<{ port: string; service: string }>; connections: number }> {
+    // Маркер обязателен: конвейер заканчивается на `sort`, поэтому отсутствие
+    // ss отдавало пустой список с кодом 0 — «никто не слушает» вместо
+    // «смотреть было нечем», и запасной netstat не звали никогда
     const portsOutput = await this.read(
       config,
-      'ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u || netstat -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u',
+      'if command -v ss >/dev/null 2>&1; then ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u; ' +
+        'elif command -v netstat >/dev/null 2>&1; then netstat -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u; ' +
+        'else echo NO_NET_TOOL; fi',
       profileName
     );
+
+    if (portsOutput.trim() === 'NO_NET_TOOL') {
+      return { checked: false, listening: [], connections: 0 };
+    }
 
     const ports = portsOutput.split('\n')
       .filter(port => port.length > 0 && !isNaN(parseInt(port)))
@@ -282,11 +350,12 @@ export class SnapshotTool {
     // Connection count
     const connectionsOutput = await this.read(
       config,
-      'ss -tn 2>/dev/null | grep ESTAB | wc -l || netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l',
+      'if command -v ss >/dev/null 2>&1; then ss -tn 2>/dev/null | grep ESTAB | wc -l; ' +
+        'else netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l; fi',
       profileName
     );
 
-    return { listening: ports, connections: parseInt(connectionsOutput) || 0 };
+    return { checked: true, listening: ports, connections: parseInt(connectionsOutput) || 0 };
   }
   
   /**
@@ -355,20 +424,30 @@ export class SnapshotTool {
     output += '─'.repeat(70) + '\n';
     output += 'SERVICES\n';
     output += '─'.repeat(70) + '\n';
-    if (snapshot.services.length > 0) {
-      snapshot.services.forEach((svc: any) => {
+    if (!snapshot.services.checked) {
+      output += '  NOT CHECKED: no systemctl on the server\n';
+    } else if (snapshot.services.items.length > 0) {
+      snapshot.services.items.forEach((svc: any) => {
         output += `  ${svc.name.padEnd(15)} ${svc.status === 'active' ? '✓' : '✗'} ${svc.status}\n`;
       });
     } else {
       output += '  No active services detected\n';
     }
     output += '\n';
-    
+
     output += '─'.repeat(70) + '\n';
     output += 'RESOURCES\n';
     output += '─'.repeat(70) + '\n';
-    output += `  CPU:    ${snapshot.resources.cpu.cores} cores, ${snapshot.resources.cpu.usage.toFixed(1)}% used, load: ${snapshot.resources.cpu.loadAvg}\n`;
-    output += `  Memory: ${snapshot.resources.memory.used} / ${snapshot.resources.memory.total} (${snapshot.resources.memory.percent}% used)\n`;
+    const cpuUsage =
+      snapshot.resources.cpu.usage === null
+        ? 'usage NOT CHECKED'
+        : `${snapshot.resources.cpu.usage.toFixed(1)}% used`;
+    const memPercent =
+      snapshot.resources.memory.percent === null
+        ? 'usage NOT CHECKED'
+        : `${snapshot.resources.memory.percent}% used`;
+    output += `  CPU:    ${snapshot.resources.cpu.cores} cores, ${cpuUsage}, load: ${snapshot.resources.cpu.loadAvg}\n`;
+    output += `  Memory: ${snapshot.resources.memory.used} / ${snapshot.resources.memory.total} (${memPercent})\n`;
     output += `  Disk:\n`;
     snapshot.resources.disk.forEach((d: any) => {
       output += `    ${d.mount.padEnd(10)} ${d.used.padEnd(8)} / ${d.size.padEnd(8)} (${d.percent})\n`;
@@ -392,11 +471,15 @@ export class SnapshotTool {
     output += '─'.repeat(70) + '\n';
     output += 'NETWORK\n';
     output += '─'.repeat(70) + '\n';
-    output += `  Established connections: ${snapshot.network.connections}\n`;
-    output += `  Listening ports:\n`;
-    snapshot.network.listening.forEach((p: any) => {
-      output += `    ${p.port.padEnd(6)} ${p.service}\n`;
-    });
+    if (!snapshot.network.checked) {
+      output += '  NOT CHECKED: neither ss nor netstat on the server\n';
+    } else {
+      output += `  Established connections: ${snapshot.network.connections}\n`;
+      output += `  Listening ports:\n`;
+      snapshot.network.listening.forEach((p: any) => {
+        output += `    ${p.port.padEnd(6)} ${p.service}\n`;
+      });
+    }
     output += '\n';
     
     if (snapshot.recentErrors.length > 0) {

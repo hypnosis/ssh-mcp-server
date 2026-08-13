@@ -445,6 +445,12 @@ describe('ssh_upload под sudo: как данные встают на мест
     expect(commandFor(/^chown /)).toBeUndefined();
   });
 
+  it('под sudo про потерянного владельца не предупреждают: он применён', async () => {
+    const text = await sudoUpload({ owner: 'root:root' });
+
+    expect(text).not.toContain('owner was NOT applied');
+  });
+
   it('родительский каталог создаётся под sudo, до передачи', async () => {
     await sudoUpload({ remote_path: '/etc/app/app.conf' });
 
@@ -1557,5 +1563,51 @@ describe('текст ответа', () => {
       ].join('\n')
     );
     expect(readFileSync(target, 'utf8')).toBe('payload');
+  });
+});
+
+/**
+ * Названного владельца нельзя терять молча: `chown` работает только под sudo,
+ * а без него файл остаётся за тем, кто подключился. У каталога `chown` не
+ * вызывается вовсе — рекурсивная отправка под sudo не поддерживается.
+ */
+describe('ssh_upload: владелец без sudo', () => {
+  it('файл: ответ говорит, что владелец не применён', async () => {
+    const text = await textOf(
+      call('ssh_upload', {
+        local_path: localFile,
+        remote_path: '/srv/app.js',
+        owner: 'daemon:daemon',
+        verify: false,
+      })
+    );
+
+    expect(text).toContain('✓ Upload OK: /srv/app.js');
+    expect(text).toContain('owner was NOT applied: chown needs sudo');
+    expect(commandFor(/^chown /)).toBeUndefined();
+  });
+
+  it('каталог: ответ говорит то же самое', async () => {
+    const text = await textOf(
+      call('ssh_upload', {
+        local_path: localDir,
+        remote_path: '/srv/app',
+        recursive: true,
+        owner: 'daemon:daemon',
+        mode: '700',
+      })
+    );
+
+    expect(text).toContain('owner was NOT applied: chown needs sudo');
+    expect(commandFor(/^chmod -R /)![0]).toContain('chmod -R 700');
+    expect(commandFor(/^chown /)).toBeUndefined();
+  });
+
+  it('без владельца предупреждения нет', async () => {
+    const text = await textOf(
+      call('ssh_upload', { local_path: localFile, remote_path: '/srv/app.js', verify: false })
+    );
+
+    expect(text).not.toContain('owner was NOT applied');
   });
 });

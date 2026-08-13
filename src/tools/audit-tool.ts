@@ -19,16 +19,20 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
 
+/**
+ * Разделы отчёта. Отсутствующее поле значит «раздел не запрашивали»:
+ * пустое значение в невыбранном разделе читается как факт о сервере.
+ */
 interface BaselineResult {
-  hostname: string;
-  uptime: string;
-  date_utc: string;
-  os: string;
-  kernel: string;
-  disk: Array<{ filesystem: string; size: string; used: string; avail: string; pct: number; mount: string }>;
-  memory: { total: string; used: string; free: string; available: string };
-  load: string;
-  net: {
+  hostname?: string;
+  uptime?: string;
+  date_utc?: string;
+  os?: string;
+  kernel?: string;
+  disk?: Array<{ filesystem: string; size: string; used: string; avail: string; pct: number; mount: string }>;
+  memory?: { total: string; used: string; free: string; available: string };
+  load?: string;
+  net?: {
     listeners: Array<{ proto: string; address: string; pid_program: string }>;
     interfaces: string[];
   };
@@ -38,19 +42,21 @@ interface BaselineResult {
     password_auth: string;
     pubkey_auth: string;
   };
-  services: {
+  services?: {
     failed: string[];
     running_count: number;
   };
+  /** `null` — раздел спрашивали, докера на сервере нет; поля нет — не спрашивали */
   docker?: {
     containers: Array<{ id: string; image: string; status: string; names: string }>;
     df: string;
+  } | null;
+  /** У каждого межсетевого экрана три исхода: нет его, не дали посмотреть, посмотрели */
+  firewall?: {
+    ufw: { status: 'not_installed' | 'no_access' | 'read'; active?: boolean; text: string };
+    iptables: { status: 'not_installed' | 'no_access' | 'read'; rules?: number };
   };
-  firewall: {
-    ufw: string;
-    iptables_rules: number;
-  };
-  updates: {
+  updates?: {
     upgradable: number;
     reboot_required: boolean;
   };
@@ -65,6 +71,11 @@ interface BaselineResult {
 }
 
 export class AuditTool {
+  /** Имена разделов отчёта — они же список допустимых значений `include` */
+  private static readonly BASELINE_SECTIONS = [
+    'system', 'disk', 'mem', 'net', 'ssh', 'services', 'docker', 'firewall', 'updates',
+  ];
+
   private executor: SSHExecutor;
 
   constructor() {
@@ -112,6 +123,12 @@ export class AuditTool {
             port: { type: 'number', description: 'TLS port. Default: 443.', default: 443 },
             check_chain: { type: 'boolean', default: true },
             check_renew_hook: { type: 'boolean', default: true },
+            sudo: {
+              type: 'boolean',
+              description:
+                'Read the Let\'s Encrypt renewal config with sudo. Without it an unprivileged user cannot see the hooks. Default: false.',
+              default: false,
+            },
           },
           required: ['domain'],
         },
@@ -185,6 +202,13 @@ export class AuditTool {
       'system', 'disk', 'mem', 'net', 'services', 'docker', 'firewall', 'updates',
       ...(args.include_sudo_sections ? ['ssh'] : []),
     ];
+    const unknown = include.filter((name) => !AuditTool.BASELINE_SECTIONS.includes(name));
+    if (unknown.length > 0) {
+      throw new Error(
+        `Unknown audit section(s): ${unknown.join(', ')}. ` +
+          `Available: ${AuditTool.BASELINE_SECTIONS.join(', ')}.`
+      );
+    }
     const compact = args.compact !== false;
 
     // Build a single batched script. Use a sentinel between sections so we
@@ -232,8 +256,22 @@ export class AuditTool {
       parts.push({ key: 'docker_df', cmd: 'docker system df 2>/dev/null || echo NO_DOCKER' });
     }
     if (include.includes('firewall')) {
-      parts.push({ key: 'ufw', cmd: '(ufw status verbose 2>/dev/null) || echo NO_UFW' });
-      parts.push({ key: 'iptables', cmd: '(iptables -nL 2>/dev/null | wc -l) || echo 0' });
+      // Маркеры обязательны: без них отсутствие ufw и отказ по правам дают тот
+      // же пустой вывод, что и выключенный экран, — и отчёт объявлял «выключен»
+      parts.push({
+        key: 'ufw',
+        cmd:
+          'if command -v ufw >/dev/null 2>&1; then ' +
+          'ufw status verbose 2>/dev/null || echo NO_UFW_ACCESS; ' +
+          'else echo NO_UFW; fi',
+      });
+      parts.push({
+        key: 'iptables',
+        cmd:
+          'if command -v iptables >/dev/null 2>&1; then ' +
+          'iptables -nL 2>/dev/null | wc -l; ' +
+          'else echo NO_IPTABLES; fi',
+      });
     }
     if (include.includes('updates')) {
       parts.push({ key: 'upgradable', cmd: '(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l) || echo 0' });
@@ -253,7 +291,7 @@ export class AuditTool {
     });
 
     const sections = this.splitSections(r.stdout, SEP);
-    const result = this.buildBaselineResult(sections, compact);
+    const result = this.buildBaselineResult(sections, compact, new Set(include), useSudo);
     return {
       content: [
         { type: 'text', text: this.formatBaseline(result, compact) },
@@ -280,81 +318,119 @@ export class AuditTool {
     return out;
   }
 
-  private buildBaselineResult(s: Map<string, string>, compact: boolean): BaselineResult {
+  private buildBaselineResult(
+    s: Map<string, string>,
+    compact: boolean,
+    include: Set<string>,
+    useSudo: boolean
+  ): BaselineResult {
     const trimLines = (txt: string, n: number) =>
       compact ? txt.split('\n').slice(0, n).join('\n') : txt;
 
-    const dfText = (s.get('df') || '').trim();
-    const listenersText = (s.get('listeners') || '').trim();
     const unavailable: string[] = [];
-    if (!dfText) unavailable.push('disk (df gave no output)');
-    if (!listenersText || listenersText === 'NO_NET_TOOL')
-      unavailable.push('listeners (neither ss nor netstat on the server)');
-
     const result: BaselineResult = {
-      hostname: (s.get('hostname') || '').trim(),
-      uptime: (s.get('uptime') || '').trim(),
-      date_utc: (s.get('date_utc') || '').trim(),
-      os: (s.get('os') || '').trim(),
-      kernel: (s.get('kernel') || '').trim(),
-      load: (s.get('load') || '').trim(),
-      disk: this.parseDf(s.get('df') || ''),
-      memory: this.parseFree(s.get('free') || ''),
-      net: {
+      unavailable,
+      red_flags: { critical: [], warning: [], ok: [] },
+    };
+
+    if (include.has('system')) {
+      result.hostname = (s.get('hostname') || '').trim();
+      result.uptime = (s.get('uptime') || '').trim();
+      result.date_utc = (s.get('date_utc') || '').trim();
+      result.os = (s.get('os') || '').trim();
+      result.kernel = (s.get('kernel') || '').trim();
+      result.load = (s.get('load') || '').trim();
+    }
+
+    if (include.has('disk')) {
+      if (!(s.get('df') || '').trim()) unavailable.push('disk (df gave no output)');
+      result.disk = this.parseDf(s.get('df') || '');
+    }
+
+    if (include.has('mem')) {
+      result.memory = this.parseFree(s.get('free') || '');
+    }
+
+    if (include.has('net')) {
+      const listenersText = (s.get('listeners') || '').trim();
+      if (!listenersText || listenersText === 'NO_NET_TOOL')
+        unavailable.push('listeners (neither ss nor netstat on the server)');
+      result.net = {
         listeners: this.parseListeners(trimLines(s.get('listeners') || '', 80)),
         interfaces: (s.get('interfaces') || '').split('\n').filter(Boolean).slice(0, compact ? 10 : 100),
-      },
-      services: {
+      };
+    }
+
+    if (include.has('services')) {
+      result.services = {
         failed: (s.get('failed') || '')
           .split('\n')
           .map((l) => l.trim())
           .filter(Boolean)
           .map((l) => l.split(/\s+/)[0]),
         running_count: parseInt((s.get('running_count') || '0').trim(), 10) || 0,
-      },
-      firewall: {
-        ufw: trimLines(s.get('ufw') || '', 12),
-        iptables_rules: parseInt((s.get('iptables') || '0').trim(), 10) || 0,
-      },
-      updates: {
-        upgradable: parseInt((s.get('upgradable') || '0').trim(), 10) || 0,
-        reboot_required: (s.get('reboot_required') || '').trim() === 'YES',
-      },
-      unavailable,
-      red_flags: { critical: [], warning: [], ok: [] },
-    };
-
-    if (s.has('sshd')) {
-      const sshd = s.get('sshd') || '';
-      const get = (k: string) =>
-        (sshd.match(new RegExp(`^${k}\\s+(.+)$`, 'm')) || [])[1] || '';
-      result.ssh = {
-        port: get('port'),
-        permit_root_login: get('permitrootlogin'),
-        password_auth: get('passwordauthentication'),
-        pubkey_auth: get('pubkeyauthentication'),
       };
     }
 
-    if (s.has('docker_ps')) {
-      const ps = (s.get('docker_ps') || '').trim();
-      if (ps !== 'NO_DOCKER' && ps) {
-        const containers = ps
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => {
-            const [id, image, status, names] = line.split('\t');
-            return { id, image, status, names };
-          });
-        result.docker = {
-          containers,
-          df: trimLines(s.get('docker_df') || '', 8),
+    if (include.has('firewall')) {
+      result.firewall = this.parseFirewall(
+        trimLines(s.get('ufw') || '', 12),
+        (s.get('iptables') || '').trim()
+      );
+      if (result.firewall.ufw.status === 'no_access')
+        unavailable.push('firewall/ufw (installed, but its status is not readable — needs sudo?)');
+      if (result.firewall.iptables.status === 'no_access')
+        unavailable.push('firewall/iptables (installed, but its rules are not readable — needs sudo?)');
+    }
+
+    if (include.has('updates')) {
+      result.updates = {
+        upgradable: parseInt((s.get('upgradable') || '0').trim(), 10) || 0,
+        reboot_required: (s.get('reboot_required') || '').trim() === 'YES',
+      };
+    }
+
+    if (include.has('ssh')) {
+      const sshd = (s.get('sshd') || '').trim();
+      if (!sshd) {
+        // Пустой `sshd -T` — это «не посмотрели», а проверка красных флагов по
+        // пустым полям объявляет небезопасную настройку безопасной
+        unavailable.push(
+          useSudo
+            ? 'sshd config (sshd -T gave no output)'
+            : 'sshd config (sshd -T gave no output — run with include_sudo_sections: true)'
+        );
+      } else {
+        const get = (k: string) =>
+          (sshd.match(new RegExp(`^${k}\\s+(.+)$`, 'm')) || [])[1] || '';
+        result.ssh = {
+          port: get('port'),
+          permit_root_login: get('permitrootlogin'),
+          password_auth: get('passwordauthentication'),
+          pubkey_auth: get('pubkeyauthentication'),
         };
       }
     }
 
+    if (include.has('docker')) {
+      const ps = (s.get('docker_ps') || '').trim();
+      result.docker =
+        ps && ps !== 'NO_DOCKER'
+          ? {
+              containers: ps
+                .split('\n')
+                .filter(Boolean)
+                .map((line) => {
+                  const [id, image, status, names] = line.split('\t');
+                  return { id, image, status, names };
+                }),
+              df: trimLines(s.get('docker_df') || '', 8),
+            }
+          : null;
+    }
+
     // Red-flags classification
-    for (const d of result.disk) {
+    for (const d of result.disk ?? []) {
       if (d.pct >= 90) result.red_flags.critical.push(`${d.mount} disk ${d.pct}% full`);
       else if (d.pct >= 70) result.red_flags.warning.push(`${d.mount} disk ${d.pct}% full`);
       else result.red_flags.ok.push(`${d.mount} disk ${d.pct}%`);
@@ -370,11 +446,11 @@ export class AuditTool {
       if (exited.length > 0)
         result.red_flags.warning.push(`${exited.length} exited container(s): ${exited.map((c) => c.names).join(', ')}`);
     }
-    if (result.services.failed.length > 0)
+    if (result.services && result.services.failed.length > 0)
       result.red_flags.warning.push(`failed units: ${result.services.failed.join(', ')}`);
-    if (result.updates.reboot_required)
+    if (result.updates?.reboot_required)
       result.red_flags.warning.push('reboot-required pending');
-    if (result.updates.upgradable > 50)
+    if (result.updates && result.updates.upgradable > 50)
       result.red_flags.warning.push(`${result.updates.upgradable} upgradable packages`);
 
     return result;
@@ -408,6 +484,32 @@ export class AuditTool {
     return out;
   }
 
+  /**
+   * Состояние межсетевого экрана по маркерам команды раздела.
+   *
+   * Пустой список правил `iptables` тоже значит «не посмотрели»: даже на машине
+   * без единого правила команда печатает три заголовка цепочек.
+   */
+  private parseFirewall(ufwText: string, iptablesText: string): NonNullable<BaselineResult['firewall']> {
+    const ufw = ufwText.trim();
+    const iptablesRules = parseInt(iptablesText, 10);
+
+    return {
+      ufw:
+        ufw === 'NO_UFW'
+          ? { status: 'not_installed', text: '' }
+          : ufw === 'NO_UFW_ACCESS' || !ufw
+            ? { status: 'no_access', text: '' }
+            : { status: 'read', active: /Status: active/.test(ufw), text: ufwText },
+      iptables:
+        iptablesText === 'NO_IPTABLES'
+          ? { status: 'not_installed' }
+          : isNaN(iptablesRules) || iptablesRules === 0
+            ? { status: 'no_access' }
+            : { status: 'read', rules: iptablesRules },
+    };
+  }
+
   private parseFree(text: string): BaselineResult['memory'] {
     const memLine = text.split('\n').find((l) => /^Mem:/.test(l)) || '';
     const c = memLine.split(/\s+/);
@@ -429,8 +531,8 @@ export class AuditTool {
    * отсеиваются заголовки netstat — раньше они приезжали в отчёт записями
    * вида `{ proto: "Proto", address: "Address" }`.
    */
-  private parseListeners(text: string): BaselineResult['net']['listeners'] {
-    const out: BaselineResult['net']['listeners'] = [];
+  private parseListeners(text: string): NonNullable<BaselineResult['net']>['listeners'] {
+    const out: NonNullable<BaselineResult['net']>['listeners'] = [];
     for (const line of text.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -449,16 +551,30 @@ export class AuditTool {
     return out;
   }
 
+  private static formatUfw(ufw: NonNullable<BaselineResult['firewall']>['ufw']): string {
+    if (ufw.status === 'not_installed') return 'not installed';
+    if (ufw.status === 'no_access') return 'NOT CHECKED';
+    return ufw.active ? 'active' : 'inactive';
+  }
+
+  private static formatIptables(ipt: NonNullable<BaselineResult['firewall']>['iptables']): string {
+    if (ipt.status === 'not_installed') return 'not installed';
+    if (ipt.status === 'no_access') return 'NOT CHECKED';
+    return `${ipt.rules} rule line(s)`;
+  }
+
   private formatBaseline(r: BaselineResult, compact: boolean): string {
     const lines: string[] = [];
     lines.push('=== ssh_audit_baseline ===');
-    lines.push(`host:    ${r.hostname}`);
-    lines.push(`os:      ${r.os}`);
-    lines.push(`kernel:  ${r.kernel}`);
-    lines.push(`uptime:  ${r.uptime}`);
-    lines.push(`date:    ${r.date_utc}`);
-    lines.push(`load:    ${r.load}`);
-    lines.push('');
+    if (r.hostname !== undefined) {
+      lines.push(`host:    ${r.hostname}`);
+      lines.push(`os:      ${r.os}`);
+      lines.push(`kernel:  ${r.kernel}`);
+      lines.push(`uptime:  ${r.uptime}`);
+      lines.push(`date:    ${r.date_utc}`);
+      lines.push(`load:    ${r.load}`);
+      lines.push('');
+    }
 
     if (r.red_flags.critical.length > 0) {
       lines.push('CRITICAL:');
@@ -477,19 +593,26 @@ export class AuditTool {
       lines.push('');
     }
 
-    lines.push('disk:');
-    for (const d of r.disk) lines.push(`  ${d.mount}: ${d.used}/${d.size} (${d.pct}%)`);
-    lines.push('');
-    lines.push(`memory: total=${r.memory.total} used=${r.memory.used} avail=${r.memory.available}`);
-    lines.push('');
+    if (r.disk) {
+      lines.push('disk:');
+      for (const d of r.disk) lines.push(`  ${d.mount}: ${d.used}/${d.size} (${d.pct}%)`);
+      lines.push('');
+    }
 
-    lines.push(`listeners (${r.net.listeners.length}):`);
-    const showN = compact ? 15 : r.net.listeners.length;
-    for (const l of r.net.listeners.slice(0, showN))
-      lines.push(`  ${l.proto.padEnd(5)} ${l.address.padEnd(28)} ${l.pid_program}`);
-    if (r.net.listeners.length > showN)
-      lines.push(`  ... +${r.net.listeners.length - showN} more`);
-    lines.push('');
+    if (r.memory) {
+      lines.push(`memory: total=${r.memory.total} used=${r.memory.used} avail=${r.memory.available}`);
+      lines.push('');
+    }
+
+    if (r.net) {
+      lines.push(`listeners (${r.net.listeners.length}):`);
+      const showN = compact ? 15 : r.net.listeners.length;
+      for (const l of r.net.listeners.slice(0, showN))
+        lines.push(`  ${l.proto.padEnd(5)} ${l.address.padEnd(28)} ${l.pid_program}`);
+      if (r.net.listeners.length > showN)
+        lines.push(`  ... +${r.net.listeners.length - showN} more`);
+      lines.push('');
+    }
 
     if (r.ssh) {
       lines.push('sshd:');
@@ -497,24 +620,30 @@ export class AuditTool {
       lines.push('');
     }
 
-    lines.push(`services: running=${r.services.running_count}, failed=${r.services.failed.length}`);
-    if (r.services.failed.length > 0)
-      lines.push(`  failed: ${r.services.failed.join(', ')}`);
-    lines.push('');
+    if (r.services) {
+      lines.push(`services: running=${r.services.running_count}, failed=${r.services.failed.length}`);
+      if (r.services.failed.length > 0)
+        lines.push(`  failed: ${r.services.failed.join(', ')}`);
+      lines.push('');
+    }
 
     if (r.docker) {
       lines.push(`docker: containers=${r.docker.containers.length}`);
       for (const c of r.docker.containers.slice(0, compact ? 8 : r.docker.containers.length))
         lines.push(`  ${c.names.padEnd(30)} ${c.status.padEnd(20)} ${c.image}`);
       lines.push('');
-    } else {
+    } else if (r.docker === null) {
       lines.push('docker: not installed or not accessible');
       lines.push('');
     }
 
-    lines.push(`firewall: ufw_active=${/Status: active/.test(r.firewall.ufw)}, iptables_rules=${r.firewall.iptables_rules}`);
-    lines.push(`updates:  upgradable=${r.updates.upgradable}, reboot_required=${r.updates.reboot_required}`);
-    lines.push('');
+    if (r.firewall) {
+      lines.push(`firewall: ufw=${AuditTool.formatUfw(r.firewall.ufw)}, iptables=${AuditTool.formatIptables(r.firewall.iptables)}`);
+    }
+    if (r.updates) {
+      lines.push(`updates:  upgradable=${r.updates.upgradable}, reboot_required=${r.updates.reboot_required}`);
+    }
+    if (r.firewall || r.updates) lines.push('');
 
     lines.push('--- raw JSON ---');
     lines.push(JSON.stringify(r, null, 2));
@@ -546,9 +675,13 @@ export class AuditTool {
       `echo | openssl s_client -connect ${shellQuote(`${domain}:${port}`)} ` +
       `-servername ${shellQuote(domain)} -showcerts 2>&1 | ` +
       `openssl x509 -noout -dates -ext subjectAltName -issuer 2>&1`;
+    // Маркеры вместо погашенных ошибок: «каталога нет» и «каталог не читается»
+    // раньше давали одну и ту же пустоту, а отчёт объявлял её отсутствием хука
     const renewCmd = checkRenew
-      ? `(grep -h '^renew_hook' /etc/letsencrypt/renewal/*.conf 2>/dev/null; ` +
-        `ls -la /etc/letsencrypt/renewal-hooks/deploy/ 2>/dev/null) | head -40`
+      ? `if [ ! -d /etc/letsencrypt ]; then echo NO_LETSENCRYPT; ` +
+        `elif [ ! -r /etc/letsencrypt/renewal ] && [ ! -r /etc/letsencrypt/renewal-hooks/deploy ]; then echo LE_UNREADABLE; ` +
+        `else (grep -h '^renew_hook' /etc/letsencrypt/renewal/*.conf 2>/dev/null; ` +
+        `ls -la /etc/letsencrypt/renewal-hooks/deploy/ 2>/dev/null) | head -40; fi`
       : 'echo SKIPPED';
     const cmd =
       `echo "${SEP}cert${SEP}"; ${opensslCmd}; ` +
@@ -556,12 +689,13 @@ export class AuditTool {
 
     const r = await this.executor.execute(sshConfig, cmd, {
       profileName,
+      sudo: !!args.sudo,
       timeout: 30000,
       idempotent: true,
     });
     const sections = this.splitSections(r.stdout, SEP);
     const cert = sections.get('cert') || '';
-    const renew = sections.get('renew') || '';
+    const renew = (sections.get('renew') || '').trim();
 
     const notAfterMatch = cert.match(/notAfter=(.+)$/m);
     const notAfter = notAfterMatch ? notAfterMatch[1].trim() : null;
@@ -588,9 +722,11 @@ export class AuditTool {
     const issuerMatch = cert.match(/issuer=(.+)$/m);
     const issuer = issuerMatch ? issuerMatch[1].trim() : null;
 
-    const renewHookConfigured =
-      checkRenew &&
-      (/renew_hook\s*=/.test(renew) || /reload-?nginx|systemctl/.test(renew));
+    // Четвёртый исход помимо «настроен» и «не настроен»: посмотреть не дали
+    const renewChecked = checkRenew && renew !== 'LE_UNREADABLE';
+    const renewHookConfigured = renewChecked
+      ? /renew_hook\s*=/.test(renew) || /reload-?nginx|systemctl/.test(renew)
+      : null;
 
     const out = {
       domain,
@@ -612,7 +748,14 @@ export class AuditTool {
     else if (daysLeft! <= 7) flags.push(`CRITICAL: expires in ${daysLeft} days`);
     else if (daysLeft! <= 30) flags.push(`WARNING: expires in ${daysLeft} days`);
     if (certRead && !sanIncludes) flags.push(`CRITICAL: SAN does not include ${domain}`);
-    if (checkRenew && !renewHookConfigured) flags.push('WARNING: no Let\'s Encrypt deploy_hook configured');
+    if (checkRenew && !renewChecked)
+      flags.push(
+        'UNKNOWN: Let\'s Encrypt renewal config not readable — retry with sudo: true'
+      );
+    else if (checkRenew && renew === 'NO_LETSENCRYPT')
+      flags.push('INFO: Let\'s Encrypt is not set up on this server');
+    else if (checkRenew && !renewHookConfigured)
+      flags.push('WARNING: no Let\'s Encrypt deploy_hook configured');
 
     const text =
       `=== ssh_tls_check ${domain}:${port} ===\n` +

@@ -57,7 +57,7 @@ const BASELINE_REST = {
   docker_ps: 'NO_DOCKER',
   docker_df: 'NO_DOCKER',
   ufw: 'NO_UFW',
-  iptables: '0',
+  iptables: 'NO_IPTABLES',
   upgradable: '0',
   reboot_required: 'NO',
 };
@@ -319,5 +319,98 @@ describe('ssh_tls_check: без сертификата нечего утверж
     const text = await answer('ssh_tls_check', { domain: 'example.com' });
 
     expect(text).toContain('UNKNOWN: certificate not read');
+  });
+});
+
+describe('ssh_tls_check: хук обновления', () => {
+  const CERT = [
+    `notBefore=${opensslDate(-30)}`,
+    `notAfter=${opensslDate(200)}`,
+    'X509v3 Subject Alternative Name:',
+    '    DNS:example.com',
+    'issuer=C = US, O = Test CA, CN = Test',
+  ].join('\n');
+
+  it('недоступный каталог не выдаётся за ненастроенный хук', async () => {
+    serverSays(tls(CERT, 'LE_UNREADABLE'));
+
+    const text = await answer('ssh_tls_check', { domain: 'example.com' });
+
+    expect(text).toContain('UNKNOWN: Let\'s Encrypt renewal config not readable');
+    expect(text).not.toContain('WARNING: no Let\'s Encrypt deploy_hook configured');
+    expect(JSON.parse(text.slice(text.indexOf('{'))).renew_hook_configured).toBeNull();
+  });
+
+  it('сервер без Let\'s Encrypt не обвиняется в потерянном хуке', async () => {
+    serverSays(tls(CERT, 'NO_LETSENCRYPT'));
+
+    const text = await answer('ssh_tls_check', { domain: 'example.com' });
+
+    expect(text).toContain('INFO: Let\'s Encrypt is not set up on this server');
+    expect(text).not.toContain('WARNING: no Let\'s Encrypt deploy_hook configured');
+  });
+
+  it('настроенный Let\'s Encrypt без хука — по-прежнему предупреждение', async () => {
+    serverSays(tls(CERT, 'total 0\ndrwxr-xr-x 2 root root 4096 Aug 13 10:00 .'));
+
+    const text = await answer('ssh_tls_check', { domain: 'example.com' });
+
+    expect(text).toContain('WARNING: no Let\'s Encrypt deploy_hook configured');
+  });
+
+  it('чтение хука под sudo просят у исполнителя, а не рисуют в команде', async () => {
+    serverSays(tls(CERT, 'renew_hook = systemctl reload nginx'));
+
+    await answer('ssh_tls_check', { domain: 'example.com', sudo: true });
+
+    expect(executeMock.mock.calls[0][2]).toMatchObject({ sudo: true });
+  });
+});
+
+describe('ssh_audit_baseline: разделы, которых не просили', () => {
+  it('невыбранный раздел не печатается вовсе', async () => {
+    serverSays(sectioned(AUDIT_SEP, { df: BUSYBOX_DF, free: 'Mem:  7.7G  2.9G  2.9G' }));
+
+    const text = await answer('ssh_audit_baseline', { include: ['disk', 'mem'] });
+
+    expect(text).toContain('disk:');
+    expect(text).not.toContain('firewall:');
+    expect(text).not.toContain('updates:');
+    expect(text).not.toContain('services:');
+    expect(text).not.toContain('docker:');
+  });
+
+  it('неизвестное имя раздела — отказ со списком доступных', async () => {
+    serverSays(baseline());
+
+    const text = await answer('ssh_audit_baseline', { include: ['фаервол'] });
+
+    expect(text).toContain('Unknown audit section(s): фаервол');
+    expect(text).toContain(
+      'Available: system, disk, mem, net, ssh, services, docker, firewall, updates.'
+    );
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it('раздел sshd без прав читать конфиг — «нечем проверить», а не «всё в порядке»', async () => {
+    serverSays(sectioned(AUDIT_SEP, { sshd: '' }));
+
+    const text = await answer('ssh_audit_baseline', { include: ['ssh'] });
+
+    expect(text).toContain('NOT CHECKED:');
+    expect(text).toContain('include_sudo_sections: true');
+    expect(text).not.toContain('sshd:\n  port=');
+  });
+
+  it('прочитанный конфиг sshd по-прежнему даёт тревогу', async () => {
+    serverSays(sectioned(AUDIT_SEP, { sshd: 'port 22\npasswordauthentication yes' }));
+
+    const text = await answer('ssh_audit_baseline', {
+      include: ['ssh'],
+      include_sudo_sections: true,
+    });
+
+    expect(text).toContain('CRITICAL:');
+    expect(text).toContain('PasswordAuthentication yes on port 22');
   });
 });

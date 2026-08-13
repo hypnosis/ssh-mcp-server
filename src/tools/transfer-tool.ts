@@ -57,6 +57,10 @@ function formatWarnings(warnings: string[]): string {
   return warnings.length > 0 ? `\n  warnings:\n${warnings.map((w) => `    - ${w}`).join('\n')}` : '';
 }
 
+/** Владельца ставит `chown`, а он под обычным пользователем откажет на чужом имени */
+const OWNER_NEEDS_SUDO =
+  'owner was NOT applied: chown needs sudo — the file belongs to the connecting user';
+
 /**
  * Наибольший таймаут, который умеет ждать таймер Node (~24.8 суток).
  * Всё, что больше, срабатывает у него немедленно — это уже не «подольше»,
@@ -392,6 +396,7 @@ export class TransferTool {
       sudo: opts.sudo,
     });
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
+    let ownerWarnings: string[] = [];
 
     const outcome = await install(ops, {
       finalPath: remotePath,
@@ -416,7 +421,7 @@ export class TransferTool {
         return null;
       },
       finalize: async (staging) => {
-        await this.applyOwnership(sshConfig, profileName, staging, opts);
+        ownerWarnings = await this.applyOwnership(sshConfig, profileName, staging, opts);
       },
     });
 
@@ -427,7 +432,7 @@ export class TransferTool {
       ...verdict,
       atomic: true,
       sudo: opts.sudo,
-      warnings: outcome.warnings,
+      warnings: [...outcome.warnings, ...ownerWarnings],
     };
   }
 
@@ -493,7 +498,7 @@ export class TransferTool {
     profileName: string,
     staging: string,
     opts: { mode?: string; owner?: string; sudo: boolean }
-  ): Promise<void> {
+  ): Promise<string[]> {
     if (opts.mode) {
       await this.executor.executeChecked(
         sshConfig,
@@ -502,13 +507,20 @@ export class TransferTool {
       );
     }
 
-    if (opts.owner && opts.sudo) {
-      await this.executor.executeChecked(
-        sshConfig,
-        `chown ${opts.owner} -- ${shellQuote(staging)}`,
-        { profileName, sudo: opts.sudo }
-      );
+    if (!opts.owner) return [];
+
+    if (!opts.sudo) {
+      // Названного владельца молча терять нельзя: файл остаётся за тем, кто
+      // его записал, и человек об этом узнаёт только из `ls -l` на сервере
+      return [OWNER_NEEDS_SUDO];
     }
+
+    await this.executor.executeChecked(
+      sshConfig,
+      `chown ${opts.owner} -- ${shellQuote(staging)}`,
+      { profileName, sudo: opts.sudo }
+    );
+    return [];
   }
 
   private async remoteExists(
@@ -664,7 +676,8 @@ export class TransferTool {
       atomic: true,
       sudo: false,
       files_uploaded: files.length,
-      warnings: outcome.warnings,
+      // Рекурсивная отправка идёт без sudo — значит и владельца сменить нечем
+      warnings: [...outcome.warnings, ...(opts.owner ? [OWNER_NEEDS_SUDO] : [])],
     };
   }
 

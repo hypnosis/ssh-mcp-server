@@ -6,6 +6,8 @@
  * их не касается.
  */
 
+import type { ServerPassport } from './passport.js';
+
 /**
  * Опции выполнения команды
  */
@@ -104,6 +106,14 @@ export type MasterCloseOutcome = 'closed' | 'nothing-to-close' | 'multiplexing-o
 export interface CommandRunner {
   /** Выполнить команду. Не бросает исключение при ненулевом exitCode. */
   exec(command: string, options?: ExecOptions): Promise<ExecResult>;
+
+  /**
+   * Паспорт сервера: что на нём есть из утилит.
+   *
+   * Спрашивается только здесь. Проба обязана идти мимо шлюза первой команды:
+   * команды шлюза сами ждут паспорт, и проба через `exec` замкнула бы круг.
+   */
+  passport(): Promise<ServerPassport>;
 
   /** Загрузить файл или каталог на сервер */
   upload(localPath: string, remotePath: string, options?: TransferOptions): Promise<void>;

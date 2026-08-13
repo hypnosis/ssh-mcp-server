@@ -455,8 +455,11 @@ describe('таймаут передачи задаёт вызывающий', ()
       call('ssh_upload', { local_path: localFile, remote_path: '/srv/app.js', timeout: 900_000 })
     );
 
+    // Сверке достаётся остаток названного срока: сколько минуло до неё, столько
+    // и вычтено. Проверяем, что срок тот же самый, а не начат заново
     const hashing = callFor(/^sha256sum /);
-    expect(hashing![2].timeout).toBe(900_000);
+    expect(hashing![2].timeout).toBeLessThanOrEqual(900_000);
+    expect(hashing![2].timeout).toBeGreaterThan(895_000);
   });
 
   it('мусор вместо числа отклоняется до первой команды на сервере', async () => {

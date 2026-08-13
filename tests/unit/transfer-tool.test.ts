@@ -824,7 +824,15 @@ describe('на пути лежит не то, что ставим', () => {
 /**
  * Потолок принадлежит операции целиком. Названный один раз, он обязан дойти до
  * каждой её части — иначе стена просто переезжает на сверку.
+ *
+ * Сверке достаётся остаток: сколько минуло до неё, столько и вычтено. Поэтому
+ * сверяется не точное число, а что срок тот же самый и не начат заново.
  */
+function expectRemainderOf(actual: number | undefined, named: number): void {
+  expect(actual).toBeLessThanOrEqual(named);
+  expect(actual).toBeGreaterThan(named - 5_000);
+}
+
 describe('названный потолок доезжает до сверки', () => {
   it('каталог вверх', async () => {
     await textOf(
@@ -836,7 +844,7 @@ describe('названный потолок доезжает до сверки',
       })
     );
 
-    expect(commandFor(/^sha256sum /)![1].timeout).toBe(900_000);
+    expectRemainderOf(commandFor(/^sha256sum /)![1].timeout, 900_000);
   });
 
   it('файл вниз', async () => {
@@ -850,7 +858,7 @@ describe('названный потолок доезжает до сверки',
       })
     );
 
-    expect(commandFor(/^sha256sum /)![1].timeout).toBe(900_000);
+    expectRemainderOf(commandFor(/^sha256sum /)![1].timeout, 900_000);
   });
 
   it('каталог вниз', async () => {
@@ -864,7 +872,7 @@ describe('названный потолок доезжает до сверки',
       })
     );
 
-    expect(commandFor(/^sha256sum /)![1].timeout).toBe(900_000);
+    expectRemainderOf(commandFor(/^sha256sum /)![1].timeout, 900_000);
   });
 });
 

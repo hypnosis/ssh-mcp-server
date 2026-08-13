@@ -10,31 +10,30 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SSHConfig } from '../../src/utils/ssh-config.js';
 import type { ExecResult } from '../../src/runner/types.js';
 
-const { getRunnerMock, execMock, pingMock } = vi.hoisted(() => ({
+const { getRunnerMock, execMock, pingMock, passportMock } = vi.hoisted(() => ({
   getRunnerMock: vi.fn(),
   execMock: vi.fn(),
   pingMock: vi.fn(),
+  passportMock: vi.fn(),
 }));
 
 vi.mock('../../src/runner/get-runner.js', () => ({ getRunner: getRunnerMock }));
 
 const { SSHExecutor } = await import('../../src/managers/ssh-executor.js');
 const { SSHTransportError } = await import('../../src/runner/errors.js');
-const { resetPassportCache } = await import('../../src/runner/passport.js');
+const { resetPassportCache, parsePassport, UNKNOWN_PASSPORT } =
+  await import('../../src/runner/passport.js');
 
 /**
- * Ответ пробы паспорта: под sudo от него зависит язык команд.
- * Пустой ответ означает «не знаем» — тогда работаем через `sh`.
+ * Ответ транспорта на вопрос о паспорте: под sudo от него зависит язык команд.
+ * Разбирается настоящим разбором — заглушка не должна знать больше сервера.
  */
 function passportSays(bash: boolean): void {
-  execMock.mockImplementation(async (command: string) =>
-    command.includes('SSH_MCP_PASSPORT')
-      ? result({
-          stdout:
-            `SSH_MCP_PASSPORT bash=${bash ? 1 : 0} sha256=sha256sum coreutils=coreutils ` +
-            'rsync=0 timeout=1 install=1 os=Linux home=/home/deploy\n',
-        })
-      : result()
+  passportMock.mockResolvedValue(
+    parsePassport(
+      `SSH_MCP_PASSPORT bash=${bash ? 1 : 0} sha256=sha256sum coreutils=coreutils ` +
+      'rsync=0 timeout=1 install=1 os=Linux home=/home/deploy\n'
+    )
   );
 }
 
@@ -66,7 +65,7 @@ function sentOptions(index = 0): Record<string, unknown> {
   return execMock.mock.calls[index][1] as Record<string, unknown>;
 }
 
-/** Последняя команда: под sudo перед ней уходит ещё и проба паспорта */
+/** Последняя команда, ушедшая в транспорт */
 function lastCommand(): string {
   return execMock.mock.calls[execMock.mock.calls.length - 1][0] as string;
 }
@@ -76,7 +75,8 @@ beforeEach(() => {
   resetPassportCache();
   execMock.mockResolvedValue(result());
   pingMock.mockResolvedValue({ ok: true, masterWasActive: false, latencyMs: 3 });
-  getRunnerMock.mockResolvedValue({ exec: execMock, ping: pingMock });
+  passportMock.mockResolvedValue(UNKNOWN_PASSPORT);
+  getRunnerMock.mockResolvedValue({ exec: execMock, ping: pingMock, passport: passportMock });
 });
 
 describe('SSHExecutor: сборка команды', () => {
@@ -99,7 +99,7 @@ describe('SSHExecutor: сборка команды', () => {
   });
 
   it('паспорт не прочитан — работаем через sh, он есть везде', async () => {
-    execMock.mockResolvedValue(result({ stdout: 'sh: printf: not found' }));
+    passportMock.mockResolvedValue(parsePassport('sh: printf: not found'));
 
     await new SSHExecutor().execute(CONFIG, 'ls', { sudo: true });
 

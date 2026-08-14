@@ -40,8 +40,8 @@ Before v1.3.0 the typical `server-auditor` agent sequence looked like this: one 
 
 **Flags:**
 
-- `include: ["disk", "mem", "services"]` — restrict to a subset (default: all except `ssh`)
-- `include_sudo_sections: true` — enable the `ssh` section (runs the whole compound under sudo)
+- `include: ["disk", "mem", "services"]` — restrict to a subset (default: every section, `ssh` included)
+- `include_sudo_sections: true` — read the sshd settings under sudo (runs the whole compound under sudo). Without it the section still runs: as root the settings are readable anyway
 - `compact: true` (default) — trim long sections (listeners, interfaces, docker rows) to keep the response small for the LLM
 
 **Output:**

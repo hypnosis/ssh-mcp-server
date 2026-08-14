@@ -12,6 +12,12 @@ ControlMaster multiplexing. Sprints CORE_08 → CORE_11; full record with measur
 `docs/sprints/planned/`. The bundled `ssh2` backend is gone, and with it the connection
 pool, so `SSH_MCP_BACKEND` no longer selects anything.
 
+**New requirement on your machine (breaking).** There is no bundled SSH any more: a system
+`ssh` client has to be on `PATH`. Any OpenSSH works, but three features have a floor —
+5.6 for the shared multiplexed connection, 8.4 for password and passphrase profiles, 9.0
+for `scp` over SFTP. Below a floor the feature says so instead of failing quietly. If that
+does not suit the machines you run on, stay on `1.x`.
+
 ### Changed — one transport, and connections that outlive the server
 - The system `ssh` client is the only way commands are delivered. `SSH_MCP_BACKEND=ssh2`
   is no longer honoured (**breaking**), and the pool variables `SSH_MCP_POOL_IDLE_TIMEOUT`

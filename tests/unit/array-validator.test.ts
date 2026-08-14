@@ -77,6 +77,9 @@ describe('array-validator: строка, притворяющаяся масси
   it('ответ об ошибке приходит текстом MCP', () => {
     const answer = createValidationErrorResponse('текст отказа');
 
-    expect(answer).toEqual({ content: [{ type: 'text', text: 'текст отказа' }] });
+    expect(answer).toEqual({
+      content: [{ type: 'text', text: 'текст отказа' }],
+      isError: true,
+    });
   });
 });

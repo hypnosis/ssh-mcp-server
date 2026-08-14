@@ -9,6 +9,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { logger } from '../utils/logger.js';
+import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
@@ -211,7 +212,7 @@ export class FileTools {
   /**
    * Handle tool call
    */
-  async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
+  async handleCall(request: CallToolRequest): Promise<ToolResult> {
     const toolName = request.params.name;
     
     try {
@@ -227,9 +228,7 @@ export class FileTools {
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
-      return {
-        content: [{ type: 'text', text: `Error: ${error.message}` }],
-      };
+      return toolFailure(error);
     }
   }
   

@@ -33,6 +33,34 @@ pool, so `SSH_MCP_BACKEND` no longer selects anything.
   Nothing to configure. A remote path containing a newline is refused on that path — the
   classic protocol cannot carry it safely.
 
+### Changed — a failure now looks like a failure, and says what it managed to do
+- A command killed by its `timeout` no longer loses what it printed. The answer carries the
+  output collected until the kill, under a note saying it is only that much. Before, the
+  whole answer was a single line naming the timeout — a command that printed progress for
+  an hour and then hit its limit left nothing behind. The same applies to a cancelled
+  command.
+- Every tool marks a failed call with `isError` (**breaking** for clients that parsed the
+  text to guess). Before, only `ssh_monitor` did, so a client could not tell "the file is
+  not there" from the contents of a file. The text of the answer is unchanged — only the
+  flag is new.
+- Three outcomes stay apart, and the flag draws the line. The tool could not do the work
+  (no such profile, wrong argument shape, command killed by its timeout, server refused) —
+  flagged. The work was done — not flagged, **even when the command exited non-zero**: the
+  command ran and its output is the answer. There was nothing to check with (`ssh_tls_check`
+  answering `UNKNOWN`, `ssh_service_status` answering `NOT CHECKED`) — not flagged either,
+  that is a success with a note.
+
+### Changed — MCP SDK 0.6.1 → 1.30
+- The server answers each client with the protocol revision that client asked for
+  (`2024-11-05` through `2025-11-25`). On `0.6.1` every client was answered `2024-11-05`,
+  whatever it asked for. Older clients keep working — measured.
+- Tool names, input schemas and response format are unchanged. The whole set of 14 tools
+  was called through a real client before and after the upgrade, on both lab containers,
+  and the answers match character for character.
+- The dependency is heavier: 14 packages / 7.5 MB → 91 packages / 24 MB, because the SDK
+  now ships its HTTP transports (express, cors, hono, ajv) even for a stdio server. The
+  Node requirement stays `>=18`.
+
 ### Fixed — data loss and false corruption reports
 - `~` in `remote_path` of `ssh_upload` / `ssh_download`. Download used to bring the file
   and then delete it (the checksum was asked for a file literally named `~`); upload
@@ -190,12 +218,6 @@ done, failed, nothing to check with — are now distinct in the answer itself.
 
 ### Known limitations
 These ship with the release. Each is recorded in `docs/tech-debt/` with measurements.
-- **No answer carries `isError`**, so a client cannot tell a failure from content by the
-  response alone — the reason is in the text a human reads, not in a flag a program can
-  check. Output printed before a timeout kill is dropped for the same reason: the fields
-  carrying it are filled by the transport and read by nobody. Both change the response
-  format of every tool, so they wait for the MCP SDK migration (`0.6.1` → `1.30`), which is
-  not part of this release (`TD-03`).
 - **A running operation cannot be cancelled from the outside.** The transport accepts an
   abort signal, but no tool passes one, so a long transfer runs until its `timeout` — set
   before it starts — or until the server process is killed (`TD-08`).

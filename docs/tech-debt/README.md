@@ -12,7 +12,7 @@
 |----|------|--------|------|
 | TD-01 | Код, который не заметит поломки: мутационные находки | ✅ закрыт | [archive/test-coverage_01.md](archive/test-coverage_01.md) |
 | TD-02 | CI собран на устаревших версиях чужих блоков | ✅ закрыт | [archive/ci-actions_02.md](archive/ci-actions_02.md) |
-| TD-03 | Ответ инструмента не отличает провал от результата | 📌 условие релиза v2.0.0 | [tool-schemas_03.md](tool-schemas_03.md) |
+| TD-03 | Ответ инструмента не отличает провал от результата | ✅ закрыт | [archive/tool-schemas_03.md](archive/tool-schemas_03.md) |
 | TD-04 | Косметика вывода аудита | ✅ закрыт | [archive/audit-output_04.md](archive/audit-output_04.md) |
 | TD-05 | Комментарии в разборе путей пересказывают решение | ✅ закрыт | [archive/path-guard-comments_05.md](archive/path-guard-comments_05.md) |
 | TD-06 | Поиск следов не отличает полный список от обрезанного | ✅ закрыт | [archive/leftover-scan-truncation_06.md](archive/leftover-scan-truncation_06.md) |

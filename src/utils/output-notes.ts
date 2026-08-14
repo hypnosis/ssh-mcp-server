@@ -73,6 +73,24 @@ export function binaryReadMessage(path: string): string {
   );
 }
 
+export const PARTIAL_OUTPUT_NOTE =
+  '⚠️ The command was stopped before it finished — this is only what it printed until then.';
+
+/**
+ * Вывод, накопленный командой до остановки, под пометкой о неполноте.
+ *
+ * Пустая строка, если печатать нечего: команду могли убить до первого байта,
+ * и пустая секция читалась бы как «вывода не было», хотя проверить это нечем.
+ */
+export function partialOutputSection(stdout: string, stderr: string): string {
+  const parts: string[] = [];
+  if (stdout.trim()) parts.push(`STDOUT:\n${stdout.trimEnd()}`);
+  if (stderr.trim()) parts.push(`STDERR:\n${stderr.trimEnd()}`);
+  if (parts.length === 0) return '';
+
+  return `${PARTIAL_OUTPUT_NOTE}\n\n${parts.join('\n\n')}`;
+}
+
 /**
  * Сколько совпадений поиска по журналу помещается в один ответ.
  *

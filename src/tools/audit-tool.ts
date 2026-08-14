@@ -15,6 +15,7 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
+import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
@@ -170,7 +171,7 @@ export class AuditTool {
     ];
   }
 
-  async handleCall(request: CallToolRequest) {
+  async handleCall(request: CallToolRequest): Promise<ToolResult> {
     const toolName = request.params.name;
     try {
       switch (toolName) {
@@ -187,7 +188,7 @@ export class AuditTool {
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
-      return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+      return toolFailure(error);
     }
   }
 

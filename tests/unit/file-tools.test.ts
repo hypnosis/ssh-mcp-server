@@ -881,6 +881,7 @@ describe('форма ответа', () => {
     });
     expect(await responseOf(call('ssh_file_read', { path: '/etc/nothing' }))).toEqual({
       content: [textPart],
+      isError: true,
     });
   });
 

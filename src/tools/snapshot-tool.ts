@@ -5,6 +5,7 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
+import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { parseDfTable, dedupeByDevice } from '../utils/df-table.js';
@@ -41,7 +42,7 @@ export class SnapshotTool {
   /**
    * Handle tool call
    */
-  async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
+  async handleCall(request: CallToolRequest): Promise<ToolResult> {
     try {
       const args = request.params.arguments as any;
       const sshConfig = resolveSSHConfig({ profile: args.profile });
@@ -90,9 +91,7 @@ export class SnapshotTool {
       };
     } catch (error: any) {
       logger.error('ssh_snapshot failed:', error);
-      return {
-        content: [{ type: 'text', text: `Error: ${error.message}` }],
-      };
+      return toolFailure(error);
     }
   }
   

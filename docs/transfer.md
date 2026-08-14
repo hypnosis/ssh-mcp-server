@@ -15,15 +15,18 @@ channel per destination, no extra handshake — and both default to **atomic** r
 
 ## Why
 
-The legacy `ssh_file_write` path uses a heredoc (`cat > file <<EOF … EOF`) over the existing command channel. That works for tiny configs but has four problems for anything else:
+`ssh_file_write` sends small content on the command's stdin. That is fine for configs, and
+the write itself is atomic and can be verified — but two limits stay:
 
-1. **Binary-unsafe.** Heredoc and shell expansion mangle bytes (CR/LF translation, NUL termination, `$VAR` interpolation, backslash escaping). A `.tar.gz` written via heredoc is corrupt on arrival.
-2. **No atomic semantics.** A failed write leaves a half-written file at the target path. Readers (nginx reload, systemd unit) see partial content.
-3. **No integrity verification.** Network truncation or terminal-layer corruption goes unnoticed — there is no end-to-end checksum.
-4. **Whole-payload memory pressure.** The full file content has to live in the LLM context and in Node's string heap before being shoved through the SSH channel.
+1. **The payload travels through the answer.** The whole content has to live in the LLM
+   context and in Node's string heap before it goes anywhere. A tree or a tarball has no
+   business being there.
+2. **Text only on that route.** Binary content has to be base64 in the request, which
+   inflates it by a third before it even starts moving.
 
-`ssh_upload` removes all four limitations by shipping the bytes with `scp` over the shared
-connection instead of `cat > file`.
+`ssh_upload` removes both: the bytes go with `scp` over the connection the commands already
+use, straight from disk to disk. Over 256 KB `ssh_file_write` hands the content to the same
+route by itself — the difference is where the payload comes from, not how it lands.
 
 ---
 
@@ -36,7 +39,7 @@ connection instead of `cat > file`.
 │ ssh, ControlMaster)              │
 └──────────────────┘               ▼
                           ┌─────────────────┐
-                          │  ssh <command>  │  ssh_exec, ssh_file_* (heredoc)
+                          │  ssh <command>  │  ssh_exec, ssh_file_* (content on stdin)
                           └─────────────────┘
                                    │
                           ┌─────────────────┐
@@ -179,7 +182,7 @@ A native one-shot recursive-sudo path is still not implemented.
 
 ### sha256 tool fallback
 
-The remote command first tries `sha256sum`. If absent (rare — most distros ship coreutils, but minimal Alpine and some BusyBox-only images do not), it falls back to `openssl dgst -sha256`. If neither is on the remote, a warning is logged and the result is reported with `verified: false` (the file itself is still uploaded). To force-skip the check, pass `verify: false`.
+The remote command first tries `sha256sum`. If absent (rare — most distros ship coreutils, but minimal Alpine and some BusyBox-only images do not), it falls back to `openssl dgst -sha256`. If neither is on the remote, the answer says the check could not be made and names why. That is not a failed comparison: the file stays where it landed, and nothing is removed. Treating "nothing to check with" as a mismatch is what used to make a correct upload look corrupt. To skip the check on purpose, pass `verify: false`.
 
 ### Atomic rename only within the same filesystem
 
@@ -196,9 +199,12 @@ unpack it with `ssh_exec`.
 
 ### File-size guidance
 
-- ≤ 256 KB and text-only: `ssh_file_write` legacy path is fine (and slightly faster — no second sha256 round-trip).
-- 256 KB to ~1 MB and text: `ssh_file_write` with `verify: true` (the write is always atomic).
-- Anything binary, or > 1 MB: `ssh_upload`. It streams and never loads the file into the LLM context.
+- **Text you are composing right now** (a config, a unit file): `ssh_file_write`. Up to
+  256 KB it goes on the command's stdin; above that the same tool switches to the transfer
+  route by itself, so there is no size at which the call stops working.
+- **A file that already exists on disk**, of any size, and anything binary: `ssh_upload`. It
+  streams from disk and never puts the content into the LLM context.
+- **A directory**: `ssh_upload` — `ssh_file_write` takes files, one by one.
 
 ### Concurrency is no longer a knob
 

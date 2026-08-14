@@ -7,7 +7,7 @@
 
 **GitHub:** [@hypnosis](https://github.com/hypnosis) | **License:** MIT | **npm:** [@hypnosis/ssh-mcp-server](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server)
 
-> **⚠️ IMPORTANT for binaries and large files:** use `ssh_upload` / `ssh_download` (binary-safe, sha256 verify, atomic rename) — **NOT** base64-chunks through `ssh_exec` or `ssh_file_write` heredoc. Heredoc-based writes corrupt binaries and have no atomic / integrity guarantees. See [Transfer tools](#-transfer-tools-v130) and [docs/transfer.md](docs/transfer.md).
+> **⚠️ IMPORTANT for binaries and large files:** use `ssh_upload` / `ssh_download` (binary-safe, sha256 verify, atomic rename) — **NOT** base64 chunks through `ssh_exec`. Chunking pulls the whole file into the LLM context and leaves no end-to-end check that what arrived is what you sent. See [Transfer tools](#-transfer-tools-v130) and [docs/transfer.md](docs/transfer.md).
 
 ## ✨ Features
 
@@ -41,10 +41,22 @@
 - ✅ **Path security** - optional whitelist/blacklist per profile
 - ✅ **sudo support** - parameter in every command
 - ✅ **Profiles** - multiple SSH configurations
-- ✅ **Retry logic** - automatic retries on network errors
+- ✅ **Retry logic** - one retry after a transport failure, and only for commands that are safe to repeat
 - ✅ **Connection reuse** - one shared, multiplexed OpenSSH connection per destination
 
 ## 📦 Installation
+
+**What the machine needs:** Node.js 18+ and a system `ssh` client — commands and transfers
+are delivered by it, nothing is bundled. Any OpenSSH will run; some features have their own
+floor:
+
+| From version | What it gives |
+|---|---|
+| 5.6 | Shared multiplexed connection (`ControlPersist`). Below this every command opens its own |
+| 8.4 | Password and passphrase profiles (`SSH_ASKPASS_REQUIRE`). Key-based profiles do not need it |
+| 9.0 | `scp` rides SFTP; older clients use the classic protocol, as do servers without an sftp subsystem |
+
+`ssh_monitor({ action: "stats" })` reports the version it found and whether multiplexing works.
 
 ```bash
 # Global install
@@ -512,16 +524,16 @@ ssh_monitor({
 
 ## 📦 Transfer tools (v1.3.0+)
 
-Binary-safe transfer through the system `scp`, over the same multiplexed connection the other tools use. **Use these instead of base64-chunks through ssh_exec** — heredoc / `cat > file` corrupts binaries, has no atomic semantics, no integrity verification, and pulls the whole payload into Node memory.
+Binary-safe transfer through the system `scp`, over the same multiplexed connection the other tools use. **Use these instead of base64 chunks through `ssh_exec`** — chunking a file through the command channel puts the whole payload into the LLM context and into Node memory, and every chunk is a place for the file to end up half-written with nothing checking it. `ssh_upload` streams from disk, renames into place, and compares sha256.
 
 Every upload writes to a hidden temp file next to the target and renames it into place — this isn't a choice, it's built in (`atomic` is accepted but ignored, kept so existing calls don't break). Default: `verify=true` (local sha256 vs remote `sha256sum` / `openssl dgst -sha256` fallback).
 
 **Servers without an sftp subsystem** (routers, embedded devices, dropbear) are handled automatically: on client 9.0+ `scp` rides SFTP, which such a server refuses, so the transfer falls back to the classic scp protocol once and remembers that destination. Nothing to configure. One limitation there: a remote path containing a newline is rejected instead of being sent — the classic protocol has no safe way to carry it.
 
-**File-size guidance:**
-- ≤ 256 KB, text only → `ssh_file_write` (legacy heredoc, slightly faster — no second sha256 round-trip)
-- 256 KB – 1 MB, text → `ssh_file_write` with `verify: true` (the write is always atomic)
-- Anything binary, or > 1 MB → `ssh_upload` (streams, never loads the file into LLM context)
+**Which one to use:**
+- Text you are composing right now (a config, a unit file) → `ssh_file_write`. Up to 256 KB it rides the command's stdin; above that the same tool switches to the transfer route by itself
+- A file that already exists on disk, of any size, and anything binary → `ssh_upload` (streams from disk, never loads the content into LLM context)
+- A directory → `ssh_upload`; `ssh_file_write` takes files, one by one
 
 For full API and architecture see [docs/transfer.md](docs/transfer.md).
 
@@ -617,12 +629,12 @@ For pipeline guidance and full section descriptions see [docs/audit.md](docs/aud
 
 One batched compound shell command, results split by sentinel markers, parsed into structured JSON + a CRITICAL/WARNING/OK shortlist. Replaces 5–10 separate `ssh_exec` calls (df, free, ss, docker, systemctl, sshd -T, ufw, apt …) with **one round-trip**.
 
-Sections (toggle via `include`): `system, disk, mem, net, ssh, services, docker, firewall, updates`. By default all sections except `ssh` (sudo).
+Sections (toggle via `include`): `system, disk, mem, net, ssh, services, docker, firewall, updates`. All of them run by default, `ssh` included — a full audit that stays silent about password login is not a full audit. `include_sudo_sections` picks how the sshd settings are read, not whether they are read at all: as root they are readable without sudo.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `include` | all except `ssh` | Restrict to subset, e.g. `["disk", "services"]` |
-| `include_sudo_sections` | `false` | Enables `sshd -T` (whole compound runs under sudo) |
+| `include` | all sections | Restrict to subset, e.g. `["disk", "services"]` |
+| `include_sudo_sections` | `false` | Reads the sshd settings under sudo (whole compound runs under sudo) |
 | `compact` | `true` | Trim long sections (listeners, interfaces, docker rows) for smaller LLM payload |
 
 Output format: human-readable summary (host header → CRITICAL/WARNING shortlist → disk table → listeners → sshd → services → docker → firewall → updates) followed by `--- raw JSON ---` and the full structured result. The same result also comes back as `structuredContent`, so a client does not have to cut the text apart.
@@ -801,15 +813,15 @@ Dangerous patterns detected:
 ```
 ~/.cursor/mcp.json
       ↓
-SSH MCP Server
+SSH MCP Server (stdio)
       ↓
-Profile Resolver → ~/.cursor/ssh-profiles.json
-      ↓
-SSH Runner (system ssh, one multiplexed connection per destination)
-      ↓
-SSH Executor
+MCP layer — one source for the tool list and the call routing
       ↓
 14 Tools (exec, file, log, snapshot, monitor, transfer, audit)
+      ↓                          ↘ Profile Resolver → ~/.cursor/ssh-profiles.json
+SSH Executor (builds the command: sudo, cwd)
+      ↓
+SSH Runner (system ssh/scp, one multiplexed connection per destination)
       ↓
 Remote Server(s)
 ```
@@ -904,7 +916,7 @@ src/
 - ✅ Session-based metrics
 
 ### v1.3.0 (Released) ✅
-- ✅ SFTP transfer tools — `ssh_upload`, `ssh_download` (binary-safe, atomic, sha256 verify)
+- ✅ Transfer tools — `ssh_upload`, `ssh_download` (binary-safe, atomic, sha256 verify)
 - ✅ `ssh_file_write` / `ssh_file_read` extended with `verify`, `atomic`, `binary`
 - ✅ Audit tools — `ssh_audit_baseline`, `ssh_tls_check`, `ssh_disk_breakdown`, `ssh_service_status`
 - ✅ Tool count: 8 → 14
@@ -922,6 +934,13 @@ src/
       (`maxMatches`) with an honest note when the output was cut
 - ✅ Glob patterns work in `ssh_log_tail` and `ssh_log_search`: expanded by name on the
       server, so odd file names stay names
+- ✅ A failed call is marked as failed (`isError`), and a command killed by its timeout
+      still hands over what it managed to print
+- ✅ MCP SDK 0.6.1 → 1.30: the server answers each client with the protocol revision that
+      client asked for, and the audit tools return their result already parsed
+      (`structuredContent`) next to the unchanged text
+- ✅ A cancelled call drops the local `ssh` client at once instead of sitting out the
+      command's timeout (it does not stop a command already running on the server)
 
 ### Future (Planned)
 - 📋 Recursive sudo upload (one-shot, without staging workaround)

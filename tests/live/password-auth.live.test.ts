@@ -12,15 +12,16 @@
  *  - пароль спрашивается один раз на окно ControlPersist, а не на команду.
  *
  * Последнее — то, ради чего затевалось мультиплексирование, и проверяется оно
- * заведомо неверным паролем: пока управляющее соединение живо, команда всё
- * равно проходит; стоит его закрыть — тот же профиль получает отказ.
+ * снятыми дорогами к askpass: ответить на запрос пароля нечем, поэтому команда
+ * проходит только по живому соединению; стоит его закрыть — тот же вызов
+ * получает отказ.
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
 import { execFile } from 'child_process';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { OpenSshRunner, getOpenSshRunner, closeAllRunners } from '../../src/runner/openssh-runner.js';
+import { getOpenSshRunner, closeAllRunners } from '../../src/runner/openssh-runner.js';
 import { detectRuntime, toCapabilities } from '../../src/runner/runtime-check.js';
 import { ASKPASS_SCRIPT_NAME, buildRunnerEnv, ensureAskpassScript } from '../../src/runner/askpass.js';
 import { buildSshArgs } from '../../src/runner/ssh-args.js';
@@ -167,18 +168,22 @@ describe.each(LAB_SERVERS)('Парольный профиль — $name', { time
     const live = await runner();
     expect((await live.stats()).masterActive).toBe(true);
 
-    // Транспорт с заведомо неверным паролем создаётся мимо кэша: getOpenSshRunner
-    // увидел бы смену учётных данных и закрыл бы то самое соединение, которое
-    // здесь и проверяется
+    // Ответить на запрос пароля нечем: обе дороги к askpass сняты. Подменять
+    // сам пароль здесь нельзя — от него зависит адрес управляющего сокета, и
+    // такой транспорт проверял бы не готовое соединение, а своё собственное
+    const config = labPasswordConfig(server);
     const runtime = await detectRuntime();
-    const wrongPassword = new OpenSshRunner(labPasswordConfig(server, 'not-the-password'), runtime);
+    const env = buildRunnerEnv({
+      config,
+      askpassScriptPath: ensureAskpassScript(runtime.controlDir),
+    });
+    const args = buildSshArgs(config, toCapabilities(runtime), 'whoami');
 
-    const throughMaster = await wrongPassword.exec('whoami', {});
-    expect(throughMaster.stdout.trim()).toBe('pwuser');
+    expect(await sshExitCode(args, env, ['DISPLAY', 'SSH_ASKPASS_REQUIRE'])).toBe(0);
 
-    // Негативный контроль: без готового соединения тот же профиль не пускают,
-    // то есть предыдущая команда прошла именно по master, а не мимо пароля
+    // Негативный контроль: без готового соединения тот же вызов не проходит,
+    // то есть предыдущий прошёл именно по master, а не мимо пароля
     await live.closeMaster();
-    await expect(wrongPassword.exec('whoami', {})).rejects.toThrow();
+    expect(await sshExitCode(args, env, ['DISPLAY', 'SSH_ASKPASS_REQUIRE'])).not.toBe(0);
   });
 });

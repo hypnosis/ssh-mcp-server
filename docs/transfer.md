@@ -209,7 +209,9 @@ through a pool of 16 readers — that one is internal and not configurable.
 ### An error names the path you asked for
 
 The data travels through a temp name next to the target, but a failure reports the path you
-passed (`/etc/nginx/site.conf`), not `/etc/nginx/.upload-<rand>.site.conf`. The exception is
+passed (`/etc/nginx/site.conf`), not `/etc/nginx/.upload-<rand>.site.conf`. Where a message
+names both — the rename that puts the prepared copy in place — the temp one is marked
+`(staging copy)`, so the two do not read as one path renamed onto itself. The exception is
 a leftover backup copy: its real address is printed, because removing it is up to you.
 
 ### Two installs into the same path
@@ -219,6 +221,15 @@ happened — the target was moved away by the other install (nothing was changed
 was claimed by it (the prepared copy stayed where it was, and the warnings carry its
 address). The cause is asked of the server, not read out of the utility's message, which is
 kept after `Details:`.
+
+### A mount point as the target
+
+A path on its own filesystem cannot be replaced by rename, so the install refuses it before
+anything is written. The check compares device numbers via `stat -c`, which GNU and BusyBox
+speak and BSD and macOS do not: on those servers the check cannot run, and the answer says
+so instead of implying the target was checked and cleared. The install itself goes ahead —
+the rename is the real guard, and `mv -T` onto a mount point is refused by the server with
+the target left intact.
 
 ### Leftovers next to the target
 

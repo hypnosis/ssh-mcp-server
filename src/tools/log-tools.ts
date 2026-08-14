@@ -130,15 +130,15 @@ export class LogTools {
   /**
    * Handle tool call
    */
-  async handleCall(request: CallToolRequest): Promise<ToolResult> {
+  async handleCall(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     const toolName = request.params.name;
     
     try {
       switch (toolName) {
         case 'ssh_log_tail':
-          return await this.handleLogTail(request);
+          return await this.handleLogTail(request, signal);
         case 'ssh_log_search':
-          return await this.handleLogSearch(request);
+          return await this.handleLogSearch(request, signal);
         default:
           throw new Error(`Unknown tool: ${toolName}`);
       }
@@ -151,7 +151,7 @@ export class LogTools {
   /**
    * Handle ssh_log_tail
    */
-  private async handleLogTail(request: CallToolRequest) {
+  private async handleLogTail(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     
     // Validate array parameter format
@@ -173,7 +173,7 @@ export class LogTools {
     if (paths.length === 1) {
       const safePath = await this.buildSafePath(sshConfig, paths[0], sudo);
       const command = `tail -n ${lines} ${safePath}`;
-      const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true });
+      const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true, signal });
 
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read log: ${result.stderr || result.stdout}`);
@@ -206,7 +206,7 @@ export class LogTools {
       try {
         const safePath = await this.buildSafePath(sshConfig, path, sudo);
         const command = `tail -n ${lines} ${safePath}`;
-        const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true });
+        const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true, signal });
         
         if (result.exitCode === 0) {
           const logLines = result.stdout.split('\n').filter(line => line.length > 0);
@@ -227,6 +227,9 @@ export class LogTools {
           });
         }
       } catch (error: any) {
+        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
+        // возвращал бы список с пробелами вместо отказа
+        if (signal?.aborted) throw error;
         results.push({
           path,
           lines: [],
@@ -260,7 +263,7 @@ export class LogTools {
   /**
    * Handle ssh_log_search
    */
-  private async handleLogSearch(request: CallToolRequest) {
+  private async handleLogSearch(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     
     // Validate array parameter format
@@ -295,7 +298,7 @@ export class LogTools {
     if (paths.length === 1) {
       const safePath = await this.buildSafePath(sshConfig, paths[0], sudo);
       const command = `grep ${grepFlags.join(' ')} ${shellQuote(query)} ${safePath}`;
-      const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true });
+      const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true, signal });
       
       // grep exit code 1 = no matches (not an error)
       if (result.exitCode !== 0 && result.exitCode !== 1) {
@@ -340,7 +343,7 @@ export class LogTools {
       try {
         const safePath = await this.buildSafePath(sshConfig, path, sudo);
         const command = `grep ${grepFlags.join(' ')} ${shellQuote(query)} ${safePath}`;
-        const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true });
+        const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true, signal });
         
         // grep exit code 1 = no matches
         if (result.exitCode === 0 || result.exitCode === 1) {
@@ -364,6 +367,9 @@ export class LogTools {
           });
         }
       } catch (error: any) {
+        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
+        // возвращал бы список с пробелами вместо отказа
+        if (signal?.aborted) throw error;
         results.push({
           path,
           matches: '',

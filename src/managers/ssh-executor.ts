@@ -36,6 +36,12 @@ export interface SSHExecuteOptions {
   idempotent?: boolean;
   /** Данные на вход команды (например, манифест для `sha256sum -c -`) */
   stdin?: string | Buffer;
+  /**
+   * Отмена вызова, пришедшая от клиента. Команда получает её только там, где
+   * оборваться безопасно: уборка и замена файлов идут без сигнала, иначе
+   * отмена остановила бы тот самый код, который убирает за отменой.
+   */
+  signal?: AbortSignal;
 }
 
 export interface SSHExecuteResult {
@@ -99,6 +105,7 @@ export class SSHExecutor {
       timeoutMs: options.timeout ?? DEFAULT_TIMEOUT_MS,
       idempotent: options.idempotent,
       stdin: options.stdin,
+      signal: options.signal,
     });
 
     return {

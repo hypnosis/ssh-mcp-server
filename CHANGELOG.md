@@ -54,12 +54,23 @@ pool, so `SSH_MCP_BACKEND` no longer selects anything.
 - The server answers each client with the protocol revision that client asked for
   (`2024-11-05` through `2025-11-25`). On `0.6.1` every client was answered `2024-11-05`,
   whatever it asked for. Older clients keep working — measured.
-- Tool names, input schemas and response format are unchanged. The whole set of 14 tools
-  was called through a real client before and after the upgrade, on both lab containers,
-  and the answers match character for character.
+- The upgrade itself changed no behaviour: the whole set of 14 tools was called through a
+  real client before and after it, on both lab containers, and the answers matched
+  character for character. Tool names and input schemas stay as they were; what the two
+  entries below add to the answer came after the upgrade, deliberately.
 - The dependency is heavier: 14 packages / 7.5 MB → 91 packages / 24 MB, because the SDK
   now ships its HTTP transports (express, cors, hono, ajv) even for a stdio server. The
   Node requirement stays `>=18`.
+- A cancelled call is now acted upon instead of being ignored. The client's cancellation
+  reaches the tool and the transport, and the `ssh` client waiting on the answer is
+  dropped at once rather than sitting out the command's timeout. What it does not do is
+  stop the command on the server — see Known limitations.
+- `ssh_audit_baseline` and `ssh_tls_check` hand the client their result already parsed
+  (`structuredContent`), and describe its shape in the tool listing (`outputSchema`).
+  Before, the only way to get the data was to cut the text at `--- raw JSON ---` and parse
+  what followed. That text is unchanged, so a client doing exactly that keeps working.
+  A client on SDK 1.x checks the answer against the declared shape and refuses it on a
+  mismatch, so the two are tested against each other on live servers.
 
 ### Fixed — data loss and false corruption reports
 - `~` in `remote_path` of `ssh_upload` / `ssh_download`. Download used to bring the file
@@ -218,9 +229,13 @@ done, failed, nothing to check with — are now distinct in the answer itself.
 
 ### Known limitations
 These ship with the release. Each is recorded in `docs/tech-debt/` with measurements.
-- **A running operation cannot be cancelled from the outside.** The transport accepts an
-  abort signal, but no tool passes one, so a long transfer runs until its `timeout` — set
-  before it starts — or until the server process is killed (`TD-08`).
+- **Cancelling a call does not stop the work on the server.** Cancellation now reaches the
+  transport and drops the local `ssh` client immediately, but a command already started on
+  the machine runs to its end — closing the channel does not kill what is behind it
+  (measured). A long transfer still runs until its `timeout`, set before it starts. File
+  transfers and the system snapshot do not take cancellation at all, deliberately: one has
+  a window where stopping would leave the target empty, the other would come back with
+  blanks instead of a refusal (`TD-08`).
 - **The mount-point check needs a `stat` that speaks the GNU or BusyBox syntax.** On a
   server whose `stat` differs (BSD, macOS), the check does not run and says so; the install
   proceeds, and the rename stays the real guard (`TD-09`).

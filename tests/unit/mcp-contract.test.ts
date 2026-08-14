@@ -33,6 +33,13 @@ const PUBLISHED_TOOLS = [
   'ssh_upload',
 ];
 
+/**
+ * Инструменты, обещающие клиенту разбор ответа. Обещание проверяется на месте:
+ * клиент требует разбор от каждого ответа такого инструмента, поэтому снятая
+ * схема — молчаливая смена контракта, а не мелкая правка объявления.
+ */
+const TOOLS_WITH_OUTPUT_SCHEMA = ['ssh_audit_baseline', 'ssh_tls_check'];
+
 const MISSING_PROFILES_FILE = '/nonexistent/ssh-mcp-contract-profiles.json';
 
 let client: Client;
@@ -69,6 +76,16 @@ describe('Список инструментов', () => {
       expect(tool.description, `${tool.name}: пустое описание`).toBeTruthy();
       expect(tool.inputSchema.type, `${tool.name}: схема не объект`).toBe('object');
     }
+  });
+
+  it('схему ответа объявляют ровно те инструменты, что её обещают', async () => {
+    const { tools } = await client.listTools();
+    const withSchema = tools
+      .filter((tool: Tool) => tool.outputSchema !== undefined)
+      .map((tool: Tool) => tool.name)
+      .sort();
+
+    expect(withSchema).toEqual(TOOLS_WITH_OUTPUT_SCHEMA);
   });
 });
 

@@ -17,7 +17,7 @@
 | TD-05 | Комментарии в разборе путей пересказывают решение | ✅ закрыт | [archive/path-guard-comments_05.md](archive/path-guard-comments_05.md) |
 | TD-06 | Поиск следов не отличает полный список от обрезанного | ✅ закрыт | [archive/leftover-scan-truncation_06.md](archive/leftover-scan-truncation_06.md) |
 | TD-07 | Проигравший в гонке установок получает сырой текст `mv` | ✅ закрыт | [archive/install-race-message_07.md](archive/install-race-message_07.md) |
-| TD-08 | Отмена есть в контракте, но не доходит до инструментов | 📌 условие релиза v2.0.0 | [cancellation-not-wired_08.md](cancellation-not-wired_08.md) |
+| TD-08 | Отмена доходит до нашей стороны, но не снимает работу на сервере | 📌 условие релиза v2.0.0 | [cancellation-not-wired_08.md](cancellation-not-wired_08.md) |
 | TD-09 | Проверка точки монтирования не знает BSD и macOS | 📌 условие релиза v2.0.0 | [mountpoint-check-bsd_09.md](mountpoint-check-bsd_09.md) |
 | TD-10 | Имя профиля течёт через стек, потребителя нет | ✅ закрыт | [archive/profile-name-flows-nowhere_10.md](archive/profile-name-flows-nowhere_10.md) |
 | TD-11 | Экспорты, которых никто не зовёт | ✅ закрыт | [archive/unused-exports_11.md](archive/unused-exports_11.md) |

@@ -16,6 +16,11 @@ import { partialOutputSection } from './output-notes.js';
 export type ToolResult = {
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
+  /**
+   * Разбор ответа для инструментов, объявивших его схему. У отказа его нет:
+   * клиент требует разбор только от ответа без флага провала.
+   */
+  structuredContent?: object;
 };
 
 /** Ошибка, которая несёт вывод, накопленный командой до остановки */

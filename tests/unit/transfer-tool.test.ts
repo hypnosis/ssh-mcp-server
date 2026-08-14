@@ -950,6 +950,21 @@ describe('форма ответа и отказы до первой команд
   });
 
   /**
+   * Сырое исключение узла читается как поломка инструмента, хотя это обычный
+   * ответ: файла по названному пути нет.
+   */
+  it('отсутствующий локальный файл объясняется словами, а не кодом ENOENT', async () => {
+    const missing = join(localDir, 'no-such.txt');
+
+    const text = await textOf(
+      call('ssh_upload', { local_path: missing, remote_path: '/srv/app.js', verify: false })
+    );
+
+    expect(text).toBe(`Error: local_path does not exist: ${missing}`);
+    expect(uploadMock).not.toHaveBeenCalled();
+  });
+
+  /**
    * Таймер Node ждёт не дольше 2^31−1 мс. Само это значение он ещё умеет
    * отсчитать, а всё, что больше, срабатывает немедленно — и такое читается
    * как «без потолка», а не как мгновенный обрыв.

@@ -159,9 +159,10 @@
 Долг: пять новых записей — [TD-12](../tech-debt/archive/snapshot-parallel-sessions_12.md),
 [TD-13](../tech-debt/archive/limits-time-and-volume_13.md),
 [TD-14](../tech-debt/archive/parsing-foreign-output_14.md),
-[TD-15](../tech-debt/internal-names-in-answers_15.md),
-[TD-16](../tech-debt/archive/swallowed-errors_16.md); открытым остался только TD-15.
-AC-02 и AC-03 дописаны в TD-03. Таблица
+[TD-15](../tech-debt/archive/internal-names-in-answers_15.md),
+[TD-16](../tech-debt/archive/swallowed-errors_16.md) — все закрыты. Попутно заведена
+[TD-17](../tech-debt/glob-path-not-expanded_17.md): шаблон пути в журнальных инструментах
+обещан схемой, но не работает. AC-02 и AC-03 дописаны в TD-03. Таблица
 «какая находка куда ушла» — в конце баг-репорта. Известные ограничения перечислены в
 CHANGELOG отдельной секцией.
 

@@ -268,7 +268,7 @@ describe('ssh_service_status', () => {
   it('свойства службы разбираются по первому знаку равенства', async () => {
     const show = [
       'Restart=on-failure',
-      'RestartSec=5s',
+      'RestartUSec=5s',
       'LoadState=loaded',
       'ActiveState=active',
       'SubState=running',
@@ -277,7 +277,7 @@ describe('ssh_service_status', () => {
 
     expect(text).toContain('enabled: enabled');
     expect(text).toContain('active:  active/running');
-    expect(text).toContain('restart: on-failure (5ss)');
+    expect(text).toContain('restart: on-failure (after 5s)');
   });
 
   it('знак равенства внутри значения его не обрывает', async () => {
@@ -292,11 +292,11 @@ describe('ssh_service_status', () => {
     expect(text).toContain('active:  failed/?');
   });
 
-  it('неизвестные свойства печатаются вопросом, а не пустотой', async () => {
+  it('неизвестные свойства не выдаются за значение', async () => {
     const text = await svc({ show: '' });
 
     expect(text).toContain('active:  ?/?');
-    expect(text).toContain('restart: ? (?s)');
+    expect(text).toContain('restart: NOT CHECKED');
   });
 
   it.each([['nginx; touch /tmp/pwned'], ['$(id)'], ['unit name']])(
@@ -333,6 +333,60 @@ describe('ssh_service_status', () => {
 
     expect(sentCommand()).toContain("--since '2 hours ago'");
   });
+
+  /**
+   * Сырой ответ systemctl стоял в графе `enabled` как значение, а соседние поля
+   * при этом спокойно печатали `?`: часть отчёта заполнена, часть в вопросах,
+   * общего «судить нечем» нет.
+   */
+  it('сервер без systemctl отвечает «нечем проверить» по всем полям', async () => {
+    const text = await svc({ is_enabled: 'sh: systemctl: not found', status: 'sh: systemctl: not found' });
+
+    expect(text).toContain('NOT CHECKED: systemd did not answer on this server');
+    expect(text).toContain('enabled: NOT CHECKED');
+    expect(text).toContain('active:  NOT CHECKED');
+    expect(text).toContain('restart: NOT CHECKED');
+    expect(text).not.toContain('enabled: sh:');
+  });
+
+  it('незапущенный systemd — тот же ответ', async () => {
+    const text = await svc({
+      is_enabled: 'Failed to get unit file state for nginx.service: No such file or directory',
+      status: 'System has not been booted with systemd as init system (PID 1).',
+    });
+
+    expect(text).toContain('enabled: NOT CHECKED');
+    expect(text).not.toContain('Failed to get unit file state');
+  });
+
+  it('живой systemd без такой службы говорит именно это', async () => {
+    const text = await svc({
+      is_enabled: 'Failed to get unit file state for nginx.service: No such file or directory',
+      status: 'Unit nginx.service could not be found.',
+      show: 'LoadState=not-found\nActiveState=inactive\nSubState=dead',
+    });
+
+    expect(text).toContain('enabled: no unit by that name');
+    expect(text).toContain('active:  inactive/dead');
+  });
+
+  it('работающая служба печатается как раньше', async () => {
+    const text = await svc({
+      is_enabled: 'enabled',
+      show: 'Restart=on-failure\nActiveState=active\nSubState=running',
+    });
+
+    expect(text).toContain('enabled: enabled');
+    expect(text).toContain('active:  active/running');
+    expect(text).not.toContain('NOT CHECKED');
+  });
+
+  it('паузу перезапуска спрашивают тем именем, которым её печатает systemd', async () => {
+    await svc({ show: '' });
+
+    expect(sentCommand()).toContain('RestartUSec');
+    expect(sentCommand()).not.toContain('RestartSec');
+  });
 });
 
 describe('ssh_disk_breakdown', () => {
@@ -349,8 +403,29 @@ describe('ssh_disk_breakdown', () => {
     const stdout = '__SSH_MCP_DISK_SEP__du_0__SSH_MCP_DISK_SEP__\n4.0G\t/var/lib';
     const text = await breakdown({ paths: ['/var'] }, stdout);
 
-    expect(text).toContain('du_/var');
-    expect(sentCommand()).not.toContain('du_/var');
+    expect(text).toContain('--- largest entries under /var ---');
+    expect(sentCommand()).not.toContain('/var ---');
+  });
+
+  it('служебный разделитель в ответ не попадает', async () => {
+    const stdout = [
+      '__SSH_MCP_DISK_SEP__df__SSH_MCP_DISK_SEP__',
+      'Filesystem Type Size',
+      '__SSH_MCP_DISK_SEP__docker__SSH_MCP_DISK_SEP__',
+      'NO_DOCKER',
+    ].join('\n');
+    const text = await breakdown({}, stdout);
+
+    expect(text).not.toContain('__SSH_MCP_DISK_SEP__');
+    expect(text).toContain('--- filesystems ---\nFilesystem Type Size');
+  });
+
+  it('отсутствующий docker назван словами, а не меткой команды', async () => {
+    const stdout = '__SSH_MCP_DISK_SEP__docker__SSH_MCP_DISK_SEP__\nNO_DOCKER';
+    const text = await breakdown({}, stdout);
+
+    expect(text).toContain('--- docker ---\nnot installed');
+    expect(text).not.toContain('NO_DOCKER');
   });
 
   it('каждый запрошенный путь получает свой раздел', async () => {
@@ -362,8 +437,8 @@ describe('ssh_disk_breakdown', () => {
     ].join('\n');
     const text = await breakdown({ paths: ['/var', '/home'] }, stdout);
 
-    expect(text).toContain('du_/var');
-    expect(text).toContain('du_/home');
+    expect(text).toContain('--- largest entries under /var ---\n1G\t/var/log');
+    expect(text).toContain('--- largest entries under /home ---\n2G\t/home/deploy');
   });
 
   it('путь уезжает закавыченным', async () => {

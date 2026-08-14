@@ -304,7 +304,7 @@ export class AuditTool {
 
   private splitSections(stdout: string, sep: string): Map<string, string> {
     const out = new Map<string, string>();
-    const re = new RegExp(`${sep}([a-z_]+)${sep}\\n?`, 'g');
+    const re = new RegExp(`${sep}([a-z0-9_]+)${sep}\\n?`, 'g');
     let lastKey: string | null = null;
     let lastIdx = 0;
     let m: RegExpExecArray | null;
@@ -813,14 +813,32 @@ export class AuditTool {
       idempotent: true,
     });
 
-    // Имя пути возвращается в заголовки секций уже здесь, у нас: человеку нужно
-    // видеть, какой каталог показан, но на сервере этому имени делать нечего
-    const named = requestedPaths.reduce(
-      (text, path, index) => text.split(`${SEP}du_${index}${SEP}`).join(`${SEP}du_${path}${SEP}`),
-      r.stdout
-    );
+    // Разделитель — способ нарезать вывод, а не часть ответа: раньше он ехал
+    // человеку как есть, вместе с номером секции вместо имени каталога
+    const sections = this.splitSections(r.stdout, SEP);
+    const titles: Array<[string, string]> = [
+      ['df', 'filesystems'],
+      ...requestedPaths.map(
+        (path, index) => [`du_${index}`, `largest entries under ${path}`] as [string, string]
+      ),
+      ['docker', 'docker'],
+      ['journald', 'journald'],
+      ['var_log', '/var/log'],
+      ['cache', '$HOME/.cache'],
+    ];
 
-    return { content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${named}` }] };
+    const missing: Record<string, string> = {
+      NO_DOCKER: 'not installed',
+      NO_JOURNALD: 'not installed',
+    };
+    const body = titles
+      .map(([key, title]) => {
+        const section = (sections.get(key) || '').trim();
+        return `--- ${title} ---\n${missing[section] ?? section ?? ''}`;
+      })
+      .join('\n\n');
+
+    return { content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${body}` }] };
   }
 
   // ---------------------------------------------------------------------------
@@ -844,7 +862,9 @@ export class AuditTool {
     const cmd =
       `echo "${SEP}status${SEP}"; systemctl status ${shellQuote(unit)} --no-pager 2>&1 | head -40; ` +
       `echo "${SEP}is_enabled${SEP}"; systemctl is-enabled ${shellQuote(unit)} 2>&1; ` +
-      `echo "${SEP}show${SEP}"; systemctl show ${shellQuote(unit)} --property=Restart,RestartSec,LoadState,ActiveState,SubState 2>&1; ` +
+      // RestartUSec — то, что systemd действительно печатает: имени RestartSec
+      // в выводе `show` нет, и графа паузы навсегда оставалась вопросом
+      `echo "${SEP}show${SEP}"; systemctl show ${shellQuote(unit)} --property=Restart,RestartUSec,LoadState,ActiveState,SubState 2>&1; ` +
       `echo "${SEP}log${SEP}"; journalctl -u ${shellQuote(unit)} -n ${lines} --no-pager${sinceArg} 2>&1`;
 
     const r = await this.executor.execute(sshConfig, cmd, {
@@ -860,15 +880,42 @@ export class AuditTool {
       status_head: (sections.get('status') || '').trim(),
       recent_log: (sections.get('log') || '').trim(),
     };
+    // Служба, о которой не спросили, и служба, которой нет, — разные ответы, а
+    // сырой текст systemctl в графе `enabled` не был ни тем, ни другим
+    const noSystemd = AuditTool.NO_SYSTEMD.test(out.is_enabled) || AuditTool.NO_SYSTEMD.test(out.status_head);
+    const unknownUnit = !noSystemd && AuditTool.NO_UNIT.test(out.is_enabled);
+    const enabled = noSystemd
+      ? 'NOT CHECKED'
+      : unknownUnit
+        ? 'no unit by that name'
+        : /^[a-z-]+$/.test(out.is_enabled)
+          ? out.is_enabled
+          : 'NOT CHECKED';
+    const state = noSystemd
+      ? 'NOT CHECKED'
+      : `${out.props.ActiveState || '?'}/${out.props.SubState || '?'}`;
+    const pause = out.props.RestartUSec;
+    const restart = noSystemd
+      ? 'NOT CHECKED'
+      : `${out.props.Restart || 'NOT CHECKED'}${pause ? ` (after ${pause})` : ''}`;
+
     const text =
       `=== ssh_service_status ${unit} ===\n` +
-      `enabled: ${out.is_enabled}\n` +
-      `active:  ${out.props.ActiveState || '?'}/${out.props.SubState || '?'}\n` +
-      `restart: ${out.props.Restart || '?'} (${out.props.RestartSec || '?'}s)\n\n` +
+      (noSystemd ? 'NOT CHECKED: systemd did not answer on this server\n' : '') +
+      `enabled: ${enabled}\n` +
+      `active:  ${state}\n` +
+      `restart: ${restart}\n\n` +
       `--- status ---\n${out.status_head}\n\n` +
       `--- last ${lines} log lines ---\n${out.recent_log}`;
     return { content: [{ type: 'text', text }] };
   }
+
+  /** Ответы, которыми systemd сообщает, что его самого тут нет */
+  private static readonly NO_SYSTEMD =
+    /not found|has not been booted|Failed to connect to bus|Access denied/i;
+
+  /** Ответ, которым systemd сообщает, что такой службы нет */
+  private static readonly NO_UNIT = /No such file or directory|could not be found|not-found/i;
 
   private parseShowProps(text: string): Record<string, string> {
     const out: Record<string, string> = {};

@@ -87,7 +87,6 @@ describe.each(LAB_SERVERS)('Длина команды сверки — $name', {
   /** Сколько файлов на сервере — по одной строке на файл, без разбора имён */
   const remoteFileCount = async (): Promise<number> => {
     const result = await executor.execute(config, `find '${remoteDir}' -type f -exec echo x ';'`, {
-      profileName: server.name,
     });
     return result.stdout.split('\n').filter((line) => line.trim() === 'x').length;
   };
@@ -98,13 +97,13 @@ describe.each(LAB_SERVERS)('Длина команды сверки — $name', {
     for (let index = 0; index < FILE_COUNT; index++) {
       await writeFile(join(source, heavyName(index)), `content-${index}\n`);
     }
-    await executor.execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name });
+    await executor.execute(config, `rm -rf '${remoteDir}'`, {});
   });
 
   afterAll(async () => {
     if (unavailable) return;
     await executor
-      .execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name })
+      .execute(config, `rm -rf '${remoteDir}'`, {})
       .catch(() => undefined);
     await closeAllRunners();
   });
@@ -159,7 +158,6 @@ describe.each(LAB_SERVERS)('Длина команды сверки — $name', {
     };
 
     const outcome = await verifyRemoteFiles(counting as never, config, entries, {
-      profileName: server.name,
     });
 
     expect(outcome).toEqual({ status: 'matched' });

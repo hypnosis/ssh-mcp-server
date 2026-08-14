@@ -8,7 +8,7 @@
 
 import { mkdir, readdir, rename, rm, lstat, stat } from 'fs/promises';
 import { dirname, join } from 'path';
-import type { ArtifactScan, PathKind, PathOps } from './installer.js';
+import type { ArtifactScan, MountCheck, PathKind, PathOps } from './installer.js';
 import { ARTIFACT_PREFIXES } from '../utils/tmp-name.js';
 
 export const localPathOps: PathOps = {
@@ -29,12 +29,12 @@ export const localPathOps: PathOps = {
   },
 
   /** Точка монтирования: сам путь и его родитель лежат на разных устройствах */
-  async isSeparateFilesystem(path: string): Promise<boolean> {
+  async isSeparateFilesystem(path: string): Promise<MountCheck> {
     try {
       const [own, parent] = await Promise.all([stat(path), stat(dirname(path))]);
-      return own.dev !== parent.dev;
+      return own.dev !== parent.dev ? 'separate' : 'same';
     } catch {
-      return false;
+      return 'unknown';
     }
   },
 

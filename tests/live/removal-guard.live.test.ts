@@ -79,7 +79,7 @@ if (unavailable && LAB_REQUIRED) {
 
       /** Команда мимо инструмента: проверяем последствия, а не его же слова */
       const onServer = async (command: string): Promise<string> => {
-        const result = await executor.execute(config, command, { profileName: server.name });
+        const result = await executor.execute(config, command, {});
         return result.stdout.trim();
       };
 

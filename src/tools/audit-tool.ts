@@ -197,7 +197,6 @@ export class AuditTool {
 
   private async handleBaseline(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     // Настройки sshd спрашиваются всегда: под root они читаются и без sudo, а
     // раньше раздела просто не было — полный аудит молчал о парольном входе.
@@ -287,7 +286,6 @@ export class AuditTool {
 
     const useSudo = include.includes('ssh') && !!args.include_sudo_sections;
     const r = await this.executor.execute(sshConfig, compound, {
-      profileName,
       sudo: useSudo,
       timeout: 60000,
       idempotent: true,
@@ -666,7 +664,6 @@ export class AuditTool {
 
   private async handleTlsCheck(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     const domain: string = args.domain;
     const port: number = args.port || 443;
@@ -698,7 +695,6 @@ export class AuditTool {
       `echo "${SEP}renew${SEP}"; ${renewCmd}`;
 
     const r = await this.executor.execute(sshConfig, cmd, {
-      profileName,
       sudo: !!args.sudo,
       timeout: 30000,
       idempotent: true,
@@ -782,7 +778,6 @@ export class AuditTool {
 
   private async handleDiskBreakdown(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     const topN = shellCount(args.top_n ?? 20, 'top_n');
     const requestedPaths: string[] = args.paths && args.paths.length ? args.paths : ['/'];
@@ -808,7 +803,6 @@ export class AuditTool {
       `echo "${SEP}cache${SEP}"; du -sh "$HOME"/.cache/* 2>/dev/null | sort -rh | head -${topN}`;
 
     const r = await this.executor.execute(sshConfig, cmd, {
-      profileName,
       timeout: 120000,
       idempotent: true,
     });
@@ -847,7 +841,6 @@ export class AuditTool {
 
   private async handleServiceStatus(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     const unit: string = args.unit;
     const lines = shellCount(args.log_lines ?? 50, 'log_lines');
@@ -868,7 +861,6 @@ export class AuditTool {
       `echo "${SEP}log${SEP}"; journalctl -u ${shellQuote(unit)} -n ${lines} --no-pager${sinceArg} 2>&1`;
 
     const r = await this.executor.execute(sshConfig, cmd, {
-      profileName,
       timeout: 30000,
       idempotent: true,
     });

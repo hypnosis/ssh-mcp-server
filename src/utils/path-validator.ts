@@ -1,47 +1,23 @@
 /**
- * Path Security Validator
- * Optional security layer for validating file paths against whitelist/blacklist rules
+ * Правила доступа к путям: белый и чёрный списки каталогов профиля.
+ *
+ * Правила сравниваются с каноническим путём — приводит его `path-guard`.
  */
 
 import { posix } from 'path';
 
-/**
- * Path security configuration
- * Can be specified per SSH profile for additional security
- */
+/** Правила доступа к путям, задаются в профиле */
 export interface PathSecurityConfig {
-  /**
-   * Whitelist of allowed directory paths
-   * If specified, only paths starting with these prefixes are allowed
-   * Example: ["/home/admin", "/var/www", "/var/log"]
-   */
+  /** Каталоги, за пределы которых выходить нельзя */
   allowedPaths?: string[];
-  
-  /**
-   * Blacklist of forbidden paths
-   * Paths starting with these prefixes will be rejected
-   * Example: ["/etc/shadow", "/root", "/etc/ssh"]
-   */
+  /** Каталоги, закрытые независимо от белого списка */
   deniedPaths?: string[];
-  
-  /**
-   * Allow path traversal (../) in paths
-   * Default: true (allowed)
-   * Set to false to prevent directory traversal attacks
-   */
+  /** Пропускать ли `..` в пути; по умолчанию да */
   allowTraversal?: boolean;
-  
-  /**
-   * Maximum allowed path length
-   * Default: unlimited
-   * Example: 1000
-   */
+  /** Предел длины пути; по умолчанию без предела */
   maxPathLength?: number;
 }
 
-/**
- * Path validation result
- */
 export interface PathValidationResult {
   valid: boolean;
   error?: string;
@@ -55,7 +31,7 @@ export interface PathValidationResult {
  * невозможна у пути, начинающегося со слэша. В середине `~` — обычное имя
  * файла, и такой путь судится наравне с остальными.
  */
-export function isCanonical(path: string): boolean {
+function isCanonical(path: string): boolean {
   if (!path.startsWith('/')) return false;
   if (path.includes('//')) return false;
 
@@ -63,11 +39,9 @@ export function isCanonical(path: string): boolean {
 }
 
 /**
- * Каталог из правила в том же виде, в каком приходит проверяемый путь:
- * без `.`, `..` и сдвоенных слэшей.
- *
- * Домашний каталог не подставляется — правило обязано быть абсолютным, это
- * проверяет загрузчик профилей.
+ * Каталог из правила в том же виде, в каком приходит проверяемый путь.
+ * Тильда и относительный вид сюда не доходят: правило обязано быть абсолютным,
+ * это проверяет загрузчик профилей.
  */
 function normalizeRule(directory: string): string {
   return posix.normalize(directory);
@@ -90,17 +64,7 @@ export function isUnder(path: string, directory: string): boolean {
   return path === base || path.startsWith(`${base}/`);
 }
 
-/**
- * PathValidator
- * Validates file paths against security rules
- * 
- * Usage:
- *   const validator = new PathValidator(config);
- *   const result = validator.validate("/etc/shadow");
- *   if (!result.valid) {
- *     throw new Error(result.error);
- *   }
- */
+/** Судит путь по правилам профиля: белый список, чёрный список, длина, `..` */
 export class PathValidator {
   /** Правила сравнения, приведённые к виду проверяемого пути */
   private readonly deniedPaths: string[];
@@ -111,43 +75,12 @@ export class PathValidator {
     this.allowedPaths = (config?.allowedPaths ?? []).map(normalizeRule);
   }
 
-  /**
-   * Validate file path against security rules
-   * 
-   * @param path - File path to validate
-   * @returns Validation result with error message if invalid
-   * 
-   * @example
-   * // With whitelist
-   * const validator = new PathValidator({
-   *   allowedPaths: ["/home/admin", "/var/log"]
-   * });
-   * validator.validate("/home/admin/file.txt"); // ✅ valid
-   * validator.validate("/etc/shadow");          // ❌ not in whitelist
-   * 
-   * @example
-   * // With blacklist
-   * const validator = new PathValidator({
-   *   deniedPaths: ["/etc/shadow", "/root"]
-   * });
-   * validator.validate("/home/user/file.txt"); // ✅ valid
-   * validator.validate("/etc/shadow");         // ❌ blacklisted
-   * 
-   * @example
-   * // Prevent path traversal
-   * const validator = new PathValidator({
-   *   allowTraversal: false
-   * });
-   * validator.validate("/home/user/file.txt");     // ✅ valid
-   * validator.validate("../../../etc/passwd");     // ❌ traversal not allowed
-   */
+  /** Причина отказа или согласие: путь судится по всем заданным правилам */
   validate(path: string): PathValidationResult {
-    // No config = no validation (allow everything)
     if (!this.config) {
       return { valid: true };
     }
-    
-    // 1. Check max length
+
     if (this.config.maxPathLength && path.length > this.config.maxPathLength) {
       return {
         valid: false,
@@ -155,7 +88,6 @@ export class PathValidator {
       };
     }
     
-    // 2. Check path traversal (..)
     if (this.config.allowTraversal === false && path.includes('..')) {
       return {
         valid: false,
@@ -163,11 +95,9 @@ export class PathValidator {
       };
     }
     
-    // 3. Правила сравнивают путь с каталогами, поэтому судить можно только
-    // канонический абсолютный путь. `~`, `logs/app.log`, `../x` ведут неизвестно
-    // куда: дом бывает и /root, и /home/deploy, рабочий каталог тоже не виден
-    // отсюда. Приведением занимается resolveRemotePath — здесь честнее
-    // отказаться судить, чем угадать
+    // Правила сравнивают путь с каталогами, поэтому судить можно только
+    // канонический абсолютный путь: `~` и `logs/app.log` ведут неизвестно куда.
+    // Приведением занимается resolveRemotePath
     if (!this.hasRules()) {
       return { valid: true };
     }
@@ -180,7 +110,7 @@ export class PathValidator {
       };
     }
 
-    // 4. Check denied paths (blacklist) - takes priority
+    // Чёрный список судит первым: он закрывает путь и внутри разрешённого
     for (const denied of this.deniedPaths) {
       if (isUnder(path, denied)) {
         return {
@@ -190,7 +120,6 @@ export class PathValidator {
       }
     }
 
-    // 5. Check allowed paths (whitelist)
     if (this.allowedPaths.length > 0) {
       const isAllowed = this.allowedPaths.some(allowed => isUnder(path, allowed));
 
@@ -210,13 +139,7 @@ export class PathValidator {
     return this.deniedPaths.length > 0 || this.allowedPaths.length > 0;
   }
   
-  /**
-   * Validate multiple paths at once
-   * Returns first validation error or success
-   * 
-   * @param paths - Array of paths to validate
-   * @returns Validation result with error message if any path is invalid
-   */
+  /** Пачка путей: ответом становится первый отказ */
   validateBatch(paths: string[]): PathValidationResult {
     for (const path of paths) {
       const result = this.validate(path);
@@ -228,21 +151,7 @@ export class PathValidator {
   }
 }
 
-/**
- * Create PathValidator from SSH config
- * Helper function to create validator from profile configuration
- * 
- * @param sshConfig - SSH configuration object (may contain pathSecurity)
- * @returns PathValidator instance or undefined if no security config
- * 
- * @example
- * const sshConfig = resolveSSHConfig({ profile: 'production' });
- * const validator = createPathValidator(sshConfig);
- * if (validator) {
- *   const result = validator.validate(path);
- *   if (!result.valid) throw new Error(result.error);
- * }
- */
+/** Валидатор профиля, или ничего — если правил в профиле нет */
 export function createPathValidator(sshConfig: any): PathValidator | undefined {
   if (sshConfig.pathSecurity) {
     return new PathValidator(sshConfig.pathSecurity);

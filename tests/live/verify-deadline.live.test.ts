@@ -76,7 +76,6 @@ describe.each(LAB_SERVERS)('Срок сверки — $name', { timeout: LIVE_TI
   /** Сколько файлов на сервере — по одной строке на файл, без разбора имён */
   const remoteFileCount = async (): Promise<number> => {
     const result = await executor.execute(config, `find '${remoteDir}' -type f -exec echo x ';'`, {
-      profileName: server.name,
     });
     return result.stdout.split('\n').filter((line) => line.trim() === 'x').length;
   };
@@ -100,7 +99,7 @@ describe.each(LAB_SERVERS)('Срок сверки — $name', { timeout: LIVE_TI
   beforeAll(async () => {
     if (unavailable) return;
     await mkdir(source, { recursive: true });
-    await executor.execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name });
+    await executor.execute(config, `rm -rf '${remoteDir}'`, {});
 
     entries = [];
     for (let index = 0; index < FILE_COUNT; index++) {
@@ -128,7 +127,7 @@ describe.each(LAB_SERVERS)('Срок сверки — $name', { timeout: LIVE_TI
   afterAll(async () => {
     if (unavailable) return;
     await executor
-      .execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name })
+      .execute(config, `rm -rf '${remoteDir}'`, {})
       .catch(() => undefined);
     await closeAllRunners();
   });
@@ -137,7 +136,6 @@ describe.each(LAB_SERVERS)('Срок сверки — $name', { timeout: LIVE_TI
     const { proxy, timeouts } = recording();
 
     const outcome = await verifyRemoteFiles(proxy as never, config, entries, {
-      profileName: server.name,
       timeoutMs: AMPLE_MS,
     });
 
@@ -152,7 +150,6 @@ describe.each(LAB_SERVERS)('Срок сверки — $name', { timeout: LIVE_TI
 
   it.skipIf(unavailable)('исчерпанный срок — «проверить нечем», и дерево остаётся целым', async () => {
     const outcome = await verifyRemoteFiles(executor, config, entries, {
-      profileName: server.name,
       timeoutMs: HOPELESS_MS,
     });
 
@@ -164,7 +161,6 @@ describe.each(LAB_SERVERS)('Срок сверки — $name', { timeout: LIVE_TI
     // Убитая по сроку команда не должна ломать соединение: следующая сверка
     // без потолка обязана пройти обычным порядком
     const outcome = await verifyRemoteFiles(executor, config, entries, {
-      profileName: server.name,
     });
 
     expect(outcome).toEqual({ status: 'matched' });

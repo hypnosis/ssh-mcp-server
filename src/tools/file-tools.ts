@@ -244,8 +244,6 @@ export class FileTools {
     if (!validation.isValid) {
       return createValidationErrorResponse(validation.errorMessage!);
     }
-    
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
     const requested = requireTextList(args.path, 'path', '"/etc/hosts"');
@@ -258,7 +256,7 @@ export class FileTools {
     // после того, как первые четыре уже прочитаны
     const paths: string[] = [];
     for (const path of requested) {
-      const target = await resolveRemotePath(this.executor, sshConfig, path, { profileName, sudo });
+      const target = await resolveRemotePath(this.executor, sshConfig, path, { sudo });
       for (const warning of target.warnings) logger.warn(`[file-tools] ${warning}`);
       paths.push(target.path);
     }
@@ -273,7 +271,6 @@ export class FileTools {
 
       const result = await this.executor.execute(sshConfig, command, {
         sudo,
-        profileName,
         idempotent: true,
       });
 
@@ -320,7 +317,6 @@ export class FileTools {
 
         const result = await this.executor.execute(sshConfig, command, {
           sudo,
-          profileName,
           idempotent: true,
         });
 
@@ -391,7 +387,6 @@ export class FileTools {
    */
   private async handleFileWrite(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     // Форма проверяется целиком до первой записи: без этого отсутствующий
@@ -408,7 +403,6 @@ export class FileTools {
       files.push({
         file,
         target: await resolveRemotePath(this.executor, sshConfig, file.path, {
-          profileName,
           sudo: file.sudo === true,
         }),
       });
@@ -417,7 +411,7 @@ export class FileTools {
     // Single file - simple result
     if (files.length === 1) {
       const { file, target } = files[0];
-      const written = await this.writeFileRouted(sshConfig, file, target, profileName);
+      const written = await this.writeFileRouted(sshConfig, file, target);
 
       // Печатается путь, по которому файл оказался на самом деле: при `~` он
       // отличается от запрошенного, и человек должен видеть настоящий адрес
@@ -445,7 +439,7 @@ export class FileTools {
 
     for (const { file, target } of files) {
       try {
-        const written = await this.writeFileRouted(sshConfig, file, target, profileName);
+        const written = await this.writeFileRouted(sshConfig, file, target);
         results.push({
           path: written.path,
           success: true,
@@ -511,8 +505,7 @@ export class FileTools {
       binary?: boolean;
     },
     /** Раскрытый и уже проверенный правилами путь назначения */
-    target: ExpandedPath,
-    profileName: string
+    target: ExpandedPath
   ): Promise<{ path: string; warnings: string[]; verification: VerificationOutcome }> {
     const buf = file.binary
       ? Buffer.from(file.content || '', 'base64')
@@ -529,7 +522,6 @@ export class FileTools {
     const ops = remotePathOps({
       executor: this.executor,
       config: sshConfig,
-      profileName,
       sudo: file.sudo,
     });
 
@@ -538,8 +530,8 @@ export class FileTools {
       kind: 'file',
       stage: (staging) =>
         buf.length > INLINE_WRITE_LIMIT
-          ? this.stageByTransport(sshConfig, profileName, staging, buf, file.sudo)
-          : this.stageByStdin(sshConfig, profileName, staging, buf, file.sudo),
+          ? this.stageByTransport(sshConfig, staging, buf, file.sudo)
+          : this.stageByStdin(sshConfig, staging, buf, file.sudo),
       verify: async (staging) => {
         if (!file.verify) return null;
 
@@ -547,7 +539,7 @@ export class FileTools {
           this.executor,
           sshConfig,
           [{ path: staging, hash: expectedHash }],
-          { profileName, sudo: file.sudo }
+          { sudo: file.sudo }
         );
 
         if (result.status === 'mismatched') {
@@ -571,7 +563,7 @@ export class FileTools {
         await this.executor.executeChecked(
           sshConfig,
           `chmod ${mode} -- ${shellQuote(staging)}`,
-          { profileName, sudo: file.sudo }
+          { sudo: file.sudo }
         );
       },
     });
@@ -592,13 +584,11 @@ export class FileTools {
    */
   private async stageByStdin(
     sshConfig: any,
-    profileName: string,
     staging: string,
     content: Buffer,
     sudo?: boolean
   ): Promise<void> {
     await this.executor.executeChecked(sshConfig, `cat > ${shellQuote(staging)}`, {
-      profileName,
       sudo,
       stdin: content,
     });
@@ -607,7 +597,6 @@ export class FileTools {
   /** Наполнить временный путь через транспорт: для крупного и двоичного */
   private async stageByTransport(
     sshConfig: any,
-    profileName: string,
     staging: string,
     content: Buffer,
     sudo?: boolean
@@ -634,11 +623,11 @@ export class FileTools {
         await this.executor.executeChecked(
           sshConfig,
           `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
-          { profileName, sudo: true }
+          { sudo: true }
         );
       } finally {
         await this.executor
-          .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, { profileName })
+          .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, {})
           .catch(() => undefined);
       }
     } finally {
@@ -672,11 +661,10 @@ export class FileTools {
    */
   private async handleFileList(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const path = requireText(args.path, 'path', '"/var/log"');
-    const target = await resolveRemotePath(this.executor, sshConfig, path, { profileName });
+    const target = await resolveRemotePath(this.executor, sshConfig, path, {});
     const safePath = shellQuote(target.path);
 
     let command = 'ls -lah';
@@ -694,7 +682,6 @@ export class FileTools {
     }
     
     const result = await this.executor.execute(sshConfig, command, {
-      profileName,
       idempotent: true,
     });
 

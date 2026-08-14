@@ -35,7 +35,7 @@ export async function resolveRemovalTargets(
   executor: SSHExecutor,
   config: SSHConfig,
   targets: RemovalTarget[],
-  options: { profileName: string; sudo?: boolean }
+  options: { sudo?: boolean }
 ): Promise<ResolutionVerdict> {
   if (targets.length === 0) return { blocked: false };
 
@@ -49,7 +49,6 @@ export async function resolveRemovalTargets(
     `command -v readlink >/dev/null 2>&1 || { echo ${NO_READLINK}; exit 0; }; ${probes}`;
 
   const result = await executor.execute(config, command, {
-    profileName: options.profileName,
     sudo: options.sudo,
     idempotent: true,
   });

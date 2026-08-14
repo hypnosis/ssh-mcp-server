@@ -160,8 +160,6 @@ export class LogTools {
     if (!validation.isValid) {
       return createValidationErrorResponse(validation.errorMessage!);
     }
-    
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
@@ -170,13 +168,13 @@ export class LogTools {
     const sudo = args.sudo || false;
 
     // Правила профиля проверяет buildSafePath — уже на раскрытом пути
-    const { paths, notes } = await this.expandPatterns(sshConfig, profileName, requested, sudo);
+    const { paths, notes } = await this.expandPatterns(sshConfig, requested, sudo);
 
     // Single log - simple result
     if (paths.length === 1) {
-      const safePath = await this.buildSafePath(sshConfig, profileName, paths[0], sudo);
+      const safePath = await this.buildSafePath(sshConfig, paths[0], sudo);
       const command = `tail -n ${lines} ${safePath}`;
-      const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
+      const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true });
 
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read log: ${result.stderr || result.stdout}`);
@@ -207,9 +205,9 @@ export class LogTools {
     
     for (const path of paths) {
       try {
-        const safePath = await this.buildSafePath(sshConfig, profileName, path, sudo);
+        const safePath = await this.buildSafePath(sshConfig, path, sudo);
         const command = `tail -n ${lines} ${safePath}`;
-        const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
+        const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true });
         
         if (result.exitCode === 0) {
           const logLines = result.stdout.split('\n').filter(line => line.length > 0);
@@ -271,8 +269,6 @@ export class LogTools {
     if (!validation.isValid) {
       return createValidationErrorResponse(validation.errorMessage!);
     }
-    
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
@@ -283,7 +279,7 @@ export class LogTools {
     const sudo = args.sudo || false;
 
     // Правила профиля проверяет buildSafePath — уже на раскрытом пути
-    const { paths, notes } = await this.expandPatterns(sshConfig, profileName, requested, sudo);
+    const { paths, notes } = await this.expandPatterns(sshConfig, requested, sudo);
 
     // Build grep flags
     const grepFlags = [];
@@ -298,9 +294,9 @@ export class LogTools {
     
     // Single log - simple result
     if (paths.length === 1) {
-      const safePath = await this.buildSafePath(sshConfig, profileName, paths[0], sudo);
+      const safePath = await this.buildSafePath(sshConfig, paths[0], sudo);
       const command = `grep ${grepFlags.join(' ')} ${shellQuote(query)} ${safePath}`;
-      const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
+      const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true });
       
       // grep exit code 1 = no matches (not an error)
       if (result.exitCode !== 0 && result.exitCode !== 1) {
@@ -343,9 +339,9 @@ export class LogTools {
     
     for (const path of paths) {
       try {
-        const safePath = await this.buildSafePath(sshConfig, profileName, path, sudo);
+        const safePath = await this.buildSafePath(sshConfig, path, sudo);
         const command = `grep ${grepFlags.join(' ')} ${shellQuote(query)} ${safePath}`;
-        const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
+        const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true });
         
         // grep exit code 1 = no matches
         if (result.exitCode === 0 || result.exitCode === 1) {
@@ -413,7 +409,6 @@ export class LogTools {
    */
   private async expandPatterns(
     sshConfig: any,
-    profileName: string,
     paths: string[],
     sudo: boolean
   ): Promise<{ paths: string[]; notes: string[] }> {
@@ -436,7 +431,6 @@ export class LogTools {
       }
 
       const target = await resolveRemotePath(this.executor, sshConfig, directory, {
-        profileName,
         sudo,
       });
       for (const warning of target.warnings) {
@@ -449,7 +443,7 @@ export class LogTools {
         `if [ -e ${shellQuote(literal)} ]; then printf '${GLOB_LITERAL}\\n'; else ` +
           `find ${shellQuote(target.path)} -maxdepth 1 ! -type d ` +
           `-name ${shellQuote(pattern)} -print0 2>/dev/null; fi`,
-        { sudo, profileName, idempotent: true }
+        { sudo, idempotent: true }
       );
 
       if (result.stdout.split('\n').some((line) => line.trim() === GLOB_LITERAL)) {
@@ -506,11 +500,10 @@ export class LogTools {
    */
   private async buildSafePath(
     sshConfig: any,
-    profileName: string,
     path: string,
     sudo: boolean
   ): Promise<string> {
-    const target = await resolveRemotePath(this.executor, sshConfig, path, { profileName, sudo });
+    const target = await resolveRemotePath(this.executor, sshConfig, path, { sudo });
 
     for (const warning of target.warnings) {
       logger.warn(`[log-tools] ${warning}`);

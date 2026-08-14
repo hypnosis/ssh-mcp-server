@@ -54,7 +54,6 @@ export interface VerifyEntry {
 }
 
 export interface VerifyOptions {
-  profileName: string;
   sudo?: boolean;
   /**
    * Потолок на хеширование, миллисекунды. Ноль — потолка нет, и это здесь
@@ -197,7 +196,6 @@ async function collectRemoteHashes(
 
   const ask = (chunk: string[], timeout: number) =>
     executor.execute(config, buildHashCommand(tool, chunk), {
-      profileName: options.profileName,
       sudo: options.sudo,
       idempotent: true,
       timeout,

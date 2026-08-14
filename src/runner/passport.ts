@@ -22,7 +22,7 @@ import { logger } from '../utils/logger.js';
 export type Sha256Tool = 'sha256sum' | 'openssl' | 'none';
 
 /** Какой набор базовых утилит стоит на сервере */
-export type UtilityFlavor = 'coreutils' | 'busybox' | 'unknown';
+type UtilityFlavor = 'coreutils' | 'busybox' | 'unknown';
 
 export interface ServerPassport {
   /** Есть ли bash — от этого зависит язык, на котором мы шлём команды */

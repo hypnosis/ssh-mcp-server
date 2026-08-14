@@ -259,7 +259,6 @@ export class TransferTool {
 
   private async handleUpload(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
     // Права и владелец проверяются до первого касания сервера: оба уезжают в
@@ -279,7 +278,6 @@ export class TransferTool {
     const localPath = requireText(args.local_path, 'local_path', '"./dist"');
 
     const target = await resolveRemotePath(this.executor, sshConfig, remotePath, {
-      profileName,
       sudo: !!args.sudo,
     });
 
@@ -295,7 +293,6 @@ export class TransferTool {
     if (isDir) {
       const result = await this.uploadDirectory(
         sshConfig,
-        profileName,
         localPath,
         target.path,
         {
@@ -319,7 +316,6 @@ export class TransferTool {
 
     const result = await this.uploadFile(
       sshConfig,
-      profileName,
       localPath,
       target.path,
       {
@@ -380,7 +376,6 @@ export class TransferTool {
    */
   private async uploadFile(
     sshConfig: any,
-    profileName: string,
     localPath: string,
     remotePath: string,
     opts: {
@@ -397,7 +392,7 @@ export class TransferTool {
     const localHashPromise = opts.verify ? sha256OfFile(localPath) : null;
 
     if (!opts.overwrite) {
-      const exists = await this.remoteExists(sshConfig, profileName, remotePath);
+      const exists = await this.remoteExists(sshConfig, remotePath);
       if (exists === 'yes') {
         throw new Error(`remote_path already exists and overwrite=false: ${remotePath}`);
       }
@@ -414,7 +409,6 @@ export class TransferTool {
     const ops = remotePathOps({
       executor: this.executor,
       config: sshConfig,
-      profileName,
       sudo: opts.sudo,
     });
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
@@ -425,7 +419,7 @@ export class TransferTool {
       kind: 'file',
       stage: async (staging) => {
         if (opts.sudo) {
-          await this.stageUnderSudo(sshConfig, profileName, localPath, staging, opts.timeoutMs);
+          await this.stageUnderSudo(sshConfig, localPath, staging, opts.timeoutMs);
           return;
         }
         await this.putFile(sshConfig, localPath, staging, opts.timeoutMs);
@@ -434,7 +428,6 @@ export class TransferTool {
         if (!opts.verify) return null;
         verdict = await this.verify(
           sshConfig,
-          profileName,
           [{ path: staging, hash: await localHashPromise! }],
           'upload',
           // под sudo копия рядом с целью уже не наша — прочесть её иначе нечем
@@ -443,7 +436,7 @@ export class TransferTool {
         return null;
       },
       finalize: async (staging) => {
-        ownerWarnings = await this.applyOwnership(sshConfig, profileName, staging, opts);
+        ownerWarnings = await this.applyOwnership(sshConfig, staging, opts);
       },
     });
 
@@ -485,7 +478,6 @@ export class TransferTool {
    */
   private async stageUnderSudo(
     sshConfig: any,
-    profileName: string,
     localPath: string,
     staging: string,
     timeoutMs?: number
@@ -499,11 +491,11 @@ export class TransferTool {
       await this.executor.executeChecked(
         sshConfig,
         `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
-        { profileName, sudo: true, timeout: timeoutMs }
+        { sudo: true, timeout: timeoutMs }
       );
     } finally {
       await this.executor
-        .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, { profileName })
+        .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, {})
         .catch(() => undefined);
     }
   }
@@ -517,7 +509,6 @@ export class TransferTool {
    */
   private async applyOwnership(
     sshConfig: any,
-    profileName: string,
     staging: string,
     opts: { mode?: string; owner?: string; sudo: boolean }
   ): Promise<string[]> {
@@ -525,7 +516,7 @@ export class TransferTool {
       await this.executor.executeChecked(
         sshConfig,
         `chmod ${opts.mode} -- ${shellQuote(staging)}`,
-        { profileName, sudo: opts.sudo }
+        { sudo: opts.sudo }
       );
     }
 
@@ -540,7 +531,7 @@ export class TransferTool {
     await this.executor.executeChecked(
       sshConfig,
       `chown ${opts.owner} -- ${shellQuote(staging)}`,
-      { profileName, sudo: opts.sudo }
+      { sudo: opts.sudo }
     );
     return [];
   }
@@ -552,14 +543,13 @@ export class TransferTool {
    */
   private async remoteExists(
     sshConfig: any,
-    profileName: string,
     remotePath: string
   ): Promise<'yes' | 'no' | 'unknown'> {
     try {
       const r = await this.executor.execute(
         sshConfig,
         `test -e ${shellQuote(remotePath)} && echo YES || echo NO`,
-        { profileName, idempotent: true }
+        { idempotent: true }
       );
       const answer = r.stdout.trim();
       if (answer === 'YES') return 'yes';
@@ -580,7 +570,6 @@ export class TransferTool {
    */
   private async verify(
     sshConfig: any,
-    profileName: string,
     entries: VerifyEntry[],
     label: string,
     opts: { sudo?: boolean; timeoutMs?: number } = {}
@@ -589,7 +578,6 @@ export class TransferTool {
     // Потолок стоит на всей операции, а не на одной её части: иначе дерево на
     // гигабайты доедет и упрётся в общие для команд 30 секунд уже здесь
     const outcome = await verifyRemoteFiles(this.executor, sshConfig, entries, {
-      profileName,
       sudo,
       timeoutMs: timeoutMs ?? 0,
     });
@@ -613,7 +601,6 @@ export class TransferTool {
 
   private async uploadDirectory(
     sshConfig: any,
-    profileName: string,
     localDir: string,
     remoteDir: string,
     opts: {
@@ -635,7 +622,7 @@ export class TransferTool {
     const finalDir = remoteDir;
 
     if (!opts.overwrite) {
-      const exists = await this.remoteExists(sshConfig, profileName, finalDir);
+      const exists = await this.remoteExists(sshConfig, finalDir);
       if (exists === 'yes') {
         throw new Error(
           `remote directory already exists and overwrite=false: ${finalDir}`
@@ -662,7 +649,7 @@ export class TransferTool {
       totalBytes += (await stat(join(localDir, rel))).size;
     }
 
-    const ops = remotePathOps({ executor: this.executor, config: sshConfig, profileName });
+    const ops = remotePathOps({ executor: this.executor, config: sshConfig });
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
     // Каталог заменяется только целиком и только через установщик. Раньше здесь
@@ -682,7 +669,6 @@ export class TransferTool {
         if (!opts.verify) return null;
         verdict = await this.verify(
           sshConfig,
-          profileName,
           (await sha256OfFiles(files.map((rel) => join(localDir, rel)))).map((hash, i) => ({
             hash,
             path: posixPath.join(staging, files[i]),
@@ -700,7 +686,7 @@ export class TransferTool {
         await this.executor.executeChecked(
           sshConfig,
           `chmod -R ${opts.mode} -- ${shellQuote(staging)}`,
-          { profileName, timeout: opts.timeoutMs ?? 0 }
+          { timeout: opts.timeoutMs ?? 0 }
         );
       },
     });
@@ -723,7 +709,6 @@ export class TransferTool {
 
   private async handleDownload(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
     const timeoutMs = parseTimeoutMs(args.timeout);
@@ -738,16 +723,14 @@ export class TransferTool {
     const localPath = requireText(args.local_path, 'local_path', '"./app.conf"');
 
     const source = await resolveRemotePath(this.executor, sshConfig, remotePath, {
-      profileName,
     });
 
     const isDir =
-      args.recursive ?? (await this.isRemoteDir(sshConfig, profileName, source.path));
+      args.recursive ?? (await this.isRemoteDir(sshConfig, source.path));
 
     if (isDir) {
       const result = await this.downloadDirectory(
         sshConfig,
-        profileName,
         source.path,
         localPath,
         { verify: args.verify !== false, timeoutMs }
@@ -772,7 +755,6 @@ export class TransferTool {
 
     const file = await this.downloadFile(
       sshConfig,
-      profileName,
       source.path,
       localPath,
       { verify: args.verify !== false, timeoutMs }
@@ -797,20 +779,18 @@ export class TransferTool {
 
   private async isRemoteDir(
     sshConfig: any,
-    profileName: string,
     remotePath: string
   ): Promise<boolean> {
     const r = await this.executor.execute(
       sshConfig,
       `test -d ${shellQuote(remotePath)} && echo YES || echo NO`,
-      { profileName }
+      {}
     );
     return r.stdout.trim() === 'YES';
   }
 
   private async downloadFile(
     sshConfig: any,
-    profileName: string,
     remotePath: string,
     localPath: string,
     opts: { verify: boolean; timeoutMs?: number }
@@ -832,7 +812,6 @@ export class TransferTool {
         if (!opts.verify) return null;
         verdict = await this.verify(
           sshConfig,
-          profileName,
           [{ path: remotePath, hash: await sha256OfFile(staging) }],
           'download',
           { timeoutMs: opts.timeoutMs }
@@ -853,7 +832,6 @@ export class TransferTool {
    */
   private async downloadDirectory(
     sshConfig: any,
-    profileName: string,
     remoteDir: string,
     localDir: string,
     opts: { verify: boolean; timeoutMs?: number }
@@ -873,7 +851,6 @@ export class TransferTool {
         if (!opts.verify) return null;
         verdict = await this.verify(
           sshConfig,
-          profileName,
           (await sha256OfFiles(files.map((rel) => join(staging, rel)))).map((hash, i) => ({
             hash,
             path: posixPath.join(remoteDir, files[i]),

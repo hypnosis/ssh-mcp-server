@@ -135,7 +135,6 @@ export class ExecTool {
       }
       
       // Resolve SSH config and profile name
-      const profileName = args.profile || 'default';
       const sshConfig = resolveSSHConfig({ profile: args.profile });
       
       // Форма проверяется до первой команды: без этого отсутствующий или не
@@ -147,7 +146,7 @@ export class ExecTool {
       // Удаление корня, дома или системного дерева останавливается ДО первой
       // отправки — и весь вызов целиком. Проверять по ходу нельзя: половина
       // батча уехала бы, а состояние сервера стало бы неизвестным.
-      const refusal = await this.refuseDestructive(commands, sshConfig, profileName, args.sudo);
+      const refusal = await this.refuseDestructive(commands, sshConfig, args.sudo);
       if (refusal) {
         return { content: [{ type: 'text', text: refusal }] };
       }
@@ -168,7 +167,6 @@ export class ExecTool {
           cwd: args.cwd,
           // Ноль здесь значит «срок не назван»: общий срок подставит слой ниже
           timeout: args.timeout || undefined,
-          profileName,
         });
         
         let output = '';
@@ -221,7 +219,6 @@ export class ExecTool {
           cwd: args.cwd,
           // Ноль здесь значит «срок не назван»: общий срок подставит слой ниже
           timeout: args.timeout || undefined,
-          profileName,
         });
         
         results.push({
@@ -287,7 +284,6 @@ export class ExecTool {
   private async refuseDestructive(
     commands: string[],
     config: SSHConfig,
-    profileName: string,
     sudo?: boolean
   ): Promise<string | null> {
     // Паспорт нужен только ради домашнего каталога, а он нужен только там, где
@@ -309,7 +305,7 @@ export class ExecTool {
           this.executor,
           config,
           verdict.needsResolution,
-          { profileName, sudo }
+          { sudo }
         );
         if (resolution.blocked) {
           return blockedMessage(command, resolution.reason!);

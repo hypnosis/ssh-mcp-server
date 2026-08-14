@@ -11,9 +11,7 @@
 
 import { createHash } from 'crypto';
 import { logger } from '../utils/logger.js';
-import type { SSHConfig, StrictHostKeyChecking } from '../utils/ssh-config.js';
-
-export type { StrictHostKeyChecking };
+import type { SSHConfig } from '../utils/ssh-config.js';
 
 /**
  * Конфигурация профиля для транспорта.

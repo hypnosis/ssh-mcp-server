@@ -297,19 +297,17 @@ describe('ssh_log_tail: один журнал', () => {
     expect(sentCommands()).toHaveLength(0);
   });
 
-  it('чтение помечено безопасным для повтора и идёт по запрошенному профилю', async () => {
+  it('чтение помечено безопасным для повтора и идёт с правами вызова', async () => {
     await tail({ path: '/var/log/syslog', profile: 'staging', sudo: true });
     const [, options] = commandFor(/^tail /)!;
     expect(options.idempotent).toBe(true);
-    expect(options.profileName).toBe('staging');
     expect(options.sudo).toBe(true);
     expect(resolveConfigMock).toHaveBeenCalledWith({ profile: 'staging' });
   });
 
-  it('без профиля работа идёт под именем default, и без sudo', async () => {
+  it('без профиля работа идёт по серверу по умолчанию, и без sudo', async () => {
     await tail({ path: '/var/log/syslog' });
     const [, options] = commandFor(/^tail /)!;
-    expect(options.profileName).toBe('default');
     expect(options.sudo).toBeFalsy();
     expect(resolveConfigMock).toHaveBeenCalledWith({ profile: undefined });
   });
@@ -398,12 +396,11 @@ describe('ssh_log_tail: несколько журналов', () => {
     expect(text).toContain('=== /var/log/nginx.log (1 lines) ===');
   });
 
-  it('каждая команда пачки идёт по своему профилю и помечена безопасной для повтора', async () => {
+  it('каждая команда пачки идёт с правами вызова и помечена безопасной для повтора', async () => {
     await tail({ path: both, profile: 'staging', sudo: true });
     const reads = sentCommands().filter(([command]) => command.startsWith('tail '));
     expect(reads).toHaveLength(2);
     for (const [, options] of reads) {
-      expect(options.profileName).toBe('staging');
       expect(options.sudo).toBe(true);
       expect(options.idempotent).toBe(true);
     }
@@ -507,18 +504,16 @@ describe('ssh_log_search: один журнал', () => {
     expect(commandFor(/^grep /)![0]).not.toContain('head');
   });
 
-  it('поиск помечен безопасным для повтора и идёт по запрошенному профилю', async () => {
+  it('поиск помечен безопасным для повтора и идёт с правами вызова', async () => {
     await search({ path: '/var/log/syslog', query: 'ERROR', profile: 'staging', sudo: true });
     const [, options] = commandFor(/^grep /)!;
     expect(options.idempotent).toBe(true);
-    expect(options.profileName).toBe('staging');
     expect(options.sudo).toBe(true);
   });
 
-  it('без профиля поиск идёт под именем default, и без sudo', async () => {
+  it('без профиля поиск идёт по серверу по умолчанию, и без sudo', async () => {
     await search({ path: '/var/log/syslog', query: 'ERROR' });
     const [, options] = commandFor(/^grep /)!;
-    expect(options.profileName).toBe('default');
     expect(options.sudo).toBeFalsy();
     expect(resolveConfigMock).toHaveBeenCalledWith({ profile: undefined });
   });
@@ -595,7 +590,6 @@ describe('ssh_log_search: несколько журналов', () => {
       "grep -E -i -C 2 -n -m 201 'error' '/var/log/nginx.log'",
     ]);
     for (const [, options] of searches) {
-      expect(options.profileName).toBe('staging');
       expect(options.sudo).toBe(true);
       expect(options.idempotent).toBe(true);
     }
@@ -672,11 +666,10 @@ describe('раскрытие пути и правила профиля', () => {
     expect(commandFor(/^tail /)).toBeUndefined();
   });
 
-  it('правила профиля проверяются под теми же правами и тем же профилем', async () => {
+  it('правила профиля проверяются под теми же правами', async () => {
     profile.config = { ...profile.config, pathSecurity: { allowedPaths: ['/var/log'] } };
     await tail({ path: '/var/log/syslog', profile: 'staging', sudo: true });
     const [, options] = commandFor(/^p=/)!;
-    expect(options.profileName).toBe('staging');
     expect(options.sudo).toBe(true);
   });
 
@@ -777,12 +770,11 @@ describe('шаблон имени', () => {
     );
   });
 
-  it('шаблон раскрывается под теми же правами и тем же профилем', async () => {
+  it('шаблон раскрывается под теми же правами', async () => {
     await search({ path: '/var/log/*.log', query: 'ERROR', profile: 'staging', sudo: true });
 
     const [command, options] = commandFor(/^if \[ -e /)!;
     expect(command).toContain("find '/var/log' -maxdepth 1 ! -type d -name '*.log' -print0");
-    expect(options.profileName).toBe('staging');
     expect(options.sudo).toBe(true);
   });
 

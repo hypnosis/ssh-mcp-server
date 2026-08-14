@@ -85,8 +85,7 @@ if (unavailable && LAB_REQUIRED) {
       const remoteTree = async (): Promise<string[]> => {
         const result = await executor.execute(
           config,
-          `cd '${remoteDir}' && find . -mindepth 1 | sort`,
-          { profileName: server.name }
+          `cd '${remoteDir}' && find . -mindepth 1 | sort`
         );
         return result.stdout
           .split('\n')
@@ -101,12 +100,12 @@ if (unavailable && LAB_REQUIRED) {
         await writeFile(join(source, 'conf/app.ini'), 'key=new\n');
         expected = await localManifest(source);
 
-        await executor.execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name });
+        await executor.execute(config, `rm -rf '${remoteDir}'`, {});
       });
 
       afterAll(async () => {
         await executor
-          .execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name })
+          .execute(config, `rm -rf '${remoteDir}'`, {})
           .catch(() => undefined);
       });
 
@@ -181,14 +180,13 @@ if (unavailable && LAB_REQUIRED) {
               `echo сосед > '${globDir}/star1name.txt' && ` +
               `echo сосед > '${globDir}/star2name.txt' && ` +
               `printf %s настоящий > '${globDir}/star*name.txt' && ` +
-              `printf %s подстановка > '${globDir}/$(id).txt'`,
-            { profileName: server.name }
+              `printf %s подстановка > '${globDir}/$(id).txt'`
           );
         });
 
         afterAll(async () => {
           await executor
-            .execute(config, `rm -rf '${globDir}'`, { profileName: server.name })
+            .execute(config, `rm -rf '${globDir}'`, {})
             .catch(() => undefined);
         });
 
@@ -210,8 +208,7 @@ if (unavailable && LAB_REQUIRED) {
           expect(answer.content[0].text).toContain('verified');
           const listing = await executor.execute(
             config,
-            `ls -a '${globDir}' | grep -c 'ц ель.txt'`,
-            { profileName: server.name }
+            `ls -a '${globDir}' | grep -c 'ц ель.txt'`
           );
           expect(listing.stdout.trim()).toBe('1');
         });
@@ -228,8 +225,7 @@ if (unavailable && LAB_REQUIRED) {
           expect(answer.content[0].text).toContain('verified');
           const listing = await executor.execute(
             config,
-            `ls '${globDir}/моё приложение' | sort | tr '\\n' ' '`,
-            { profileName: server.name }
+            `ls '${globDir}/моё приложение' | sort | tr '\\n' ' '`
           );
           expect(listing.stdout.trim()).toBe('conf index.js');
         });
@@ -282,14 +278,12 @@ if (unavailable && LAB_REQUIRED) {
 
         beforeAll(async () => {
           await executor.execute(config, `printf %s ЭТАЛОН > ~/'${homeFile}'`, {
-            profileName: server.name,
           });
         });
 
         afterAll(async () => {
           await executor
             .execute(config, `rm -rf ~/'${homeFile}' ~/'${homeFile}.up' ~/.upload-* './~'`, {
-              profileName: server.name,
             })
             .catch(() => undefined);
         });
@@ -320,15 +314,13 @@ if (unavailable && LAB_REQUIRED) {
 
           // Файл лежит в доме целым
           const content = await executor.execute(config, `cat ~/'${homeFile}.up'`, {
-            profileName: server.name,
           });
           expect(content.stdout).toBe('новая версия\n');
 
           // Ни каталога с именем «~», ни брошенного временного пути
           const traces = await executor.execute(
             config,
-            `ls -a ~ | grep -c -e '^~$' -e '^\\.upload-' || true`,
-            { profileName: server.name }
+            `ls -a ~ | grep -c -e '^~$' -e '^\\.upload-' || true`
           );
           expect(traces.stdout.trim()).toBe('0');
         });

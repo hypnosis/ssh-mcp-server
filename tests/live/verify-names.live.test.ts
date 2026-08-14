@@ -77,7 +77,6 @@ describe.each(LAB_SERVERS)('Сверка трудных имён — $name', { t
    */
   const remoteFileCount = async (): Promise<number> => {
     const result = await executor.execute(config, `find '${remoteDir}' -type f -exec echo x ';'`, {
-      profileName: server.name,
     });
     return result.stdout.split('\n').filter((line) => line.trim() === 'x').length;
   };
@@ -86,13 +85,13 @@ describe.each(LAB_SERVERS)('Сверка трудных имён — $name', { t
     if (unavailable) return;
     await mkdir(source, { recursive: true });
     for (const name of AWKWARD_NAMES) await writeFile(join(source, name), `${name}\n`);
-    await executor.execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name });
+    await executor.execute(config, `rm -rf '${remoteDir}'`, {});
   });
 
   afterAll(async () => {
     if (unavailable) return;
     await executor
-      .execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name })
+      .execute(config, `rm -rf '${remoteDir}'`, {})
       .catch(() => undefined);
     await closeAllRunners();
   });

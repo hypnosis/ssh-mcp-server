@@ -21,6 +21,7 @@ import {
 } from '../utils/profile-resolver.js';
 import { describeBrokenProfile } from '../utils/profiles-file.js';
 import { logger } from '../utils/logger.js';
+import type { ToolResult } from '../utils/tool-result.js';
 
 export class MonitoringTool {
   getTool(): Tool {
@@ -45,7 +46,7 @@ export class MonitoringTool {
     };
   }
   
-  async handleCall(request: CallToolRequest) {
+  async handleCall(request: CallToolRequest): Promise<ToolResult> {
     const args = request.params.arguments as any;
     const action = args.action;
     

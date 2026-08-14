@@ -16,6 +16,7 @@ import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { stat } from 'fs/promises';
 import { join, posix as posixPath } from 'path';
 import { logger } from '../utils/logger.js';
+import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
@@ -236,7 +237,7 @@ export class TransferTool {
     ];
   }
 
-  async handleCall(request: CallToolRequest) {
+  async handleCall(request: CallToolRequest): Promise<ToolResult> {
     const toolName = request.params.name;
     try {
       switch (toolName) {
@@ -249,7 +250,7 @@ export class TransferTool {
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
-      return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+      return toolFailure(error);
     }
   }
 

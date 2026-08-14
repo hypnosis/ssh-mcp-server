@@ -624,6 +624,7 @@ describe('форма ответа и отказы до первой команд
     });
     expect(await responseOf(call('ssh_log_tail', { path: '/var/log/missing.log' }))).toEqual({
       content: [textPart],
+      isError: true,
     });
     expect(
       await responseOf(call('ssh_log_search', { path: '/var/log/syslog', query: 'nothing-here' }))

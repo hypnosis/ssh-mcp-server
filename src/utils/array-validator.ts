@@ -3,6 +3,8 @@
  * Validates MCP tool parameters that accept string or array
  */
 
+import type { ToolResult } from './tool-result.js';
+
 /**
  * Validation result
  */
@@ -78,8 +80,9 @@ MCP tools require valid JSON syntax for arrays.`;
 /**
  * Create error response for MCP tool
  */
-export function createValidationErrorResponse(errorMessage: string) {
+export function createValidationErrorResponse(errorMessage: string): ToolResult {
   return {
-    content: [{ type: 'text', text: errorMessage }]
+    content: [{ type: 'text', text: errorMessage }],
+    isError: true
   };
 }

@@ -753,7 +753,7 @@ IPv4, и порт всё равно попадает в список с друг
 |---|---|
 | AC-10, AC-18, AC-19 | исправлено, чанки 1–2 |
 | AC-04, AC-07, AC-11, AC-12, AC-14, AC-15, AC-20, AC-21, AC-22, AC-23, AC-31 | исправлено, чанк 3 |
-| AC-02, AC-03 | [TD-03](../tech-debt/tool-schemas_03.md) — вместе с `isError` в SDK-спринте |
+| AC-02, AC-03 | [TD-03](../tech-debt/archive/tool-schemas_03.md) — вместе с `isError` в SDK-спринте |
 | AC-01, AC-09 | исправлено, [TD-13](../tech-debt/archive/limits-time-and-volume_13.md) |
 | AC-13, AC-26, AC-27, AC-28 | исправлено, [TD-14](../tech-debt/archive/parsing-foreign-output_14.md) |
 | AC-06, AC-08, AC-16, AC-17, AC-29, AC-30 | исправлено, [TD-15](../tech-debt/archive/internal-names-in-answers_15.md) |

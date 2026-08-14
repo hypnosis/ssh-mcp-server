@@ -288,7 +288,7 @@
   - Частичный вывод убитой команды снос не задевает: `partialStdout`/`partialStderr`
     заполняет и системный клиент (`openssh-runner.ts:284,297`), а не только уходящий
     бэкенд. Поля остаются с источником, читать их по-прежнему некому — долг записан в
-    `docs/tech-debt/tool-schemas_03.md`.
+    `docs/tech-debt/archive/tool-schemas_03.md`.
   - Документы: `docs/tech-debt/test-coverage_01.md` (запись про `ssh-manager.ts` отпала
     вместе с файлом), CORE_10 пункт 5.3 отмечен со ссылкой на коммит `1031603`, README
     (раздел Transport, схема, переменные) и CHANGELOG (раздел про один транспорт с

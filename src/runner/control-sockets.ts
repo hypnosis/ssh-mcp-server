@@ -22,7 +22,7 @@ const PROBE_TIMEOUT_MS = 1000;
  * `stale` — файл остался от убитого master: следующая команда поднимет
  * соединение заново, но до тех пор сокет занимает место и вводит в заблуждение.
  */
-export type ControlSocketState = 'alive' | 'stale' | 'unknown';
+type ControlSocketState = 'alive' | 'stale' | 'unknown';
 
 export interface ControlSocket {
   path: string;

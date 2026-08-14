@@ -39,7 +39,27 @@ describe('tmp-name helpers', () => {
     it('возвращает в текст путь, который назвал человек', () => {
       expect(
         hideArtifactNames("cat > '/etc/.upload-a5be28a9d096.nginx.conf': Permission denied")
-      ).toBe("cat > '/etc/nginx.conf': Permission denied");
+      ).toBe("cat > '/etc/nginx.conf (staging copy)': Permission denied");
+    });
+
+    it('временная копия и цель в одной строке не сливаются в один путь', () => {
+      // Иначе замена превращает `mv` копии на место цели в «переименовать цель
+      // саму в себя», и отказ читается как бессмыслица
+      expect(
+        hideArtifactNames(
+          "mv -T -- '/etc/.upload-2f6e757b0157.hosts' '/etc/hosts' — " +
+            "mv: cannot move '/etc/.upload-2f6e757b0157.hosts' to '/etc/hosts': Device or resource busy"
+        )
+      ).toBe(
+        "mv -T -- '/etc/hosts (staging copy)' '/etc/hosts' — " +
+          "mv: cannot move '/etc/hosts (staging copy)' to '/etc/hosts': Device or resource busy"
+      );
+    });
+
+    it('имя с пробелом внутри кавычек не режется по пробелу', () => {
+      expect(hideArtifactNames("cat > '/srv/.upload-a5be28a9d096.my file.conf': No space left")).toBe(
+        "cat > '/srv/my file.conf (staging copy)': No space left"
+      );
     });
 
     it('адрес отложенной копии остаётся: она лежит на сервере, её и убирать', () => {

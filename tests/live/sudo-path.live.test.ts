@@ -85,7 +85,7 @@ if (unavailable && LAB_REQUIRED) {
       };
 
       const asRoot = async (command: string): Promise<string> => {
-        const result = await executor.execute(rootConfig, command, { profileName: `${server.name}-root` });
+        const result = await executor.execute(rootConfig, command, {});
         return result.stdout.trim();
       };
 

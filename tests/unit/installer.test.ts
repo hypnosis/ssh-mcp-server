@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { ArtifactScan, PathKind, PathOps } from '../../src/managers/installer.js';
+import type { ArtifactScan, MountCheck, PathKind, PathOps } from '../../src/managers/installer.js';
 import { logger } from '../../src/utils/logger.js';
 
 const { install, InstallError } = await import('../../src/managers/installer.js');
@@ -30,6 +30,9 @@ class FakeFs implements PathOps {
   /** Путь, который лежит на отдельной файловой системе (точка монтирования) */
   separateFilesystem?: string;
 
+  /** Путь, про который сервер не смог ответить, точка ли это монтирования */
+  uncheckableMount?: string;
+
   put(path: string, kind: PathKind, content = ''): void {
     this.entries.set(path, { kind, content });
   }
@@ -44,8 +47,9 @@ class FakeFs implements PathOps {
 
   async ensureParent(): Promise<void> {}
 
-  async isSeparateFilesystem(path: string): Promise<boolean> {
-    return this.separateFilesystem === path;
+  async isSeparateFilesystem(path: string): Promise<MountCheck> {
+    if (this.uncheckableMount === path) return 'unknown';
+    return this.separateFilesystem === path ? 'separate' : 'same';
   }
 
   /** Ведёт себя как `mv -T`: в занятую цель ничего не вкладывает */
@@ -284,6 +288,34 @@ describe('опасная цель — отказ до любых изменен�
 
     expect(fs.content(FINAL)).toBe('том целиком');
     expect(fs.removed).toEqual([]);
+  });
+});
+
+describe('точку монтирования проверить нечем', () => {
+  it('установка идёт, но непроверенное названо непроверенным', async () => {
+    fs.put(FINAL, 'file', 'старое содержимое');
+    fs.uncheckableMount = FINAL;
+
+    const outcome = await install(fs, plan());
+
+    expect(fs.content(FINAL)).toBe('новое содержимое');
+    expect(outcome.warnings.join('\n')).toMatch(/could not be checked/i);
+  });
+
+  it('проверка прошла — про неё в ответе ни слова', async () => {
+    fs.put(FINAL, 'file', 'старое содержимое');
+
+    const outcome = await install(fs, plan());
+
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it('цели нет — проверять нечего, пометки нет', async () => {
+    fs.uncheckableMount = FINAL;
+
+    const outcome = await install(fs, plan());
+
+    expect(outcome.warnings).toEqual([]);
   });
 });
 

@@ -116,19 +116,27 @@ describe('точка монтирования', () => {
   it('распознаётся по разным номерам устройств у пути и родителя', async () => {
     executeMock.mockResolvedValue({ stdout: '2049\n64768\n', stderr: '', exitCode: 0 });
 
-    await expect(ops().isSeparateFilesystem('/srv/data')).resolves.toBe(true);
+    await expect(ops().isSeparateFilesystem('/srv/data')).resolves.toBe('separate');
   });
 
   it('одинаковые номера — обычный каталог', async () => {
     executeMock.mockResolvedValue({ stdout: '64768\n64768\n', stderr: '', exitCode: 0 });
 
-    await expect(ops().isSeparateFilesystem('/srv/data')).resolves.toBe(false);
+    await expect(ops().isSeparateFilesystem('/srv/data')).resolves.toBe('same');
   });
 
-  it('сервер без stat не мешает операции', async () => {
+  it('сервер без stat отвечает «проверить нечем», а не «не точка монтирования»', async () => {
     executeMock.mockResolvedValue({ stdout: '', stderr: 'stat: not found', exitCode: 127 });
 
-    await expect(ops().isSeparateFilesystem('/srv/data')).resolves.toBe(false);
+    await expect(ops().isSeparateFilesystem('/srv/data')).resolves.toBe('unknown');
+  });
+
+  it('ответ не номерами — тоже «проверить нечем»', async () => {
+    // BusyBox на неизвестный ему спецификатор печатает сам символ формата и
+    // выходит с нулём: две строки, обе не числа
+    executeMock.mockResolvedValue({ stdout: 'd\nd\n', stderr: '', exitCode: 0 });
+
+    await expect(ops().isSeparateFilesystem('/srv/data')).resolves.toBe('unknown');
   });
 });
 

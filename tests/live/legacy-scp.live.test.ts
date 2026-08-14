@@ -149,7 +149,6 @@ if (unavailable && LAB_REQUIRED) {
 
       const remoteList = async (): Promise<string[]> => {
         const result = await executor.execute(config, `ls -a '${remoteDir}'`, {
-          profileName: server.name,
         });
         return result.stdout
           .split('\n')
@@ -165,14 +164,13 @@ if (unavailable && LAB_REQUIRED) {
             `echo сосед > '${remoteDir}/star1name.txt' && ` +
             `echo сосед > '${remoteDir}/star2name.txt' && ` +
             `printf %s настоящий > '${remoteDir}/star*name.txt' && ` +
-            `printf %s подстановка > '${remoteDir}/$(id).txt'`,
-          { profileName: server.name }
+            `printf %s подстановка > '${remoteDir}/$(id).txt'`
         );
       });
 
       afterAll(async () => {
         await executor
-          .execute(config, `rm -rf '${remoteDir}'`, { profileName: server.name })
+          .execute(config, `rm -rf '${remoteDir}'`, {})
           .catch(() => undefined);
       });
 

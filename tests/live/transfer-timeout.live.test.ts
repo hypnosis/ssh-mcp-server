@@ -101,7 +101,6 @@ if (unavailable && LAB_REQUIRED) {
        */
       const remoteEntries = async (): Promise<string[]> => {
         const result = await executor.executeChecked(config, `ls -a '${remoteBase}'`, {
-          profileName: server.name,
         });
         return result.stdout
           .split('\n')
@@ -116,13 +115,12 @@ if (unavailable && LAB_REQUIRED) {
           await writeFile(join(source, `part-${i}.bin`), Buffer.alloc((PAYLOAD_MB / 4) * 1024 * 1024, i + 1));
         }
         await executor.execute(config, `rm -rf '${remoteBase}' && mkdir -p '${remoteBase}'`, {
-          profileName: server.name,
         });
       });
 
       afterAll(async () => {
         await executor
-          .execute(config, `rm -rf '${remoteBase}'`, { profileName: server.name })
+          .execute(config, `rm -rf '${remoteBase}'`, {})
           .catch(() => undefined);
       });
 
@@ -142,11 +140,10 @@ if (unavailable && LAB_REQUIRED) {
         ).rejects.toThrow(/timed out/);
 
         const size = await executor.executeChecked(config, `du -sk '${probe}' | cut -f1`, {
-          profileName: server.name,
         });
         expect(Number(size.stdout.trim())).toBeGreaterThan(0);
 
-        await executor.execute(config, `rm -rf '${probe}'`, { profileName: server.name });
+        await executor.execute(config, `rm -rf '${probe}'`, {});
       });
 
       it('названный таймаут обрывает передачу и не оставляет следов рядом с целью', async () => {
@@ -228,7 +225,7 @@ if (unavailable && LAB_REQUIRED) {
           ignoreUserConfig: true,
         },
         'sleep 32 && echo alive',
-        { profileName: server.name, timeout: 0 }
+        { timeout: 0 }
       );
 
       expect(result.stdout.trim()).toBe('alive');

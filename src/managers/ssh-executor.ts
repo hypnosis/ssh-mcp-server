@@ -29,8 +29,6 @@ export interface SSHExecuteOptions {
   cwd?: string;
   /** Use sudo */
   sudo?: boolean;
-  /** Profile name for the transport */
-  profileName?: string;
   /**
    * Safe to repeat after a transport failure.
    * Ставится только чтению: повтор мутирующей команды опаснее её отказа.

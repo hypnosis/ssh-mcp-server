@@ -8,7 +8,6 @@ import { resolve } from 'path';
 import { logger, hideFromLogs } from './logger.js';
 import {
   STRICT_HOST_KEY_CHECKING_VALUES,
-  type SSHConfig,
   type StrictHostKeyChecking,
 } from './ssh-config.js';
 import type { PathSecurityConfig } from './path-validator.js';
@@ -118,7 +117,7 @@ function describePathSecurityProblem(value: unknown): PathSecurityProblem | null
 /**
  * Profiles configuration file structure
  */
-export interface ProfilesConfig {
+interface ProfilesConfig {
   /** Default profile name to use if not specified */
   default?: string;
   /** SSH profiles by name */
@@ -409,25 +408,6 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
     }
     return { config: null, errors, broken };
   }
-}
-
-/**
- * Convert profile data to SSHConfig
- */
-export function profileDataToSSHConfig(data: SSHProfileData): SSHConfig {
-  // Validate required fields
-  if (!data.host || !data.username) {
-    throw new Error('Profile must have host and username for SSH connection');
-  }
-
-  return {
-    host: data.host,
-    username: data.username,
-    port: data.port || 22,
-    privateKeyPath: data.privateKeyPath,
-    passphrase: data.passphrase,
-    password: data.password,
-  };
 }
 
 /**

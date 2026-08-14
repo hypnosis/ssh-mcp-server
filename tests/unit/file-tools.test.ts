@@ -466,18 +466,16 @@ describe('ssh_file_read: одиночный файл', () => {
     expect(commandFor(/hosts/)![0]).toBe("cat '/etc/hosts'");
   });
 
-  it('чтение помечено безопасным для повтора и идёт по запрошенному профилю', async () => {
+  it('чтение помечено безопасным для повтора и идёт с правами вызова', async () => {
     await read({ path: '/etc/hosts', profile: 'staging', sudo: true });
     const [, options] = commandFor(/hosts/)!;
     expect(options.idempotent).toBe(true);
-    expect(options.profileName).toBe('staging');
     expect(options.sudo).toBe(true);
     expect(resolveConfigMock).toHaveBeenCalledWith({ profile: 'staging' });
   });
 
   it('без профиля работа идёт под именем default, а не под пустым', async () => {
     await read({ path: '/etc/hosts' });
-    expect(commandFor(/hosts/)![1].profileName).toBe('default');
     expect(resolveConfigMock).toHaveBeenCalledWith({ profile: undefined });
   });
 
@@ -584,13 +582,12 @@ describe('ssh_file_read: пачка файлов', () => {
     }
   });
 
-  it('каждое чтение пачки помечено безопасным для повтора и идёт по своему профилю', async () => {
+  it('каждое чтение пачки помечено безопасным для повтора', async () => {
     await read({ path: ['/etc/hosts', '/etc/motd'], profile: 'staging' });
     const reads = sentCommands().filter(([command]) => command.startsWith('cat '));
     expect(reads).toHaveLength(2);
     for (const [, options] of reads) {
       expect(options.idempotent).toBe(true);
-      expect(options.profileName).toBe('staging');
     }
   });
 
@@ -791,16 +788,15 @@ describe('ssh_file_list', () => {
     expect(text).not.toContain('syslog');
   });
 
-  it('список помечен безопасным для повтора и идёт по запрошенному профилю', async () => {
+  it('список помечен безопасным для повтора', async () => {
     await list({ path: '/var/log', profile: 'staging' });
     const [, options] = commandFor(/^ls /)!;
     expect(options.idempotent).toBe(true);
-    expect(options.profileName).toBe('staging');
   });
 
-  it('без профиля список идёт под именем default, а не под пустым', async () => {
+  it('без профиля список идёт по серверу по умолчанию', async () => {
     await list({ path: '/var/log' });
-    expect(commandFor(/^ls /)![1].profileName).toBe('default');
+    expect(resolveConfigMock).toHaveBeenCalledWith({ profile: undefined });
   });
 
   it('несуществующий каталог — ошибка с текстом от сервера', async () => {
@@ -922,7 +918,6 @@ describe('ssh_file_write: что именно уезжает на сервер',
     const [command, options] = commandFor(/^chmod /)!;
     const staging = quotedPaths(command)[0];
     expect(command).toBe(`chmod 640 -- '${staging}'`);
-    expect(options.profileName).toBe('default');
     expect(staging).toMatch(/^\/etc\/\.upload-[0-9a-f]+\.app\.conf$/);
     expect(sentCommands().findIndex(([c]) => c.startsWith('chmod '))).toBeLessThan(
       sentCommands().findIndex(([c]) => c.startsWith('mv -T'))
@@ -954,7 +949,6 @@ describe('ssh_file_write: что именно уезжает на сервер',
     const [command, options] = commandFor(/^sha256sum /)!;
     expect(quotedPaths(command)[0]).toMatch(/^\/etc\/\.upload-[0-9a-f]+\.app\.conf$/);
     expect(options.sudo).toBe(true);
-    expect(options.profileName).toBe('default');
   });
 
   it('крупная запись под sudo идёт в /tmp, оттуда копией, и след за собой убирает', async () => {
@@ -972,7 +966,6 @@ describe('ssh_file_write: что именно уезжает на сервер',
 
     const [remove, removeOptions] = commandFor(/^rm -f /)!;
     expect(remove).toBe(`rm -f -- '${handoff}'`);
-    expect(removeOptions.profileName).toBe('default');
     expect(server.has(handoff)).toBe(false);
   });
 
@@ -981,15 +974,14 @@ describe('ssh_file_write: что именно уезжает на сервер',
     expect(commandFor(/^chmod /)![1].sudo).toBe(true);
   });
 
-  it('профиль записи доезжает и до настроек, и до каждой команды', async () => {
+  it('запрошенный профиль выбирает конфигурацию записи', async () => {
     await write({ profile: 'staging', files: { path: '/etc/app.conf', content: 'key=value\n' } });
     expect(resolveConfigMock).toHaveBeenCalledWith({ profile: 'staging' });
-    for (const [, options] of sentCommands()) expect(options.profileName).toBe('staging');
   });
 
-  it('без профиля запись идёт под именем default, а не под пустым', async () => {
+  it('без профиля запись идёт по серверу по умолчанию', async () => {
     await write({ files: { path: '/etc/app.conf', content: 'key=value\n' } });
-    for (const [, options] of sentCommands()) expect(options.profileName).toBe('default');
+    expect(resolveConfigMock).toHaveBeenCalledWith({ profile: undefined });
   });
 
   it('sudo объявляется только тем файлом, который его просил', async () => {
@@ -1037,7 +1029,7 @@ describe('ssh_file_write: что именно уезжает на сервер',
   });
 });
 
-describe('раскрытие пути идёт с теми же правами и под тем же профилем', () => {
+describe('раскрытие пути идёт с теми же правами', () => {
   beforeEach(() => {
     putFile('/etc/hosts', '127.0.0.1 localhost\n');
     profile.config = { ...profile.config, pathSecurity: { allowedPaths: ['/etc', '/var'] } };
@@ -1047,12 +1039,11 @@ describe('раскрытие пути идёт с теми же правами �
     await read({ path: '/etc/hosts', sudo: true, profile: 'staging' });
     const [, options] = commandFor(/^p=/)!;
     expect(options.sudo).toBe(true);
-    expect(options.profileName).toBe('staging');
   });
 
-  it('список проверяет правила по своему профилю', async () => {
+  it('список проверяет правила на том же сервере, что и читает', async () => {
     await list({ path: '/var/log', profile: 'staging' });
-    expect(commandFor(/^p=/)![1].profileName).toBe('staging');
+    expect(executeMock.mock.calls.every(([config]) => config === profile.config)).toBe(true);
   });
 
   it('без просьбы о sudo правила проверяются от имени пользователя', async () => {

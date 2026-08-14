@@ -15,7 +15,7 @@
  */
 
 import { posix as posixPath } from 'path';
-import type { ArtifactScan, PathKind, PathOps } from './installer.js';
+import type { ArtifactScan, MountCheck, PathKind, PathOps } from './installer.js';
 import type { SSHExecutor } from './ssh-executor.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 import { shellQuote } from '../utils/shell-arg.js';
@@ -31,15 +31,14 @@ const KIND_MARKERS: Record<string, PathKind> = {
 export interface RemoteOpsContext {
   executor: SSHExecutor;
   config: SSHConfig;
-  profileName: string;
   sudo?: boolean;
 }
 
 export function remotePathOps(context: RemoteOpsContext): PathOps {
-  const { executor, config, profileName, sudo } = context;
+  const { executor, config, sudo } = context;
 
   const run = (command: string, idempotent = false) =>
-    executor.execute(config, command, { profileName, sudo, idempotent });
+    executor.execute(config, command, { sudo, idempotent });
 
   return {
     async inspect(path: string): Promise<PathKind> {
@@ -66,26 +65,28 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
     /**
      * Точка монтирования: номер устройства у пути и у его родителя разный.
      *
-     * Нет `stat` или он с другим синтаксисом (BSD) — отвечаем «не знаем»
-     * и не мешаем операции: страховкой остаётся отказ самого `mv -T`.
+     * Нет `stat` или он с другим синтаксисом (`-f` вместо `-c` на BSD и
+     * macOS) — исход «проверить нечем». Операции это не мешает: страховкой
+     * остаётся отказ самого `mv -T`.
      */
-    async isSeparateFilesystem(path: string): Promise<boolean> {
+    async isSeparateFilesystem(path: string): Promise<MountCheck> {
       const parent = posixPath.dirname(path);
       const result = await run(
         `stat -c %d -- ${shellQuote(path)} ${shellQuote(parent)} 2>/dev/null`,
         true
       );
 
-      const devices = result.stdout.trim().split(/\s+/);
-      if (devices.length !== 2) return false;
-      return devices[0] !== devices[1];
+      const devices = result.stdout.trim().split(/\s+/).filter(Boolean);
+      if (devices.length !== 2 || devices.some((device) => !/^\d+$/.test(device))) {
+        return 'unknown';
+      }
+      return devices[0] !== devices[1] ? 'separate' : 'same';
     },
 
     async ensureParent(path: string): Promise<void> {
       const parent = posixPath.dirname(path);
       if (!parent || parent === '/' || parent === '.') return;
       await executor.executeChecked(config, `mkdir -p -- ${shellQuote(parent)}`, {
-        profileName,
         sudo,
       });
     },
@@ -94,7 +95,7 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
       await executor.executeChecked(
         config,
         `mv -T -- ${shellQuote(from)} ${shellQuote(to)}`,
-        { profileName, sudo }
+        { sudo }
       );
     },
 
@@ -135,7 +136,6 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
      */
     async removeTree(path: string): Promise<void> {
       await executor.executeChecked(config, `rm -rf -- ${shellQuote(path)}`, {
-        profileName,
         sudo,
         timeout: 0,
       });

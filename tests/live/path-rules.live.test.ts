@@ -107,10 +107,8 @@ if (unavailable && LAB_REQUIRED) {
       beforeAll(async () => {
         // Дом root — это и есть /root, значит ~/secret и /root/secret один файл
         await executor.execute(config, `printf '${SECRET_WORD}\\n' > /root/secret`, {
-          profileName: server.name,
         });
         await executor.execute(config, `printf 'ordinary line\\n' > ${allowedLog}`, {
-          profileName: server.name,
         });
 
         // Разрешённый каталог с двумя ссылками: одна наружу, в запрещённый дом,
@@ -125,16 +123,14 @@ if (unavailable && LAB_REQUIRED) {
             // Каталог с именем ровно `~` — законное имя, а не нераскрытая тильда
             `mkdir -p '${ALLOWED_DIR}/~' '/root/~' && ` +
             `printf 'tilde directory\\n' > '${ALLOWED_DIR}/~/note.txt' && ` +
-            `printf '${SECRET_WORD}\\n' > '/root/~/secret'`,
-          { profileName: server.name }
+            `printf '${SECRET_WORD}\\n' > '/root/~/secret'`
         );
       });
 
       afterAll(async () => {
         await executor.execute(
           config,
-          `rm -f /root/secret ${allowedLog}; rm -rf ${ALLOWED_DIR} ${ALLOWED_DIR}-evil '/root/~'`,
-          { profileName: server.name }
+          `rm -f /root/secret ${allowedLog}; rm -rf ${ALLOWED_DIR} ${ALLOWED_DIR}-evil '/root/~'`
         );
         await closeAllRunners();
       });

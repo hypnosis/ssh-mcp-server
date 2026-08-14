@@ -44,7 +44,6 @@ export class SnapshotTool {
   async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
     try {
       const args = request.params.arguments as any;
-      const profileName = args.profile || 'default';
       const sshConfig = resolveSSHConfig({ profile: args.profile });
       
       logger.info('Collecting system snapshot...');
@@ -62,16 +61,16 @@ export class SnapshotTool {
         network,
         errors,
       ] = await Promise.all([
-        this.getTimestamp(sshConfig, profileName),
-        this.getHostname(sshConfig, profileName),
-        this.getUptime(sshConfig, profileName),
-        this.getServices(sshConfig, profileName),
-        this.getCPU(sshConfig, profileName),
-        this.getMemory(sshConfig, profileName),
-        this.getDisk(sshConfig, profileName),
-        this.getDocker(sshConfig, profileName),
-        this.getNetwork(sshConfig, profileName),
-        this.getRecentErrors(sshConfig, profileName),
+        this.getTimestamp(sshConfig),
+        this.getHostname(sshConfig),
+        this.getUptime(sshConfig),
+        this.getServices(sshConfig),
+        this.getCPU(sshConfig),
+        this.getMemory(sshConfig),
+        this.getDisk(sshConfig),
+        this.getDocker(sshConfig),
+        this.getNetwork(sshConfig),
+        this.getRecentErrors(sshConfig),
       ]);
       
       // Format beautiful output
@@ -121,13 +120,11 @@ export class SnapshotTool {
   private async read(
     config: any,
     command: string,
-    profileName: string,
     options: { sudo?: boolean; fallback?: string } = {}
   ): Promise<string> {
     return this.withSlot(async () => {
       try {
         const result = await this.executor.execute(config, command, {
-          profileName,
           sudo: options.sudo,
           idempotent: true,
         });
@@ -170,22 +167,22 @@ export class SnapshotTool {
   /**
    * Get timestamp
    */
-  private async getTimestamp(config: any, profileName: string): Promise<string> {
-    return this.read(config, 'date -u +"%Y-%m-%dT%H:%M:%SZ"', profileName, { fallback: 'unknown' });
+  private async getTimestamp(config: any): Promise<string> {
+    return this.read(config, 'date -u +"%Y-%m-%dT%H:%M:%SZ"', { fallback: 'unknown' });
   }
 
   /**
    * Get hostname
    */
-  private async getHostname(config: any, profileName: string): Promise<string> {
-    return this.read(config, 'hostname', profileName, { fallback: 'unknown' });
+  private async getHostname(config: any): Promise<string> {
+    return this.read(config, 'hostname', { fallback: 'unknown' });
   }
 
   /**
    * Get uptime
    */
-  private async getUptime(config: any, profileName: string): Promise<string> {
-    return (await this.read(config, 'uptime -p', profileName, { fallback: 'unknown' }))
+  private async getUptime(config: any): Promise<string> {
+    return (await this.read(config, 'uptime -p', { fallback: 'unknown' }))
       .replace('up ', '');
   }
   
@@ -194,8 +191,7 @@ export class SnapshotTool {
    */
   private async getServices(
     config: any,
-    profileName: string
-  ): Promise<{ checked: boolean; items: Array<{ name: string; status: string; uptime: string | null }> }> {
+      ): Promise<{ checked: boolean; items: Array<{ name: string; status: string; uptime: string | null }> }> {
     const services = ['nginx', 'apache2', 'docker', 'postgresql', 'mysql', 'redis', 'mongodb'];
     const results: Array<{ name: string; status: string; uptime: string | null }> = [];
 
@@ -204,7 +200,6 @@ export class SnapshotTool {
     const systemctl = await this.read(
       config,
       'command -v systemctl >/dev/null 2>&1 && echo yes || echo no',
-      profileName
     );
     if (systemctl !== 'yes') return { checked: false, items: [] };
 
@@ -212,7 +207,6 @@ export class SnapshotTool {
       const status = await this.read(
         config,
         `systemctl is-active ${service} 2>/dev/null || echo inactive`,
-        profileName
       );
 
       // Пустой ответ — это сорванное чтение, а не остановленная служба:
@@ -226,7 +220,6 @@ export class SnapshotTool {
         const startedAt = await this.read(
           config,
           `systemctl show ${service} --property=ActiveEnterTimestamp --value 2>/dev/null || echo ""`,
-          profileName
         );
         results.push({ name: service, status, uptime: startedAt || null });
       }
@@ -240,14 +233,13 @@ export class SnapshotTool {
    */
   private async getCPU(
     config: any,
-    profileName: string
-  ): Promise<{ cores: number | null; usage: number | null; loadAvg: string | null }> {
-    const coresOutput = await this.read(config, 'nproc', profileName);
-    const loadOutput = await this.read(config, 'cat /proc/loadavg', profileName);
+      ): Promise<{ cores: number | null; usage: number | null; loadAvg: string | null }> {
+    const coresOutput = await this.read(config, 'nproc');
+    const loadOutput = await this.read(config, 'cat /proc/loadavg');
     // Строка сводки разбирается здесь, а не колонкой в awk: у procps она
     // «%Cpu(s): … 95.1 id», у BusyBox «CPU: … 99% idle», и вырезанная вслепую
     // вторая колонка на BusyBox приносила число из таблицы процессов
-    const topOutput = await this.read(config, 'top -bn1 2>/dev/null | head -6', profileName);
+    const topOutput = await this.read(config, 'top -bn1 2>/dev/null | head -6');
 
     // Нечитанное число ядер — это не ноль ядер: пустой ответ обрыва выглядел
     // исправной машиной без процессоров
@@ -281,8 +273,8 @@ export class SnapshotTool {
   /**
    * Get Memory information
    */
-  private async getMemory(config: any, profileName: string): Promise<{ total: string; used: string; free: string; percent: number | null }> {
-    const parts = (await this.read(config, 'free -h | grep Mem', profileName)).split(/\s+/);
+  private async getMemory(config: any): Promise<{ total: string; used: string; free: string; percent: number | null }> {
+    const parts = (await this.read(config, 'free -h | grep Mem')).split(/\s+/);
     const total = SnapshotTool.parseSize(parts[1]);
     const used = SnapshotTool.parseSize(parts[2]);
 
@@ -328,12 +320,11 @@ export class SnapshotTool {
    */
   private async getDisk(
     config: any,
-    profileName: string
-  ): Promise<{
+      ): Promise<{
     items: Array<{ mount: string; size: string; used: string; avail: string; percent: string }>;
     unparsed: string[];
   }> {
-    const output = await this.read(config, 'df -hT', profileName);
+    const output = await this.read(config, 'df -hT');
     if (!output) return { items: [], unparsed: [] };
 
     const table = parseDfTable(output);
@@ -352,10 +343,10 @@ export class SnapshotTool {
   /**
    * Get Docker information
    */
-  private async getDocker(config: any, profileName: string): Promise<{ containers: any[]; images: number } | undefined> {
+  private async getDocker(config: any): Promise<{ containers: any[]; images: number } | undefined> {
     try {
       // Check for Docker presence
-      const dockerPath = await this.read(config, 'which docker', profileName);
+      const dockerPath = await this.read(config, 'which docker');
       if (!dockerPath) {
         return undefined;
       }
@@ -364,7 +355,6 @@ export class SnapshotTool {
       const containersOutput = await this.read(
         config,
         'docker ps --format "{{.ID}}|{{.Names}}|{{.Status}}"',
-        profileName
       );
 
       const containers = containersOutput.split('\n')
@@ -375,7 +365,7 @@ export class SnapshotTool {
         });
 
       // Image count
-      const images = parseInt(await this.read(config, 'docker images -q | wc -l', profileName)) || 0;
+      const images = parseInt(await this.read(config, 'docker images -q | wc -l')) || 0;
 
       return { containers, images };
     } catch {
@@ -388,8 +378,7 @@ export class SnapshotTool {
    */
   private async getNetwork(
     config: any,
-    profileName: string
-  ): Promise<{ checked: boolean; listening: Array<{ port: string; service: string }>; connections: number }> {
+      ): Promise<{ checked: boolean; listening: Array<{ port: string; service: string }>; connections: number }> {
     // Маркер обязателен: конвейер заканчивается на `sort`, поэтому отсутствие
     // ss отдавало пустой список с кодом 0 — «никто не слушает» вместо
     // «смотреть было нечем», и запасной netstat не звали никогда
@@ -398,7 +387,6 @@ export class SnapshotTool {
       'if command -v ss >/dev/null 2>&1; then ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | sort -u; ' +
         'elif command -v netstat >/dev/null 2>&1; then netstat -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | sort -u; ' +
         'else echo NO_NET_TOOL; fi',
-      profileName
     );
 
     if (portsOutput.trim() === 'NO_NET_TOOL') {
@@ -420,7 +408,6 @@ export class SnapshotTool {
       config,
       'if command -v ss >/dev/null 2>&1; then ss -tn 2>/dev/null | grep ESTAB | wc -l; ' +
         'else netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l; fi',
-      profileName
     );
 
     return { checked: true, listening: ports, connections: parseInt(connectionsOutput) || 0 };
@@ -431,8 +418,7 @@ export class SnapshotTool {
    */
   private async getRecentErrors(
     config: any,
-    profileName: string
-  ): Promise<{ checked: boolean; reason?: string; items: Array<{ source: string; message: string; time: string }> }> {
+      ): Promise<{ checked: boolean; reason?: string; items: Array<{ source: string; message: string; time: string }> }> {
     // Молчание журнала имеет три причины, и раньше все три выглядели как
     // «ошибок нет»: файла нет, читать нечем, читали и не нашли
     const command =
@@ -443,12 +429,12 @@ export class SnapshotTool {
     // Сперва под sudo — журнал обычно закрыт от обычного пользователя. Там, где
     // sudo нет вовсе (root на BusyBox), команда падает целиком, и без второй
     // попытки причина звучала бы «не прошло» даже на сервере без журнала
-    let output = await this.read(config, command, profileName, {
+    let output = await this.read(config, command, {
       sudo: true,
       fallback: 'READ_FAILED',
     });
     if (output === 'READ_FAILED') {
-      output = await this.read(config, command, profileName, { fallback: 'READ_FAILED' });
+      output = await this.read(config, command, { fallback: 'READ_FAILED' });
     }
 
     if (output === 'NO_SYSLOG') {

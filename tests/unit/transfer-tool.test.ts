@@ -500,10 +500,11 @@ describe('ssh_upload под sudo: как данные встают на мест
 
 /**
  * Профиль выбирает и сервер, и ключ. Потеряться он может в любой отдельной
- * команде: у каждой свои опции, и мимо профиля уйдёт только она одна.
+ * команде: конфигурация передаётся каждой отдельно, и мимо профиля уйдёт
+ * только она одна.
  */
-describe('запрошенный профиль доезжает до каждой команды', () => {
-  const profilesOf = () => [...new Set(sentCommands().map(([, options]) => options.profileName))];
+describe('конфигурация выбранного профиля доезжает до каждой команды', () => {
+  const configsOf = () => [...new Set(executeMock.mock.calls.map(([config]) => config))];
 
   it('по имени профиля выбирается и сам сервер', async () => {
     await textOf(
@@ -533,7 +534,7 @@ describe('запрошенный профиль доезжает до каждо
     expect(resolveConfigMock).toHaveBeenCalledWith({ profile: 'production' });
   });
 
-  it('профиль не назван — командам достаётся «default», а не пустая метка', async () => {
+  it('профиль не назван — команды идут с конфигурацией сервера по умолчанию', async () => {
     putFile('/srv/app.js', 'payload');
 
     await textOf(
@@ -547,10 +548,10 @@ describe('запрошенный профиль доезжает до каждо
       })
     );
 
-    expect(profilesOf()).toEqual(['default']);
+    expect(configsOf()).toEqual([profile.config]);
   });
 
-  it('проба существования цели тоже идёт по запрошенному профилю', async () => {
+  it('проба существования цели идёт с той же конфигурацией', async () => {
     await textOf(
       call('ssh_upload', {
         profile: 'production',
@@ -561,10 +562,10 @@ describe('запрошенный профиль доезжает до каждо
       })
     );
 
-    expect(commandFor(/^test -e /)![1].profileName).toBe('production');
+    expect(configsOf()).toEqual([profile.config]);
   });
 
-  it('загрузка файла: сверка и замена идут по одному профилю', async () => {
+  it('загрузка файла: сверка и замена идут на один сервер', async () => {
     await textOf(
       call('ssh_upload', {
         profile: 'production',
@@ -574,10 +575,10 @@ describe('запрошенный профиль доезжает до каждо
       })
     );
 
-    expect(profilesOf()).toEqual(['production']);
+    expect(configsOf()).toEqual([profile.config]);
   });
 
-  it('загрузка под sudo: уборка промежуточного файла не теряет профиль', async () => {
+  it('загрузка под sudo: уборка промежуточного файла идёт туда же', async () => {
     await textOf(
       call('ssh_upload', {
         profile: 'production',
@@ -587,11 +588,10 @@ describe('запрошенный профиль доезжает до каждо
       })
     );
 
-    expect(commandFor(/^rm -f /)![1].profileName).toBe('production');
-    expect(profilesOf()).toEqual(['production']);
+    expect(configsOf()).toEqual([profile.config]);
   });
 
-  it('скачивание файла: тот же профиль у пробы вида и у сверки', async () => {
+  it('скачивание файла: та же конфигурация у пробы вида и у сверки', async () => {
     putFile('/srv/app.js', 'payload');
 
     await textOf(
@@ -602,10 +602,10 @@ describe('запрошенный профиль доезжает до каждо
       })
     );
 
-    expect(profilesOf()).toEqual(['production']);
+    expect(configsOf()).toEqual([profile.config]);
   });
 
-  it('загрузка каталога: уборка, сверка и замена идут по одному профилю', async () => {
+  it('загрузка каталога: уборка, сверка и замена идут на один сервер', async () => {
     putFile('/srv/app/old.js', 'old');
 
     await textOf(
@@ -619,7 +619,7 @@ describe('запрошенный профиль доезжает до каждо
     );
 
     expect(sentCommands().length).toBeGreaterThan(4);
-    expect(profilesOf()).toEqual(['production']);
+    expect(configsOf()).toEqual([profile.config]);
   });
 
   it('скачивание каталога: то же самое на обратном пути', async () => {
@@ -633,7 +633,7 @@ describe('запрошенный профиль доезжает до каждо
       })
     );
 
-    expect(profilesOf()).toEqual(['production']);
+    expect(configsOf()).toEqual([profile.config]);
   });
 });
 
@@ -1555,7 +1555,7 @@ describe('текст ответа', () => {
       ].join('\n')
     );
     // Куда ведёт путь, спрашивают на том же сервере, что и качают
-    expect(commandFor(/^p=/)![1].profileName).toBe('production');
+    expect(executeMock.mock.calls.every(([config]) => config === profile.config)).toBe(true);
   });
 
   it('непроверенный путь называется и при скачивании каталога', async () => {

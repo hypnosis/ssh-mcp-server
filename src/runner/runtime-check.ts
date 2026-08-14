@@ -143,7 +143,7 @@ export function resolveControlDir(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 /** Создать каталог с правами 0700, если его ещё нет */
-export function ensureControlDir(controlDir: string): void {
+function ensureControlDir(controlDir: string): void {
   mkdirSync(controlDir, { recursive: true, mode: 0o700 });
 }
 

@@ -23,6 +23,13 @@ import { buildBackupPath, buildTempPath, isArtifactOf } from '../utils/tmp-name.
 
 export type PathKind = 'file' | 'directory' | 'symlink' | 'missing';
 
+/**
+ * Исход проверки на точку монтирования. `unknown` — сервер не ответил
+ * номерами устройств: проверить было нечем, и это не то же самое, что
+ * проверенное «не точка монтирования».
+ */
+export type MountCheck = 'separate' | 'same' | 'unknown';
+
 /** Файловые операции, из которых собран протокол */
 export interface PathOps {
   /**
@@ -42,7 +49,7 @@ export interface PathOps {
   /** Удалить путь целиком */
   removeTree(path: string): Promise<void>;
   /** Лежит ли путь на отдельной файловой системе (точка монтирования) */
-  isSeparateFilesystem?(path: string): Promise<boolean>;
+  isSeparateFilesystem?(path: string): Promise<MountCheck>;
   /**
    * Пути в каталоге, похожие на наши временные имена.
    *
@@ -134,12 +141,16 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
 
   // Точка монтирования переименованием не заменяется: старый путь пришлось бы
   // сначала вычистить, а это ровно тот `rm -rf`, от которого мы уходим
-  if (existing !== 'missing' && (await ops.isSeparateFilesystem?.(plan.finalPath))) {
-    throw new InstallError(
-      `the target is a mount point: ${plan.finalPath}. ` +
-      'Replacing it by rename is not possible; write into a directory inside the volume instead.',
-      warnings
-    );
+  if (existing !== 'missing' && ops.isSeparateFilesystem) {
+    const mount = await ops.isSeparateFilesystem(plan.finalPath);
+    if (mount === 'separate') {
+      throw new InstallError(
+        `the target is a mount point: ${plan.finalPath}. ` +
+        'Replacing it by rename is not possible; write into a directory inside the volume instead.',
+        warnings
+      );
+    }
+    if (mount === 'unknown') warnings.push(uncheckedMountNote(plan.finalPath));
   }
 
   await ops.ensureParent(plan.finalPath);
@@ -288,6 +299,14 @@ async function restore(
     );
     return false;
   }
+}
+
+/** Проверить точку монтирования было нечем: непроверенное не выдаём за проверенное */
+function uncheckedMountNote(path: string): string {
+  return (
+    `whether ${path} is a mount point could not be checked: the server did not answer with ` +
+    'device numbers. If it is one, the rename will refuse the replacement and nothing will be changed.'
+  );
 }
 
 /** Список следов пришёл неполным: молчать об этом — выдать обрезок за всё, что есть */

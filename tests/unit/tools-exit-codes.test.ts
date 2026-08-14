@@ -128,14 +128,6 @@ describe('ssh_log_search: отсутствие совпадений — это �
     expect(response.content[0].text).toContain('Permission denied');
   });
 
-  it('поиск идёт по запрошенному профилю, а не по «default»', async () => {
-    await new LogTools().handleCall(
-      call('ssh_log_search', { path: '/var/log/syslog', query: 'boom', profile: 'production' })
-    );
-
-    expect(optionsFor(/grep/)?.profileName).toBe('production');
-  });
-
   it('чтение логов помечено как безопасное для повтора', async () => {
     await new LogTools().handleCall(
       call('ssh_log_search', { path: '/var/log/syslog', query: 'boom' })

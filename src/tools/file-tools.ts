@@ -212,17 +212,17 @@ export class FileTools {
   /**
    * Handle tool call
    */
-  async handleCall(request: CallToolRequest): Promise<ToolResult> {
+  async handleCall(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     const toolName = request.params.name;
     
     try {
       switch (toolName) {
         case 'ssh_file_read':
-          return await this.handleFileRead(request);
+          return await this.handleFileRead(request, signal);
         case 'ssh_file_write':
           return await this.handleFileWrite(request);
         case 'ssh_file_list':
-          return await this.handleFileList(request);
+          return await this.handleFileList(request, signal);
         default:
           throw new Error(`Unknown tool: ${toolName}`);
       }
@@ -235,7 +235,7 @@ export class FileTools {
   /**
    * Handle ssh_file_read
    */
-  private async handleFileRead(request: CallToolRequest) {
+  private async handleFileRead(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     
     // Validate array parameter format
@@ -271,6 +271,7 @@ export class FileTools {
       const result = await this.executor.execute(sshConfig, command, {
         sudo,
         idempotent: true,
+        signal,
       });
 
       if (result.exitCode !== 0) {
@@ -317,6 +318,7 @@ export class FileTools {
         const result = await this.executor.execute(sshConfig, command, {
           sudo,
           idempotent: true,
+          signal,
         });
 
         if (result.exitCode === 0 && result.truncated) {
@@ -352,6 +354,9 @@ export class FileTools {
           });
         }
       } catch (error: any) {
+        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
+        // возвращал бы список с пробелами вместо отказа
+        if (signal?.aborted) throw error;
         results.push({
           path,
           content: '',
@@ -658,7 +663,7 @@ export class FileTools {
   /**
    * Handle ssh_file_list
    */
-  private async handleFileList(request: CallToolRequest) {
+  private async handleFileList(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
@@ -682,6 +687,7 @@ export class FileTools {
     
     const result = await this.executor.execute(sshConfig, command, {
       idempotent: true,
+      signal,
     });
 
     if (result.exitCode !== 0) {

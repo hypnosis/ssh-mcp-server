@@ -42,6 +42,9 @@ export class SnapshotTool {
   /**
    * Handle tool call
    */
+  // Отмену снимок не берёт: сорванное чтение здесь заменяется пустым
+  // показателем, и отменённый вызов вернулся бы снимком с пустотами вместо
+  // отказа — то есть неполным ответом, выданным за полный
   async handleCall(request: CallToolRequest): Promise<ToolResult> {
     try {
       const args = request.params.arguments as any;

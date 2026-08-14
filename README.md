@@ -625,7 +625,7 @@ Sections (toggle via `include`): `system, disk, mem, net, ssh, services, docker,
 | `include_sudo_sections` | `false` | Enables `sshd -T` (whole compound runs under sudo) |
 | `compact` | `true` | Trim long sections (listeners, interfaces, docker rows) for smaller LLM payload |
 
-Output format: human-readable summary (host header → CRITICAL/WARNING shortlist → disk table → listeners → sshd → services → docker → firewall → updates) followed by `--- raw JSON ---` and the full structured result.
+Output format: human-readable summary (host header → CRITICAL/WARNING shortlist → disk table → listeners → sshd → services → docker → firewall → updates) followed by `--- raw JSON ---` and the full structured result. The same result also comes back as `structuredContent`, so a client does not have to cut the text apart.
 
 Auto red-flag rules:
 - **CRITICAL**: filesystem ≥ 90%, `PermitRootLogin yes`, `PasswordAuthentication yes` on port 22
@@ -821,6 +821,7 @@ Remote Server(s)
 - **NO streaming** - snapshot results only
 - **REST approach** - arrays where logical
 - **Retry logic** - one retry for idempotent commands after a transport failure; a refused multiplexed session falls back to a connection of its own
+- **Cancellation** - a cancelled call drops the local `ssh` client at once instead of sitting out the command's timeout. It does not stop a command already running on the server, and file transfers and `ssh_snapshot` do not take it at all: one has a window where stopping would leave the target empty, the other would answer with blanks instead of a refusal
 
 ## 🛠️ Development
 
@@ -849,7 +850,8 @@ npm run dev
 
 ```
 src/
-├── index.ts                    # Entry point + routing
+├── index.ts                    # Entry point: profiles, transport, shutdown
+├── mcp-server.ts               # Tool list and call routing, built from one source
 ├── runner/                     # The transport: system ssh/scp and everything around them
 │   ├── openssh-runner.ts       # Commands and transfers over the shared connection
 │   ├── ssh-args.ts             # Command line for ssh/scp, control socket path
@@ -869,8 +871,9 @@ src/
 │   ├── snapshot-tool.ts        # ssh_snapshot
 │   ├── monitoring-tool.ts      # ssh_monitor
 │   ├── transfer-tool.ts        # ssh_upload, ssh_download
-│   └── audit-tool.ts           # ssh_audit_baseline, ssh_tls_check,
-│                               # ssh_disk_breakdown, ssh_service_status
+│   ├── audit-tool.ts           # ssh_audit_baseline, ssh_tls_check,
+│   │                           # ssh_disk_breakdown, ssh_service_status
+│   └── audit-output.ts         # audit result types + their output schemas
 └── utils/
     ├── logger.ts               # Logging
     ├── ssh-config.ts           # SSH configuration
@@ -879,6 +882,7 @@ src/
     ├── path-validator.ts       # Path security
     ├── df-table.ts             # Parsing the df table by name, not by column number
     ├── output-notes.ts         # Notes about an answer that is not the whole answer
+    ├── tool-result.ts          # The one place a failed answer is built (isError)
     ├── sha256.ts               # Local + remote sha256 helpers
     └── tmp-name.ts             # Atomic temp / staging path generators
 ```

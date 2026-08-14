@@ -24,7 +24,7 @@ import { AuditTool } from './tools/audit-tool.js';
 /** Класс инструментов и его обработчик вызова */
 interface ToolProvider {
   tools: Tool[];
-  call: (request: CallToolRequest) => Promise<ToolResult>;
+  call: (request: CallToolRequest, signal?: AbortSignal) => Promise<ToolResult>;
 }
 
 /** Сервер и список инструментов, который он объявляет */
@@ -43,13 +43,13 @@ export function createMcpServer(version: string): McpServerBundle {
   const auditTool = new AuditTool();
 
   const providers: ToolProvider[] = [
-    { tools: [execTool.getTool()], call: (request) => execTool.handleCall(request) },
-    { tools: fileTools.getTools(), call: (request) => fileTools.handleCall(request) },
-    { tools: logTools.getTools(), call: (request) => logTools.handleCall(request) },
+    { tools: [execTool.getTool()], call: (request, signal) => execTool.handleCall(request, signal) },
+    { tools: fileTools.getTools(), call: (request, signal) => fileTools.handleCall(request, signal) },
+    { tools: logTools.getTools(), call: (request, signal) => logTools.handleCall(request, signal) },
     { tools: [snapshotTool.getTool()], call: (request) => snapshotTool.handleCall(request) },
     { tools: [monitoringTool.getTool()], call: (request) => monitoringTool.handleCall(request) },
     { tools: transferTool.getTools(), call: (request) => transferTool.handleCall(request) },
-    { tools: auditTool.getTools(), call: (request) => auditTool.handleCall(request) },
+    { tools: auditTool.getTools(), call: (request, signal) => auditTool.handleCall(request, signal) },
   ];
 
   const tools = providers.flatMap((provider) => provider.tools);
@@ -77,7 +77,11 @@ export function createMcpServer(version: string): McpServerBundle {
     return { tools };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // Отмену вызова получают инструменты, которые только выполняют команды.
+  // Передача файлов её не берёт: у замены есть окно, где цель уже отведена в
+  // сторону, а новая копия ещё не встала на место, — прерваться там значит
+  // оставить пустоту
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const toolName = request.params.name;
     logger.debug('CallTool request:', toolName);
 
@@ -86,7 +90,7 @@ export function createMcpServer(version: string): McpServerBundle {
       throw new Error(`Unknown tool: ${toolName}`);
     }
 
-    return call(request);
+    return call(request, extra.signal);
   });
 
   return { server, tools };

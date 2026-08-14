@@ -125,7 +125,7 @@ export class ExecTool {
   /**
    * Handle tool call
    */
-  async handleCall(request: CallToolRequest): Promise<ToolResult> {
+  async handleCall(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     try {
       const args = request.params.arguments as any;
       
@@ -168,6 +168,7 @@ export class ExecTool {
           cwd: args.cwd,
           // Ноль здесь значит «срок не назван»: общий срок подставит слой ниже
           timeout: args.timeout || undefined,
+          signal,
         });
         
         let output = '';
@@ -220,6 +221,7 @@ export class ExecTool {
           cwd: args.cwd,
           // Ноль здесь значит «срок не назван»: общий срок подставит слой ниже
           timeout: args.timeout || undefined,
+          signal,
         });
         
         results.push({

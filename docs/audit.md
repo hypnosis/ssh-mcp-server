@@ -51,6 +51,10 @@ A single text block with two parts:
 1. Human-readable summary — host header, CRITICAL/WARNING shortlist, `NOT CHECKED` list, disk table, listeners, sshd line, services, docker, firewall, updates
 2. `--- raw JSON ---` followed by the full structured result
 
+The same result also arrives as `structuredContent`, already parsed, with its shape
+declared in the tool listing. Cutting the text at `--- raw JSON ---` still works — the two
+carry the same object, and a live test compares them.
+
 **Rows are read by name, not by position.** A filesystem name too long for its column — an
 overlay path from docker, a long NFS address — is wrapped by `df` onto a second line; both
 halves are joined back, so the volume keeps its name instead of losing it. A row neither
@@ -88,7 +92,8 @@ If `check_renew_hook: true` (default), additionally inspects:
 - `/etc/letsencrypt/renewal/*.conf` for `renew_hook = ...`
 - `/etc/letsencrypt/renewal-hooks/deploy/` for any deploy script
 
-Returns UNKNOWN/CRITICAL/WARNING flags + structured JSON.
+Returns UNKNOWN/CRITICAL/WARNING flags + structured JSON — in the text, and as
+`structuredContent` alongside it.
 
 | Severity | Trigger |
 |----------|---------|

@@ -9,8 +9,9 @@
  * - ssh_disk_breakdown   top consumers (du, docker, journald, caches)
  * - ssh_service_status   systemctl + journalctl tail in one call
  *
- * Output is structured (single text block with section headers + JSON), so
- * agents can consume it without N follow-up ssh_exec calls.
+ * Output is structured (section headers + JSON in the text, and the same JSON
+ * as structuredContent where an output schema is declared), so agents can
+ * consume it without N follow-up ssh_exec calls.
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -20,57 +21,12 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
 import { parseDfTable } from '../utils/df-table.js';
-
-/**
- * Разделы отчёта. Отсутствующее поле значит «раздел не запрашивали»:
- * пустое значение в невыбранном разделе читается как факт о сервере.
- */
-interface BaselineResult {
-  hostname?: string;
-  uptime?: string;
-  date_utc?: string;
-  os?: string;
-  kernel?: string;
-  disk?: Array<{ filesystem: string; size: string; used: string; avail: string; pct: number; mount: string }>;
-  memory?: { total: string; used: string; free: string; available: string };
-  load?: string;
-  net?: {
-    listeners: Array<{ proto: string; address: string; pid_program: string }>;
-    interfaces: string[];
-  };
-  ssh?: {
-    port: string;
-    permit_root_login: string;
-    password_auth: string;
-    pubkey_auth: string;
-  };
-  services?: {
-    failed: string[];
-    running_count: number;
-  };
-  /** `null` — раздел спрашивали, докера на сервере нет; поля нет — не спрашивали */
-  docker?: {
-    containers: Array<{ id: string; image: string; status: string; names: string }>;
-    df: string;
-  } | null;
-  /** У каждого межсетевого экрана три исхода: нет его, не дали посмотреть, посмотрели */
-  firewall?: {
-    ufw: { status: 'not_installed' | 'no_access' | 'read'; active?: boolean; text: string };
-    iptables: { status: 'not_installed' | 'no_access' | 'read'; rules?: number };
-  };
-  updates?: {
-    upgradable: number;
-    reboot_required: boolean;
-  };
-  /**
-   * Разделы, которые проверить было нечем: команды нет на сервере или она
-   * ничего не вернула. Пустой раздел и непроверенный раздел выглядят
-   * одинаково («disk:» без строк, «listeners (0)»), а значат разное —
-   * без этого списка отчёт объявляет отсутствие данных отсутствием проблем.
-   */
-  unavailable: string[];
-  red_flags: { critical: string[]; warning: string[]; ok: string[] };
-}
+import {
+  BASELINE_OUTPUT_SCHEMA,
+  TLS_CHECK_OUTPUT_SCHEMA,
+  type BaselineResult,
+  type TlsCheckResult,
+} from './audit-output.js';
 
 export class AuditTool {
   /** Имена разделов отчёта — они же список допустимых значений `include` */
@@ -112,6 +68,7 @@ export class AuditTool {
             },
           },
         },
+        outputSchema: BASELINE_OUTPUT_SCHEMA,
       },
       {
         name: 'ssh_tls_check',
@@ -134,6 +91,7 @@ export class AuditTool {
           },
           required: ['domain'],
         },
+        outputSchema: TLS_CHECK_OUTPUT_SCHEMA,
       },
       {
         name: 'ssh_disk_breakdown',
@@ -171,18 +129,18 @@ export class AuditTool {
     ];
   }
 
-  async handleCall(request: CallToolRequest): Promise<ToolResult> {
+  async handleCall(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     const toolName = request.params.name;
     try {
       switch (toolName) {
         case 'ssh_audit_baseline':
-          return await this.handleBaseline(request);
+          return await this.handleBaseline(request, signal);
         case 'ssh_tls_check':
-          return await this.handleTlsCheck(request);
+          return await this.handleTlsCheck(request, signal);
         case 'ssh_disk_breakdown':
-          return await this.handleDiskBreakdown(request);
+          return await this.handleDiskBreakdown(request, signal);
         case 'ssh_service_status':
-          return await this.handleServiceStatus(request);
+          return await this.handleServiceStatus(request, signal);
         default:
           throw new Error(`Unknown audit tool: ${toolName}`);
       }
@@ -196,7 +154,7 @@ export class AuditTool {
   // ssh_audit_baseline
   // ---------------------------------------------------------------------------
 
-  private async handleBaseline(request: CallToolRequest) {
+  private async handleBaseline(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     // Настройки sshd спрашиваются всегда: под root они читаются и без sudo, а
@@ -290,6 +248,7 @@ export class AuditTool {
       sudo: useSudo,
       timeout: 60000,
       idempotent: true,
+      signal,
     });
 
     const sections = this.splitSections(r.stdout, SEP);
@@ -298,6 +257,7 @@ export class AuditTool {
       content: [
         { type: 'text', text: this.formatBaseline(result, compact) },
       ],
+      structuredContent: result,
     };
   }
 
@@ -663,7 +623,7 @@ export class AuditTool {
   // ssh_tls_check
   // ---------------------------------------------------------------------------
 
-  private async handleTlsCheck(request: CallToolRequest) {
+  private async handleTlsCheck(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     const domain: string = args.domain;
@@ -699,6 +659,7 @@ export class AuditTool {
       sudo: !!args.sudo,
       timeout: 30000,
       idempotent: true,
+      signal,
     });
     const sections = this.splitSections(r.stdout, SEP);
     const cert = sections.get('cert') || '';
@@ -735,7 +696,7 @@ export class AuditTool {
       ? /renew_hook\s*=/.test(renew) || /reload-?nginx|systemctl/.test(renew)
       : null;
 
-    const out = {
+    const out: TlsCheckResult = {
       domain,
       port,
       not_after: notAfter,
@@ -770,14 +731,17 @@ export class AuditTool {
       (flags.length ? '\n\n' : '\n') +
       JSON.stringify(out, null, 2);
 
-    return { content: [{ type: 'text', text }] };
+    return {
+      content: [{ type: 'text', text }],
+      structuredContent: out,
+    };
   }
 
   // ---------------------------------------------------------------------------
   // ssh_disk_breakdown
   // ---------------------------------------------------------------------------
 
-  private async handleDiskBreakdown(request: CallToolRequest) {
+  private async handleDiskBreakdown(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     const topN = shellCount(args.top_n ?? 20, 'top_n');
@@ -806,6 +770,7 @@ export class AuditTool {
     const r = await this.executor.execute(sshConfig, cmd, {
       timeout: 120000,
       idempotent: true,
+      signal,
     });
 
     // Разделитель — способ нарезать вывод, а не часть ответа: раньше он ехал
@@ -840,7 +805,7 @@ export class AuditTool {
   // ssh_service_status
   // ---------------------------------------------------------------------------
 
-  private async handleServiceStatus(request: CallToolRequest) {
+  private async handleServiceStatus(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     const unit: string = args.unit;
@@ -864,6 +829,7 @@ export class AuditTool {
     const r = await this.executor.execute(sshConfig, cmd, {
       timeout: 30000,
       idempotent: true,
+      signal,
     });
     const sections = this.splitSections(r.stdout, SEP);
     const out = {

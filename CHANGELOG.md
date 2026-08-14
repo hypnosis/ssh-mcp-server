@@ -134,7 +134,10 @@ done, failed, nothing to check with — are now distinct in the answer itself.
 - Answers no longer show the kitchen. An error names the path you asked for instead of the
   staging name the data travelled through (`/etc/nginx.conf`, not
   `/etc/.upload-7952b8939bc0.nginx.conf`) — the address of a leftover backup copy is still
-  printed, because that one is really on the server. A missing local file is refused with
+  printed, because that one is really on the server. Where a message names both paths — the
+  rename that puts the prepared copy in place — the temp one is marked `(staging copy)`:
+  without it the two collapsed into one and the refusal read as `mv -T -- '/etc/hosts'
+  '/etc/hosts'`, a file renamed onto itself. A missing local file is refused with
   `local_path does not exist: …` instead of a raw `ENOENT` stack line.
   `ssh_disk_breakdown` prints titled sections instead of its `__SSH_MCP_DISK_SEP__` markers,
   and says `not installed` where it used to echo `NO_DOCKER`.
@@ -165,6 +168,15 @@ done, failed, nothing to check with — are now distinct in the answer itself.
   itself, and at most 50 matching files are read, with a note in the answer when there were
   more. A pattern that matches nothing is refused as `no files match "…"` instead of the
   utility's message.
+- The mount-point check tells "not a mount point" from "there was nothing to check with".
+  The device numbers are asked for with `stat -c`, a GNU and BusyBox option; a server whose
+  `stat` speaks another syntax (BSD, macOS) answered nothing, and the silence was read as a
+  clean result. Such a server now installs as before — the check never blocked anything by
+  itself — but the answer carries a note that the check did not run. Measured on debian and
+  alpine with `stat` replaced by a BSD-like one: the note appears, and disappears again once
+  the real `stat` is back. The rename stays the real guard: `mv -T` onto a mount point is
+  refused by both coreutils (`Device or resource busy`) and BusyBox (`Resource busy`),
+  measured on a live bind mount, with the target left intact.
 - Disk, memory and listener readings are no longer taken by column position. The disk
   overview of `ssh_snapshot` picked its rows by device name (`^/dev/`), so the root
   filesystem was missing on every container — where it sits on overlay — and the list
@@ -177,10 +189,19 @@ done, failed, nothing to check with — are now distinct in the answer itself.
   address, so an IPv6-only listener (`[::]:4847`) is no longer skipped.
 
 ### Known limitations
-Acceptance found more than this release fixes. The rest is recorded in
-`docs/tech-debt/` with measurements, and scheduled for v2.1:
-- No answer carries `isError`, so a failure is not machine-distinguishable from content,
-  and output printed before a timeout kill is dropped (`TD-03`).
+These ship with the release. Each is recorded in `docs/tech-debt/` with measurements.
+- **No answer carries `isError`**, so a client cannot tell a failure from content by the
+  response alone — the reason is in the text a human reads, not in a flag a program can
+  check. Output printed before a timeout kill is dropped for the same reason: the fields
+  carrying it are filled by the transport and read by nobody. Both change the response
+  format of every tool, so they wait for the MCP SDK migration (`0.6.1` → `1.30`), which is
+  not part of this release (`TD-03`).
+- **A running operation cannot be cancelled from the outside.** The transport accepts an
+  abort signal, but no tool passes one, so a long transfer runs until its `timeout` — set
+  before it starts — or until the server process is killed (`TD-08`).
+- **The mount-point check needs a `stat` that speaks the GNU or BusyBox syntax.** On a
+  server whose `stat` differs (BSD, macOS), the check does not run and says so; the install
+  proceeds, and the rename stays the real guard (`TD-09`).
 
 ## [1.3.2] - 2026-06-20
 

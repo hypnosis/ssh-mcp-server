@@ -157,10 +157,25 @@ describe('поиск следов прошлых операций', () => {
 
     const found = await ops().listArtifacts!('/srv');
 
-    expect(found).toEqual([
+    expect(found.paths).toEqual([
       '/srv/.bak-aabbccddeeff.site conf',
       '/srv/.upload-112233445566.app',
     ]);
+    expect(found.truncated).toBeFalsy();
+  });
+
+  it('обрезанный ответ признаётся обрезанным, а не выдаётся за весь каталог', async () => {
+    executeMock.mockResolvedValue({
+      stdout: '/srv/.upload-112233445566.app\n',
+      stderr: '',
+      exitCode: 0,
+      truncated: true,
+    });
+
+    const found = await ops().listArtifacts!('/srv');
+
+    expect(found.paths).toEqual(['/srv/.upload-112233445566.app']);
+    expect(found.truncated).toBe(true);
   });
 
   it('ненулевой код — просто «ничего не нашли», а не отказ операции', async () => {
@@ -170,7 +185,10 @@ describe('поиск следов прошлых операций', () => {
       exitCode: 1,
     });
 
-    await expect(ops().listArtifacts!('/srv')).resolves.toEqual([]);
+    await expect(ops().listArtifacts!('/srv')).resolves.toEqual({
+      paths: [],
+      truncated: undefined,
+    });
   });
 
   it('поиск не меняет ничего на сервере: только чтение', async () => {

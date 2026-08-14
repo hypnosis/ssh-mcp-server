@@ -144,6 +144,19 @@ done, failed, nothing to check with — are now distinct in the answer itself.
   service reads as before. The restart pause is asked for by the name systemd actually
   prints (`RestartUSec`), so the field is a value — `on-failure (after 100ms)` — instead of
   a permanent `(?s)`.
+- Two installs into the same path: the loser now says what happened. The refusal used to be
+  the utility's own line (`mv: cannot stat …`), which says nothing about a parallel install
+  or about the data being intact. The cause is asked of the server rather than parsed out of
+  the message: a target that vanished between the survey and the replacement was moved away
+  by someone else (nothing was changed here), a target that could not be taken was claimed by
+  someone else (the prepared copy stayed where it was, and its address is in the warnings).
+  The utility's line is kept after `Details:`.
+- The search for leftovers next to the target no longer passes a cut-off listing off as the
+  whole picture. The transport reports when output hit the 10 MiB limit; that flag now
+  travels with the list, and the answer says the search was incomplete — including when
+  nothing was found, since an empty list out of a cut-off answer proves nothing. Measured on
+  a directory of 40 001 files whose listing is 10 680 045 bytes: before, debian answered with
+  no warning at all.
 - A glob pattern in `ssh_log_search` and `ssh_log_tail` names files again. The pattern is
   expanded on the server by `find` matching the file name, not by the shell, so the quoting
   that protects a name with a space, `$(…)` or a newline stays in place — measured on all

@@ -50,7 +50,14 @@ export interface PathOps {
    * имени не отличить брошенный след от временного пути соседнего вызова,
    * который прямо сейчас доливает туда данные.
    */
-  listArtifacts?(directory: string): Promise<string[]>;
+  listArtifacts?(directory: string): Promise<ArtifactScan>;
+}
+
+/** Что нашлось рядом с целью и можно ли считать этот список полным */
+export interface ArtifactScan {
+  paths: string[];
+  /** Ответ сервера обрезан по пределу: следов могло быть больше */
+  truncated?: boolean;
 }
 
 export interface InstallPlan {
@@ -103,7 +110,10 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
 
   // Следы прошлых операций: называем их и оставляем как есть
   const leftovers = await findLeftovers(ops, plan.finalPath);
-  if (leftovers.length > 0) warnings.push(describeLeftovers(leftovers, plan.finalPath, existing));
+  if (leftovers.paths.length > 0) {
+    warnings.push(describeLeftovers(leftovers.paths, plan.finalPath, existing));
+  }
+  if (leftovers.truncated) warnings.push(TRUNCATED_SCAN_NOTE);
 
   if (existing === 'symlink') {
     throw new InstallError(
@@ -206,7 +216,7 @@ async function commit(
   try {
     await ops.rename(plan.finalPath, backup);
   } catch (error) {
-    return { ok: false, error: toError(error) };
+    return { ok: false, error: await explainRace(ops, plan.finalPath, 'gone', error) };
   }
 
   // Между этими двумя переименованиями боевой путь пуст — здесь не место
@@ -215,7 +225,11 @@ async function commit(
     await ops.rename(staging, plan.finalPath);
   } catch (error) {
     const restored = await restore(ops, backup, plan.finalPath, warnings);
-    return { ok: false, error: toError(error), lastCopyAtRisk: !restored };
+    return {
+      ok: false,
+      error: await explainRace(ops, plan.finalPath, 'taken', error),
+      lastCopyAtRisk: !restored,
+    };
   }
 
   // Точка невозврата пройдена: неубранная старая копия — это предупреждение
@@ -226,6 +240,34 @@ async function commit(
   }
 
   return { ok: true };
+}
+
+/**
+ * Назвать отказ замены словами вызывающего, а не выводом утилиты.
+ *
+ * Цель, исчезнувшая или занятая между разведкой и заменой, означает одно: в тот
+ * же путь писал кто-то ещё. Спрашиваем сервер, а не разбираем текст ошибки:
+ * набор утилит и язык сообщений на разных серверах разные.
+ */
+async function explainRace(
+  ops: PathOps,
+  finalPath: string,
+  expected: 'gone' | 'taken',
+  error: unknown
+): Promise<Error> {
+  const now = await ops.inspect(finalPath).catch(() => undefined);
+  if (now === undefined) return toError(error);
+
+  const raced = expected === 'gone' ? now === 'missing' : now !== 'missing';
+  if (!raced) return toError(error);
+
+  return new Error(
+    expected === 'gone'
+      ? `${finalPath} was moved away by another install into the same path while this one was ` +
+        `replacing it. Nothing was changed by this install. Details: ${message(error)}`
+      : `${finalPath} was taken by another install into the same path while this one was ` +
+        `replacing it. The prepared copy was not put in place. Details: ${message(error)}`
+  );
 }
 
 /** Вернуть отведённую копию на место, если замена не удалась */
@@ -248,14 +290,19 @@ async function restore(
   }
 }
 
+/** Список следов пришёл неполным: молчать об этом — выдать обрезок за всё, что есть */
+const TRUNCATED_SCAN_NOTE =
+  'the directory listing was cut off at the output limit, so this search for leftovers ' +
+  'is incomplete: there may be more of them next to the target.';
+
 /**
  * Найти рядом с целью наши временные пути от прошлых операций.
  *
  * Только чтение. Листинг не удался — считаем, что ничего нет: справка о мусоре
  * не стоит того, чтобы из-за неё отказала сама установка.
  */
-async function findLeftovers(ops: PathOps, finalPath: string): Promise<string[]> {
-  if (!ops.listArtifacts) return [];
+async function findLeftovers(ops: PathOps, finalPath: string): Promise<ArtifactScan> {
+  if (!ops.listArtifacts) return { paths: [] };
 
   const trimmed = finalPath.replace(/\/+$/, '');
   const lastSlash = trimmed.lastIndexOf('/');
@@ -264,9 +311,14 @@ async function findLeftovers(ops: PathOps, finalPath: string): Promise<string[]>
 
   try {
     const found = await ops.listArtifacts(directory);
-    return found.filter((path) => isArtifactOf(path.slice(path.lastIndexOf('/') + 1), base));
+    return {
+      paths: found.paths.filter((path) =>
+        isArtifactOf(path.slice(path.lastIndexOf('/') + 1), base)
+      ),
+      truncated: found.truncated,
+    };
   } catch {
-    return [];
+    return { paths: [] };
   }
 }
 

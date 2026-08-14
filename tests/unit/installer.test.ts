@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { PathKind, PathOps } from '../../src/managers/installer.js';
+import type { ArtifactScan, PathKind, PathOps } from '../../src/managers/installer.js';
 import { logger } from '../../src/utils/logger.js';
 
 const { install, InstallError } = await import('../../src/managers/installer.js');
@@ -67,10 +67,12 @@ class FakeFs implements PathOps {
 
   /** Соседи цели, похожие на наши временные имена */
   listSiblings?: (directory: string) => Promise<string[]>;
+  /** Ответ сервера пришёл обрезанным: список соседей неполон */
+  listTruncated = false;
 
-  async listArtifacts(directory: string): Promise<string[]> {
-    if (!this.listSiblings) return [];
-    return this.listSiblings(directory);
+  async listArtifacts(directory: string): Promise<ArtifactScan> {
+    if (!this.listSiblings) return { paths: [], truncated: this.listTruncated };
+    return { paths: await this.listSiblings(directory), truncated: this.listTruncated };
   }
 }
 
@@ -377,5 +379,82 @@ describe('следы прошлых операций', () => {
     expect((failure as InstanceType<typeof InstallError>).warnings.join(' ')).toContain(
       '/srv/.upload-eeeeeeeeeeee.app.conf'
     );
+  });
+
+  it('обрезанный список не выдаётся за полный, даже когда следов не нашлось', async () => {
+    fs.listTruncated = true;
+    fs.listSiblings = async () => [];
+
+    const outcome = await install(fs, plan());
+
+    expect(outcome.warnings.join(' ')).toContain('incomplete');
+    expect(fs.content(FINAL)).toBe('новое содержимое');
+  });
+
+  it('обрезка называется рядом с тем, что всё-таки нашлось', async () => {
+    fs.listTruncated = true;
+    fs.listSiblings = async () => ['/srv/.upload-ffffffffffff.app.conf'];
+
+    const outcome = await install(fs, plan());
+
+    const warning = outcome.warnings.join(' ');
+    expect(warning).toContain('/srv/.upload-ffffffffffff.app.conf');
+    expect(warning).toContain('incomplete');
+  });
+
+  it('полный список об обрезке не говорит', async () => {
+    fs.listSiblings = async () => ['/srv/.upload-999999999999.app.conf'];
+
+    const outcome = await install(fs, plan());
+
+    expect(outcome.warnings.join(' ')).not.toContain('incomplete');
+  });
+});
+
+describe('в тот же путь писал кто-то ещё', () => {
+  /** Каталог поверх каталога: тот единственный путь, где цель отводится в сторону */
+  const directoryPlan = () => ({ ...plan(), kind: 'directory' as const });
+
+  it('цель исчезла между разведкой и заменой — сказано про параллельную установку', async () => {
+    fs.put(FINAL, 'directory');
+    // Соседний вызов успел отвести цель в сторону: переименовывать больше нечего
+    fs.failRename = (from) => {
+      if (from !== FINAL) return false;
+      fs.entries.delete(FINAL);
+      return true;
+    };
+
+    const failure = await install(fs, directoryPlan()).catch((error: Error) => error);
+
+    expect(String(failure)).toContain('another install into the same path');
+    expect(String(failure)).toContain('Nothing was changed by this install');
+  });
+
+  it('цель на месте — отказ остаётся тем, чем был, и причину не подменяет', async () => {
+    fs.put(FINAL, 'directory');
+    // Отказ не от гонки: цель никуда не делась, переименовать её просто не дали
+    fs.failRename = (from) => from === FINAL;
+
+    const failure = await install(fs, directoryPlan()).catch((error: Error) => error);
+
+    expect(String(failure)).toContain('rename refused');
+    expect(String(failure)).not.toContain('another install');
+  });
+
+  it('путь занят чужой копией — сказано, что подготовленное не встало на место', async () => {
+    fs.put(FINAL, 'directory');
+    // Цель отвели в сторону, а на освободившийся путь сосед поставил свою копию
+    fs.failRename = (_from, to) => {
+      if (to !== FINAL) return false;
+      fs.put(FINAL, 'directory', 'копия соседа');
+      return true;
+    };
+
+    const failure = await install(fs, directoryPlan()).catch((error: Error) => error);
+
+    expect(String(failure)).toContain('was taken by another install');
+    // Своя отложенная копия при этом названа: без неё данные было бы не найти
+    expect((failure as InstanceType<typeof InstallError>).warnings.join(' ')).toContain('.bak-');
+    expect(fs.content(FINAL)).toBe('копия соседа');
   });
 });

@@ -26,6 +26,6 @@
 | TD-14 | Разбор чужого вывода теряет строки и путает колонки | ✅ закрыт | [archive/parsing-foreign-output_14.md](archive/parsing-foreign-output_14.md) |
 | TD-15 | В ответах видно внутреннюю кухню | ✅ закрыт | [archive/internal-names-in-answers_15.md](archive/internal-names-in-answers_15.md) |
 | TD-16 | Проглоченная ошибка читается как факт | ✅ закрыт | [archive/swallowed-errors_16.md](archive/swallowed-errors_16.md) |
-| TD-17 | Шаблон пути в журнальных инструментах обещан, но не работает | 🟡 открыт | [glob-path-not-expanded_17.md](glob-path-not-expanded_17.md) |
+| TD-17 | Шаблон пути в журнальных инструментах обещан, но не работает | ✅ закрыт | [archive/glob-path-not-expanded_17.md](archive/glob-path-not-expanded_17.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.

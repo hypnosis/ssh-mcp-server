@@ -15,7 +15,7 @@
  */
 
 import { posix as posixPath } from 'path';
-import type { PathKind, PathOps } from './installer.js';
+import type { ArtifactScan, PathKind, PathOps } from './installer.js';
 import type { SSHExecutor } from './ssh-executor.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 import { shellQuote } from '../utils/shell-arg.js';
@@ -109,17 +109,20 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
      * списке, но список этот только показывается человеку — ничего по нему
      * не удаляется.
      */
-    async listArtifacts(directory: string): Promise<string[]> {
+    async listArtifacts(directory: string): Promise<ArtifactScan> {
       const result = await run(
         `find ${shellQuote(directory)} -maxdepth 1 ` +
         `\\( -name '.upload-*' -o -name '.bak-*' \\) 2>/dev/null`,
         true
       );
 
-      return result.stdout
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
+      return {
+        paths: result.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0),
+        truncated: result.truncated,
+      };
     },
 
     /**

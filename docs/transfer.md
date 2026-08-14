@@ -211,3 +211,18 @@ through a pool of 16 readers — that one is internal and not configurable.
 The data travels through a temp name next to the target, but a failure reports the path you
 passed (`/etc/nginx/site.conf`), not `/etc/nginx/.upload-<rand>.site.conf`. The exception is
 a leftover backup copy: its real address is printed, because removing it is up to you.
+
+### Two installs into the same path
+
+Both trees stay whole; one wins and one is refused. The refusal says which of the two
+happened — the target was moved away by the other install (nothing was changed here), or it
+was claimed by it (the prepared copy stayed where it was, and the warnings carry its
+address). The cause is asked of the server, not read out of the utility's message, which is
+kept after `Details:`.
+
+### Leftovers next to the target
+
+Before installing, the directory is scanned for temp names left by interrupted operations;
+they are named in the answer and never touched. If that listing hit the output limit, the
+answer says the search was incomplete instead of presenting the part it managed to read as
+the whole picture.

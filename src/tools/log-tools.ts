@@ -18,6 +18,16 @@ import {
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
 import { requireText, requireTextList } from '../utils/tool-args.js';
 import { resolveRemotePath } from '../managers/path-guard.js';
+import { posix as posixPath } from 'path';
+
+/** Знаки, из-за которых имя считается шаблоном, а не именем файла */
+const GLOB_CHARS = /[*?[]/;
+
+/** Сколько файлов шаблон раскрывает за раз */
+const MAX_GLOB_MATCHES = 50;
+
+/** Маркер ответа: путь существует под своим именем, шаблон раскрывать нечего */
+const GLOB_LITERAL = 'SSH_MCP_GLOB_LITERAL';
 
 /**
  * Log Tools
@@ -50,7 +60,7 @@ export class LogTools {
                 { type: 'string' },
                 { type: 'array', items: { type: 'string' } },
               ],
-              description: 'Log file path or array of paths',
+              description: 'Log file path, glob pattern (*.log), or array of paths',
             },
             lines: {
               type: 'number',
@@ -154,26 +164,33 @@ export class LogTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const paths = requireTextList(args.path, 'path', '"/var/log/syslog"');
+    const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
     // Тип из схемы ничего не гарантирует: MCP отдаёт аргументы как есть
     const lines = shellCount(args.lines ?? 100, 'lines');
     const sudo = args.sudo || false;
 
     // Правила профиля проверяет buildSafePath — уже на раскрытом пути
+    const { paths, notes } = await this.expandPatterns(sshConfig, profileName, requested, sudo);
 
     // Single log - simple result
     if (paths.length === 1) {
       const safePath = await this.buildSafePath(sshConfig, profileName, paths[0], sudo);
       const command = `tail -n ${lines} ${safePath}`;
       const result = await this.executor.execute(sshConfig, command, { sudo, profileName, idempotent: true });
-      
+
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read log: ${result.stderr || result.stdout}`);
       }
-      
+
       return {
         content: [
-          { type: 'text', text: withTruncationNote(result.stdout || '(empty log)', result.truncated) },
+          {
+            type: 'text',
+            text: this.withGlobNotes(
+              withTruncationNote(result.stdout || '(empty log)', result.truncated),
+              notes
+            ),
+          },
         ],
       };
     }
@@ -237,12 +254,12 @@ export class LogTools {
         output += `Error: ${result.error}\n\n`;
       }
     }
-    
+
     return {
-      content: [{ type: 'text', text: output }],
+      content: [{ type: 'text', text: this.withGlobNotes(output, notes) }],
     };
   }
-  
+
   /**
    * Handle ssh_log_search
    */
@@ -258,7 +275,7 @@ export class LogTools {
     const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const paths = requireTextList(args.path, 'path', '"/var/log/syslog"');
+    const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
     const query = requireText(args.query, 'query', '"error"');
     const context = shellCount(args.context ?? 0, 'context');
     const caseSensitive = args.caseSensitive || false;
@@ -266,6 +283,7 @@ export class LogTools {
     const sudo = args.sudo || false;
 
     // Правила профиля проверяет buildSafePath — уже на раскрытом пути
+    const { paths, notes } = await this.expandPatterns(sshConfig, profileName, requested, sudo);
 
     // Build grep flags
     const grepFlags = [];
@@ -291,19 +309,22 @@ export class LogTools {
       
       if (!result.stdout) {
         return {
-          content: [{ type: 'text', text: 'No matches found' }],
+          content: [{ type: 'text', text: this.withGlobNotes('No matches found', notes) }],
         };
       }
-      
+
       const limited = limitMatches(result.stdout, maxMatches);
 
       return {
         content: [
           {
             type: 'text',
-            text: limited.limited
-              ? `${withTruncationNote(limited.text, result.truncated)}\n\n${matchLimitNote(maxMatches)}`
-              : withTruncationNote(limited.text, result.truncated),
+            text: this.withGlobNotes(
+              limited.limited
+                ? `${withTruncationNote(limited.text, result.truncated)}\n\n${matchLimitNote(maxMatches)}`
+                : withTruncationNote(limited.text, result.truncated),
+              notes
+            ),
           },
         ],
       };
@@ -373,12 +394,105 @@ export class LogTools {
         output += `Error: ${result.error}\n\n`;
       }
     }
-    
+
     return {
-      content: [{ type: 'text', text: output }],
+      content: [{ type: 'text', text: this.withGlobNotes(output, notes) }],
     };
   }
   
+  /**
+   * Файлы, которые назвал шаблон.
+   *
+   * Раскрывает его `find` по имени, а не оболочка сервера: путь уезжает в
+   * кавычках, иначе вместе со звёздочкой ожили бы пробел, `$(…)` и перевод
+   * строки в имени. Каталог проверяется правилами профиля здесь, каждое
+   * найденное имя — обычным путём в месте вызова.
+   *
+   * Путь, существующий под своим именем, шаблоном не считается: скобка в имени
+   * файла читалась и раньше.
+   */
+  private async expandPatterns(
+    sshConfig: any,
+    profileName: string,
+    paths: string[],
+    sudo: boolean
+  ): Promise<{ paths: string[]; notes: string[] }> {
+    const expanded: string[] = [];
+    const notes: string[] = [];
+
+    for (const path of paths) {
+      const pattern = posixPath.basename(path);
+      const directory = posixPath.dirname(path);
+
+      if (GLOB_CHARS.test(directory)) {
+        throw new Error(
+          `cannot expand "${path}": a pattern is supported in the file name, not in the directory.`
+        );
+      }
+
+      if (!GLOB_CHARS.test(pattern)) {
+        expanded.push(path);
+        continue;
+      }
+
+      const target = await resolveRemotePath(this.executor, sshConfig, directory, {
+        profileName,
+        sudo,
+      });
+      for (const warning of target.warnings) {
+        logger.warn(`[log-tools] ${warning}`);
+      }
+
+      const literal = posixPath.join(target.path, pattern);
+      const result = await this.executor.execute(
+        sshConfig,
+        `if [ -e ${shellQuote(literal)} ]; then printf '${GLOB_LITERAL}\\n'; else ` +
+          `find ${shellQuote(target.path)} -maxdepth 1 ! -type d ` +
+          `-name ${shellQuote(pattern)} -print0 2>/dev/null; fi`,
+        { sudo, profileName, idempotent: true }
+      );
+
+      if (result.stdout.split('\n').some((line) => line.trim() === GLOB_LITERAL)) {
+        expanded.push(literal);
+        continue;
+      }
+
+      // Скрытые файлы шаблон без точки не называет — как и оболочка
+      const matches = result.stdout
+        .split('\0')
+        .filter((name) => name.length > 0)
+        .filter((name) => pattern.startsWith('.') || !posixPath.basename(name).startsWith('.'))
+        .sort();
+
+      if (matches.length === 0) {
+        throw new Error(
+          result.truncated
+            ? `cannot expand "${path}": the list of matching files was too long to read.`
+            : `no files match "${path}"`
+        );
+      }
+
+      if (result.truncated) {
+        notes.push(`Note: the list of files matching "${path}" was cut off, so it may be incomplete.`);
+      }
+
+      if (matches.length > MAX_GLOB_MATCHES) {
+        notes.push(
+          `Note: "${path}" matched ${matches.length} files, showing the first ${MAX_GLOB_MATCHES}.`
+        );
+      }
+
+      expanded.push(...matches.slice(0, MAX_GLOB_MATCHES));
+    }
+
+    return { paths: expanded, notes };
+  }
+
+  /** Пометки о раскрытии шаблона идут под ответом, а не вместо него */
+  private withGlobNotes(text: string, notes: string[]): string {
+    return notes.length > 0 ? `${text}\n\n${notes.join('\n')}` : text;
+  }
+
   /**
    * Путь журнала для команды.
    *

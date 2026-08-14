@@ -267,6 +267,67 @@ if (unavailable && LAB_REQUIRED) {
           expect(answer).toContain('tag-batch');
           expect(await markerState('batch')).toBe('NO');
         });
+
+        /**
+         * Шаблон обязан назвать файлы и при этом остаться шаблоном: раскрытие
+         * идёт `find`-ом по имени, поэтому подстановка команды в соседнем имени
+         * не должна исполниться заодно со звёздочкой.
+         */
+        describe('шаблон имени', () => {
+          const globDir = `${openDir}/glob`;
+          /** Имя без слэшей: со слэшем это был бы путь, а не имя файла */
+          const spawned = `glob-spawned-${server.port}`;
+          const trickyName = `$(touch ${spawned}).log`;
+
+          beforeAll(async () => {
+            await asRoot(
+              `rm -rf ${globDir} && mkdir -p ${globDir} && ` +
+                `printf 'alpha tag-one\\n' > ${globDir}/one.log && ` +
+                `printf 'beta tag-two\\n' > ${globDir}/two.log && ` +
+                `printf 'gamma tag-three\\n' > '${globDir}/${trickyName}' && ` +
+                `printf 'delta tag-four\\n' > ${globDir}/notes.txt && ` +
+                `chown -R deploy ${globDir} && rm -f ${globDir}/${spawned} /home/deploy/${spawned}`
+            );
+          });
+
+          it('находит все журналы, названные шаблоном, и только их', async () => {
+            const answer = await search({
+              profile: server.name,
+              path: `${globDir}/*.log`,
+              query: 'tag-',
+            });
+
+            expect(answer).toContain('tag-one');
+            expect(answer).toContain('tag-two');
+            expect(answer).toContain('tag-three');
+            expect(answer).not.toContain('tag-four');
+          });
+
+          it('подстановка команды в соседнем имени не выполняется при раскрытии', async () => {
+            const answer = await search({
+              profile: server.name,
+              path: `${globDir}/*.log`,
+              query: 'tag-',
+            });
+
+            // Имя доехало целиком — значит его разбирали как имя, а не как команду
+            expect(answer).toContain('$(touch ');
+            const spawnedFiles = await asRoot(
+              `ls ${globDir}/${spawned} /home/deploy/${spawned} 2>/dev/null; echo END`
+            );
+            expect(spawnedFiles.trim()).toBe('END');
+          });
+
+          it('шаблон без совпадений называет себя, а не отвечает словами утилиты', async () => {
+            const answer = await search({
+              profile: server.name,
+              path: `${globDir}/*.journal`,
+              query: 'tag-',
+            });
+
+            expect(answer).toContain('no files match');
+          });
+        });
       });
     });
   }

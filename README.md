@@ -434,9 +434,20 @@ ssh_log_search({
 })
 ```
 
-**Known limitation:** a glob pattern (`/var/log/nginx/*.log`) is not expanded — the path
-travels to the server quoted, so the shell leaves the `*` alone and `grep` answers "No such
-file or directory". List the files instead. Tracked as `TD-17`.
+```typescript
+// A glob pattern in the file name: the matching logs are read one by one
+ssh_log_search({
+  profile: "production",
+  path: "/var/log/nginx/*.log",
+  query: "error"
+})
+```
+
+**About glob patterns:** the pattern is expanded by the server's `find`, not by its shell,
+so a name with a space, `$(…)` or a newline stays a name. It is supported in the file name
+only — `/var/*/app.log` is refused — and at most 50 matching files are read, with a note in
+the answer when there were more. A path that exists under its own name (`a[1].log`) is read
+as itself.
 
 ### ssh_snapshot - System Health Check
 
@@ -905,11 +916,11 @@ src/
       printing an empty reading as a fact
 - ✅ A timeout is answered in the time it names, and `ssh_log_search` has a limit
       (`maxMatches`) with an honest note when the output was cut
+- ✅ Glob patterns work in `ssh_log_tail` and `ssh_log_search`: expanded by name on the
+      server, so odd file names stay names
 
 ### Future (Planned)
 - 📋 Recursive sudo upload (one-shot, without staging workaround)
-- 📋 Glob patterns in `ssh_log_tail` / `ssh_log_search` (promised by the schema, not
-      expanded today — see `docs/tech-debt/glob-path-not-expanded_17.md`)
 - 📋 Extended snapshot (custom checks)
 - 📋 Connection metrics dashboard
 

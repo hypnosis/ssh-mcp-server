@@ -65,6 +65,14 @@ function quotedPaths(command: string): string[] {
   return [...command.matchAll(/'([^']*)'/g)].map((match) => match[1]);
 }
 
+/** Шаблон имени так, как его понимает `find -name`: `*`, `?` и класс символов */
+function globExpression(pattern: string): RegExp {
+  const body = pattern.replace(/[.+^${}()|\\]/g, '\\$&').replace(/[*?]/g, (char) =>
+    char === '*' ? '.*' : '.'
+  );
+  return new RegExp(`^${body}$`);
+}
+
 /**
  * Ответ сервера на команду.
  *
@@ -77,6 +85,22 @@ function answer(command: string): SSHExecuteResult {
 
   // Куда ведёт путь: сервер без readlink отвечает «выяснить нечем»
   if (command.startsWith('p=')) return ok('SSH_MCP_PATH_UNRESOLVED\n');
+
+  // Раскрытие шаблона: существующее имя закрывает вопрос, иначе отвечает find.
+  // Скрытые файлы find отдаёт наравне с остальными — отбор по точке не его дело
+  if (command.startsWith('if [ -e ')) {
+    const literal = /^if \[ -e '([^']*)'/.exec(command)?.[1] ?? '';
+    const directory = /find '([^']*)'/.exec(command)?.[1] ?? '';
+    const pattern = /-name '([^']*)'/.exec(command)?.[1] ?? '';
+    if (logs.has(literal)) return ok('SSH_MCP_GLOB_LITERAL\n');
+
+    const matched = [...logs.keys()].filter(
+      (path) =>
+        path.slice(0, path.lastIndexOf('/')) === directory &&
+        globExpression(pattern).test(path.slice(path.lastIndexOf('/') + 1))
+    );
+    return ok(matched.map((path) => `${path}\0`).join(''));
+  }
 
   if (command.startsWith('tail ')) {
     const match = /^tail -n (\S+) /.exec(command);
@@ -660,5 +684,113 @@ describe('раскрытие пути и правила профиля', () => {
     profile.config = { ...profile.config, pathSecurity: { deniedPaths: ['/var/log'] } };
     expect(await tail({ path: '/var/log/syslog' })).toMatch(/^Error: /);
     expect(commandFor(/^tail /)).toBeUndefined();
+  });
+});
+
+describe('шаблон имени', () => {
+  beforeEach(() => {
+    logs.set('/var/log/app.log', ['started', 'ERROR boom']);
+    logs.set('/var/log/db.log', ['ready', 'ERROR lost']);
+    logs.set('/var/log/.hidden.log', ['ERROR secret']);
+    logs.set('/var/log/notes.txt', ['ERROR wrong file']);
+  });
+
+  it('поиск читает каждый совпавший журнал под его собственным именем', async () => {
+    const output = await search({ path: '/var/log/*.log', query: 'ERROR' });
+
+    expect(commandFor(/'\/var\/log\/app\.log'/)![0]).toBe(
+      "grep -E -i -n -m 201 'ERROR' '/var/log/app.log'"
+    );
+    expect(commandFor(/'\/var\/log\/db\.log'/)![0]).toBe(
+      "grep -E -i -n -m 201 'ERROR' '/var/log/db.log'"
+    );
+    expect(output).toContain('/var/log/app.log');
+    expect(output).toContain('/var/log/db.log');
+    expect(output).not.toContain('notes.txt');
+  });
+
+  it('хвост раскрывает шаблон тем же способом', async () => {
+    const output = await tail({ path: '/var/log/*.log', lines: 1 });
+
+    expect(commandFor(/^tail -n 1 '\/var\/log\/app\.log'/)).toBeDefined();
+    expect(commandFor(/^tail -n 1 '\/var\/log\/db\.log'/)).toBeDefined();
+    expect(output).toContain('ERROR boom');
+    expect(output).toContain('ERROR lost');
+  });
+
+  it('скрытый журнал шаблон без точки не называет, а шаблон с точкой — называет', async () => {
+    expect(await search({ path: '/var/log/*.log', query: 'ERROR' })).not.toContain('.hidden.log');
+    expect(await search({ path: '/var/log/.*.log', query: 'ERROR' })).toContain('ERROR secret');
+  });
+
+  it('существующее имя со знаком шаблона читается буквально', async () => {
+    logs.set('/var/log/a[1].log', ['ERROR bracket']);
+
+    expect(await tail({ path: '/var/log/a[1].log', lines: 1 })).toBe('ERROR bracket\n');
+    expect(commandFor(/^tail /)![0]).toBe("tail -n 1 '/var/log/a[1].log'");
+  });
+
+  it('шаблон в каталоге — отказ до первой команды чтения', async () => {
+    expect(await search({ path: '/var/*/app.log', query: 'ERROR' })).toBe(
+      'Error: cannot expand "/var/*/app.log": a pattern is supported in the file name, not in the directory.'
+    );
+    expect(commandFor(/^grep /)).toBeUndefined();
+    expect(commandFor(/^if \[ -e /)).toBeUndefined();
+  });
+
+  it('шаблон без совпадений называет себя, а не отвечает словами утилиты', async () => {
+    expect(await search({ path: '/var/log/*.journal', query: 'ERROR' })).toBe(
+      'Error: no files match "/var/log/*.journal"'
+    );
+    expect(await tail({ path: '/var/log/*.journal' })).toBe(
+      'Error: no files match "/var/log/*.journal"'
+    );
+  });
+
+  it('совпавших больше предела — берём первые пятьдесят и говорим об этом', async () => {
+    for (let index = 1; index <= 60; index++) {
+      logs.set(`/var/log/many/f${index}.log`, [`ERROR ${index}`]);
+    }
+
+    const output = await search({ path: '/var/log/many/*.log', query: 'ERROR' });
+
+    expect(output).toContain('Search in 50 logs');
+    expect(output).toContain('Note: "/var/log/many/*.log" matched 60 files, showing the first 50.');
+  });
+
+  it('обрезанный список совпадений не выдаётся за полный', async () => {
+    overrides.push([/^if \[ -e /, { stdout: '/var/log/app.log\0', truncated: true }]);
+
+    const output = await search({ path: '/var/log/*.log', query: 'ERROR' });
+
+    expect(output).toContain('ERROR boom');
+    expect(output).toContain(
+      'Note: the list of files matching "/var/log/*.log" was cut off, so it may be incomplete.'
+    );
+  });
+
+  it('обрезка, не оставившая ни одного имени, — не «совпадений нет»', async () => {
+    overrides.push([/^if \[ -e /, { stdout: '', truncated: true }]);
+
+    expect(await search({ path: '/var/log/*.log', query: 'ERROR' })).toBe(
+      'Error: cannot expand "/var/log/*.log": the list of matching files was too long to read.'
+    );
+  });
+
+  it('шаблон раскрывается под теми же правами и тем же профилем', async () => {
+    await search({ path: '/var/log/*.log', query: 'ERROR', profile: 'staging', sudo: true });
+
+    const [command, options] = commandFor(/^if \[ -e /)!;
+    expect(command).toContain("find '/var/log' -maxdepth 1 ! -type d -name '*.log' -print0");
+    expect(options.profileName).toBe('staging');
+    expect(options.sudo).toBe(true);
+  });
+
+  it('каталог шаблона судят правила профиля, а не только найденные имена', async () => {
+    profile.config = { ...profile.config, pathSecurity: { deniedPaths: ['/var/log'] } };
+
+    expect(await search({ path: '/var/log/*.log', query: 'ERROR' })).toMatch(/^Error: /);
+    expect(commandFor(/^if \[ -e /)).toBeUndefined();
+    expect(commandFor(/^grep /)).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-# Transfer (SFTP) Guide
+# Transfer Guide
 
 Binary-safe file and directory transfer for SSH MCP Server, available since **v1.3.0**.
 
@@ -7,7 +7,9 @@ Two tools:
 - `ssh_upload` — local → remote
 - `ssh_download` — remote → local
 
-Both ride on the same SSH connection pool used by `ssh_exec` / `ssh_file_*` (no extra TCP/TLS handshakes), and both default to **atomic** rename + **sha256** verification.
+Both ride the same shared connection as `ssh_exec` / `ssh_file_*` — one multiplexed OpenSSH
+channel per destination, no extra handshake — and both default to **atomic** rename +
+**sha256** verification.
 
 ---
 
@@ -20,35 +22,38 @@ The legacy `ssh_file_write` path uses a heredoc (`cat > file <<EOF … EOF`) ove
 3. **No integrity verification.** Network truncation or terminal-layer corruption goes unnoticed — there is no end-to-end checksum.
 4. **Whole-payload memory pressure.** The full file content has to live in the LLM context and in Node's string heap before being shoved through the SSH channel.
 
-`ssh_upload` removes all four limitations by using the **native SFTP** subsystem instead of `cat > file`.
+`ssh_upload` removes all four limitations by shipping the bytes with `scp` over the shared
+connection instead of `cat > file`.
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────┐      ssh2.Client (1 TCP connection per profile)
-│ Connection   │ ───────────────────┬─────────────────────────────
-│ Pool         │                    │
-│ (singleton)  │                    │
-└──────────────┘                    │
-                                    ▼
-                            ┌─────────────────┐
-                            │ command channel │  ssh_exec, ssh_file_* (heredoc)
-                            └─────────────────┘
-                                    │
-                            ┌─────────────────┐
-                            │  SFTP channel   │  ssh_upload / ssh_download
-                            │  client.sftp()  │  (fastPut / fastGet)
-                            └─────────────────┘
+┌──────────────────┐   one control socket per destination + credentials
+│ shared OpenSSH   │ ──────────────┬──────────────────────────────────
+│ master (system   │               │
+│ ssh, ControlMaster)              │
+└──────────────────┘               ▼
+                          ┌─────────────────┐
+                          │  ssh <command>  │  ssh_exec, ssh_file_* (heredoc)
+                          └─────────────────┘
+                                   │
+                          ┌─────────────────┐
+                          │       scp       │  ssh_upload / ssh_download
+                          └─────────────────┘
 ```
 
 Key choices:
 
-- **`ssh2.Client.sftp()`** opens an SFTP subsystem on the **same** connection as the command channel — no second TCP handshake, no second auth round-trip. The pool exposes `getSftp(profileName, sshConfig)` to tools.
-- **`fastPut` / `fastGet`** ship file bytes in 32 KB chunks with a configurable `concurrency` (default 4). The library handles flow-control internally.
+- **`scp` over the shared connection** — the transfer reuses the control socket the commands
+  already use, so there is no second handshake and no second authentication.
+- **Servers without an sftp subsystem** (routers, embedded devices, dropbear) are handled: on
+  client 9.0+ `scp` rides SFTP, which such a server refuses; the transfer falls back to the
+  classic scp protocol once and remembers that destination. A remote path containing a
+  newline is refused on that path — the classic protocol cannot carry it safely.
 - **Atomic rename**: write to a temp file next to the target — for `/etc/nginx/site.conf` that's `/etc/nginx/.upload-<rand>.site.conf` — then rename it onto the final path with `mv -T`, which replaces an existing file but refuses to land inside an existing directory instead of nesting into it. Rename within the same filesystem is atomic by POSIX guarantee. The temp file is co-located with the target on purpose — putting it in `/tmp` would cross filesystems on most servers and trigger `EXDEV`, forcing a non-atomic copy.
-- **sha256 verification**: hash the local file with `crypto.createHash('sha256')` (streamed, constant memory), then run `sha256sum <path>` on the remote (fallback to `openssl dgst -sha256 <path>` if `sha256sum` is missing — common on minimal Alpine images). If neither is present a warning is logged and `verified` returns `false`.
+- **sha256 verification**: hash the local file with `crypto.createHash('sha256')` (streamed, constant memory), then run `sha256sum <path>` on the remote (fallback to `openssl dgst -sha256 <path>` if `sha256sum` is missing — common on minimal Alpine images). If neither is present, the answer says the check could not be made — "nothing to check with" is a success with a note, not a mismatch, and the file stays where it landed.
 - **sudo path**: SFTP under `root` is awkward to enable on hardened servers. Instead the file travels to `/tmp/.ssh-mcp-upload-<rand>` as the SSH user, is copied next to the target with `sudo cp`, gets its `chmod`/`chown` there, and takes the target path by rename. `install` is not used: it copies over the target, destroying the old content before the new one is written, so an interrupted write would leave a truncated file and no intact copy anywhere.
 
 ---
@@ -69,7 +74,8 @@ Key choices:
 | `sudo` | boolean | `false` | Transfer to `/tmp`, copy next to the target under sudo, rename into place |
 | `owner` | string | — | When `sudo=true`: `"user:group"` for `chown` on the temp path |
 | `overwrite` | boolean | `true` | Allow overwriting an existing remote file |
-| `concurrency` | number | `4` | Parallel SFTP chunk concurrency for `fastPut` |
+| `concurrency` | number | — | Deprecated and ignored: `scp` has no chunk concurrency to tune |
+| `timeout` | number | — | Give up after this many milliseconds; covers verification, `chmod -R` and cleanup. No limit by default |
 
 Returns a text block summarizing: `remote_path`, `bytes`, `sha256` (if verified), `atomic`, `sudo`. For directories, also `files_uploaded`.
 
@@ -82,7 +88,8 @@ Returns a text block summarizing: `remote_path`, `bytes`, `sha256` (if verified)
 | `local_path` | string | **required** | Local destination path |
 | `recursive` | boolean | auto | Force directory mode. Auto-detected via remote `test -d` |
 | `verify` | boolean | `true` | Compare local and remote sha256 after download |
-| `concurrency` | number | `4` | Parallel SFTP chunk concurrency for `fastGet` |
+| `concurrency` | number | — | Deprecated and ignored: `scp` has no chunk concurrency to tune |
+| `timeout` | number | — | Give up after this many milliseconds. No limit by default |
 
 Returns a text block with `bytes` (or file count for directories).
 
@@ -101,7 +108,7 @@ ssh_upload({
 })
 ```
 
-Flow: local sha256 → SFTP `fastPut` to `/srv/releases/.upload-<rand>.app-2026-05.tar.gz` → remote sha256 → compare → `mv -T` onto the target → `chmod 644`.
+Flow: local sha256 → `scp` to `/srv/releases/.upload-<rand>.app-2026-05.tar.gz` → remote sha256 → compare → `mv -T` onto the target → `chmod 644`.
 
 ### Directory tree (recursive)
 
@@ -110,8 +117,7 @@ ssh_upload({
   profile: "production",
   local_path: "./dist",
   remote_path: "/var/www/app/current",
-  mode: "755",
-  concurrency: 8
+  mode: "755"
 })
 ```
 
@@ -142,7 +148,7 @@ ssh_download({
 })
 ```
 
-Flow: SFTP `fastGet` → local sha256 → compare against remote sha256 → done.
+Flow: `scp` into a temp file next to the target → local sha256 → compare against remote sha256 → rename into place.
 
 ---
 
@@ -169,7 +175,7 @@ ssh_exec({
 });
 ```
 
-A native one-shot recursive-sudo path is on the v1.4 roadmap.
+A native one-shot recursive-sudo path is still not implemented.
 
 ### sha256 tool fallback
 
@@ -179,16 +185,29 @@ The remote command first tries `sha256sum`. If absent (rare — most distros shi
 
 `mv` is atomic only when source and target share a mount point. Putting the temp file in `/tmp` while the target lives on a separate volume would trigger an `EXDEV` cross-device link error and silently degrade to a copy + delete (not atomic). For this reason the temp path is always created **next to** the target, e.g. `/srv/releases/.upload-<rand>.app.tar.gz`. If the target's parent directory is read-only for the SSH user, the upload fails fast — that's intentional.
 
-### Symlinks are ignored on recursive upload
+### Symlinks travel as copies, and a broken one stops the upload
 
-The local walker (`walkLocalDir`) only follows directories and reads regular files. Symlinks are skipped — they are neither dereferenced nor recreated as links on the remote. If you need symlink fidelity, `tar -czf` the tree locally and `ssh_upload` the tarball, then unpack with `ssh_exec`. Native symlink support may be added in a follow-up.
+The tree is counted the way `scp -r` will carry it: a link to a file is a file, a link to a
+directory is entered, and both arrive as copies — links are not recreated as links on the
+server. A broken link or a loop is refused **before** the transfer starts, with the offending
+path named; `scp` would notice it too, but halfway through, with part of the tree already on
+the server. If you need symlink fidelity, `tar -czf` the tree locally, upload the tarball and
+unpack it with `ssh_exec`.
 
 ### File-size guidance
 
 - ≤ 256 KB and text-only: `ssh_file_write` legacy path is fine (and slightly faster — no second sha256 round-trip).
-- 256 KB to ~1 MB and text: `ssh_file_write` with `atomic: true, verify: true` (auto-routes to SFTP).
+- 256 KB to ~1 MB and text: `ssh_file_write` with `verify: true` (the write is always atomic).
 - Anything binary, or > 1 MB: `ssh_upload`. It streams and never loads the file into the LLM context.
 
-### Concurrency
+### Concurrency is no longer a knob
 
-`concurrency` controls the number of in-flight chunks **per file** for `fastPut`/`fastGet`. The default of 4 is a good trade-off for typical home-uplink → cloud-server scenarios. Bump to 8–16 for high-bandwidth fat pipes; drop to 1 if the server has tight per-connection bandwidth caps. For directory uploads, file-level parallelism uses the same value, so the worst-case in-flight chunk count is `concurrency × concurrency` — keep that in mind when tuning.
+`concurrency` is accepted and ignored: `scp` has no per-file chunk parallelism to tune. The
+parameter stays in the schema so existing calls keep working. Hashing a tree still runs
+through a pool of 16 readers — that one is internal and not configurable.
+
+### An error names the path you asked for
+
+The data travels through a temp name next to the target, but a failure reports the path you
+passed (`/etc/nginx/site.conf`), not `/etc/nginx/.upload-<rand>.site.conf`. The exception is
+a leftover backup copy: its real address is printed, because removing it is up to you.

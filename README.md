@@ -7,7 +7,7 @@
 
 **GitHub:** [@hypnosis](https://github.com/hypnosis) | **License:** MIT | **npm:** [@hypnosis/ssh-mcp-server](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server)
 
-> **⚠️ IMPORTANT for binaries and large files:** use `ssh_upload` / `ssh_download` (SFTP, binary-safe, sha256 verify, atomic rename) — **NOT** base64-chunks through `ssh_exec` or `ssh_file_write` heredoc. Heredoc-based writes corrupt binaries and have no atomic / integrity guarantees. See [Transfer tools](#-transfer-tools-v130) and [docs/transfer.md](docs/transfer.md).
+> **⚠️ IMPORTANT for binaries and large files:** use `ssh_upload` / `ssh_download` (binary-safe, sha256 verify, atomic rename) — **NOT** base64-chunks through `ssh_exec` or `ssh_file_write` heredoc. Heredoc-based writes corrupt binaries and have no atomic / integrity guarantees. See [Transfer tools](#-transfer-tools-v130) and [docs/transfer.md](docs/transfer.md).
 
 ## ✨ Features
 
@@ -23,7 +23,7 @@
 7. **ssh_snapshot** - Instant system health check
 8. **ssh_monitor** - Monitor connections, reload profiles, test connections, close a shared connection
 
-**Transfer — SFTP (2, v1.3.0+):**
+**Transfer — binary-safe (2, v1.3.0+):**
 9. **ssh_upload** - Binary-safe file/directory upload (sha256 verify, atomic rename)
 10. **ssh_download** - Binary-safe file/directory download (sha256 verify)
 
@@ -304,7 +304,7 @@ ssh_file_write({
 |------|---------|--------------|
 | `verify` | `false` | Compute local sha256, compare against remote `sha256sum` (fallback `openssl dgst -sha256`) after write |
 | `atomic` | `true` (ignored) | Always on: writes to `.upload-<rand>.<name>` next to the target, then `mv -T` into place |
-| `binary` | `false` | `content` is base64; decoded and uploaded via SFTP. Use this for non-text payloads |
+| `binary` | `false` | `content` is base64; decoded and sent through the transfer runner. Use this for non-text payloads |
 
 ```typescript
 // Verified atomic config write (text)
@@ -427,12 +427,16 @@ ssh_log_search({
 ssh_log_search({
   profile: "production",
   path: [
-    "/var/log/nginx/*.log",
+    "/var/log/nginx/error.log",
     "/var/log/syslog"
   ],
   query: "500|502|503"
 })
 ```
+
+**Known limitation:** a glob pattern (`/var/log/nginx/*.log`) is not expanded — the path
+travels to the server quoted, so the shell leaves the `*` alone and `grep` answers "No such
+file or directory". List the files instead. Tracked as `TD-17`.
 
 ### ssh_snapshot - System Health Check
 
@@ -445,10 +449,13 @@ ssh_snapshot({
 // Returns:
 // - Hostname, uptime
 // - Service status (nginx, docker, postgresql, etc)
-// - Resources (CPU, Memory, Disk)
+// - Resources (CPU, Memory, Disk — one row per device, root included even on overlay)
 // - Docker containers (if available)
-// - Open ports and connections
+// - Open ports and connections (IPv4 and IPv6 alike)
 // - Recent errors from logs
+//
+// Anything the server could not answer says NOT CHECKED instead of showing as a zero:
+// no systemctl, no ss/netstat, no readable syslog, a reading that never came back.
 ```
 
 ### ssh_monitor - Monitoring & Diagnostics
@@ -502,8 +509,8 @@ Every upload writes to a hidden temp file next to the target and renames it into
 
 **File-size guidance:**
 - ≤ 256 KB, text only → `ssh_file_write` (legacy heredoc, slightly faster — no second sha256 round-trip)
-- 256 KB – 1 MB, text → `ssh_file_write` with `atomic: true, verify: true` (auto-routes to SFTP)
-- Anything binary, or > 1 MB → `ssh_upload` (streams chunks, never loads file into LLM context)
+- 256 KB – 1 MB, text → `ssh_file_write` with `verify: true` (the write is always atomic)
+- Anything binary, or > 1 MB → `ssh_upload` (streams, never loads the file into LLM context)
 
 For full API and architecture see [docs/transfer.md](docs/transfer.md).
 
@@ -832,27 +839,37 @@ npm run dev
 ```
 src/
 ├── index.ts                    # Entry point + routing
+├── runner/                     # The transport: system ssh/scp and everything around them
+│   ├── openssh-runner.ts       # Commands and transfers over the shared connection
+│   ├── ssh-args.ts             # Command line for ssh/scp, control socket path
+│   ├── process.ts              # Child process: timeout, cancellation, output limit
+│   ├── error-classifier.ts     # Which failure this is: auth, host, mux, closed channel
+│   ├── control-sockets.ts      # What is left running on this machine
+│   └── passport.ts             # What the server has: bash, sha256sum, timeout
 ├── managers/
-│   ├── ssh-executor.ts         # SSH commands
-│   └── connection-pool.ts      # Connection pool + getSftp()
+│   ├── ssh-executor.ts         # Builds the command (sudo, cwd) and hands it to the runner
+│   ├── installer.ts            # The only path that puts data onto the target
+│   ├── path-guard.ts           # Tilde expansion + profile path rules
+│   └── remote-verify.ts        # sha256 of what landed on the server
 ├── tools/
 │   ├── exec-tool.ts            # ssh_exec
 │   ├── file-tools.ts           # ssh_file_read/write/list (verify/atomic/binary)
 │   ├── log-tools.ts            # ssh_log_tail/search
 │   ├── snapshot-tool.ts        # ssh_snapshot
 │   ├── monitoring-tool.ts      # ssh_monitor
-│   ├── transfer-tool.ts        # ssh_upload, ssh_download (v1.3.0)
+│   ├── transfer-tool.ts        # ssh_upload, ssh_download
 │   └── audit-tool.ts           # ssh_audit_baseline, ssh_tls_check,
-│                               # ssh_disk_breakdown, ssh_service_status (v1.3.0)
+│                               # ssh_disk_breakdown, ssh_service_status
 └── utils/
     ├── logger.ts               # Logging
     ├── ssh-config.ts           # SSH configuration
     ├── profile-resolver.ts     # Load profiles
     ├── profiles-file.ts        # Parse profiles
     ├── path-validator.ts       # Path security
-    ├── retry.ts                # Retry logic
-    ├── sha256.ts               # Local + remote sha256 helpers (v1.3.0)
-    └── tmp-name.ts             # Atomic temp / staging path generators (v1.3.0)
+    ├── df-table.ts             # Parsing the df table by name, not by column number
+    ├── output-notes.ts         # Notes about an answer that is not the whole answer
+    ├── sha256.ts               # Local + remote sha256 helpers
+    └── tmp-name.ts             # Atomic temp / staging path generators
 ```
 
 ## 📝 Roadmap
@@ -884,9 +901,15 @@ src/
       per `ControlPersist` window (requires a local OpenSSH client 8.4+)
 - ✅ The sudo path is verified live on both BusyBox and coreutils servers
 - ✅ The system OpenSSH client is the only transport; the bundled ssh2 backend is gone
+- ✅ Answers keep three outcomes apart — done, not done, nothing to check with — instead of
+      printing an empty reading as a fact
+- ✅ A timeout is answered in the time it names, and `ssh_log_search` has a limit
+      (`maxMatches`) with an honest note when the output was cut
 
 ### Future (Planned)
 - 📋 Recursive sudo upload (one-shot, without staging workaround)
+- 📋 Glob patterns in `ssh_log_tail` / `ssh_log_search` (promised by the schema, not
+      expanded today — see `docs/tech-debt/glob-path-not-expanded_17.md`)
 - 📋 Extended snapshot (custom checks)
 - 📋 Connection metrics dashboard
 

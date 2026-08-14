@@ -25,6 +25,7 @@ import {
 } from './passport.js';
 import { runProcess } from './process.js';
 import { shellQuote } from '../utils/shell-arg.js';
+import { hideArtifactNames } from '../utils/tmp-name.js';
 import {
   assertProfileSupported,
   detectRuntime,
@@ -495,7 +496,9 @@ export class OpenSshRunner implements CommandRunner {
       const detail = stderr.trim() || `exit code ${outcome.exitCode}`;
       this.lastError = detail;
       return new SSHRunnerError(
-        `Failed to ${direction} ${direction === 'upload' ? localPath : remotePath}: ${detail}`,
+        hideArtifactNames(
+          `Failed to ${direction} ${direction === 'upload' ? localPath : remotePath}: ${detail}`
+        ),
         { exitCode: outcome.exitCode ?? undefined, stderr }
       );
     }

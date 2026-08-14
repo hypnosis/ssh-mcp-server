@@ -12,6 +12,7 @@ import { type ServerPassport } from '../runner/passport.js';
 import { logger } from '../utils/logger.js';
 import { exitCodeHint } from '../utils/output-notes.js';
 import { shellQuote } from '../utils/shell-arg.js';
+import { hideArtifactNames } from '../utils/tmp-name.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
 /** Дверь к сроку транспорта для инструментов: они берут его здесь, а не в раннере */
@@ -129,8 +130,9 @@ export class SSHExecutor {
       const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
       const shortCommand = command.length > 120 ? `${command.substring(0, 120)}…` : command;
       throw new Error(
-        `Command failed (exit ${result.exitCode}): ${shortCommand} — ${detail}` +
-        exitCodeHint(result.exitCode)
+        hideArtifactNames(
+          `Command failed (exit ${result.exitCode}): ${shortCommand} — ${detail}`
+        ) + exitCodeHint(result.exitCode)
       );
     }
 

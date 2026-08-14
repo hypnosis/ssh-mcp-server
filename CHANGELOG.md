@@ -131,6 +131,19 @@ done, failed, nothing to check with — are now distinct in the answer itself.
   "no matches" indistinguishable from a failed read, and the answer says when it was cut.
   A real journal used to come back as 3736 lines in one answer. Context lines do not count
   against the limit.
+- Answers no longer show the kitchen. An error names the path you asked for instead of the
+  staging name the data travelled through (`/etc/nginx.conf`, not
+  `/etc/.upload-7952b8939bc0.nginx.conf`) — the address of a leftover backup copy is still
+  printed, because that one is really on the server. A missing local file is refused with
+  `local_path does not exist: …` instead of a raw `ENOENT` stack line.
+  `ssh_disk_breakdown` prints titled sections instead of its `__SSH_MCP_DISK_SEP__` markers,
+  and says `not installed` where it used to echo `NO_DOCKER`.
+- `ssh_service_status` tells apart three outcomes. A raw systemctl message no longer stands
+  in the `enabled` field next to `?` in the others: with no systemd on the server all three
+  fields say `NOT CHECKED`, an unknown unit says `no unit by that name`, and a running
+  service reads as before. The restart pause is asked for by the name systemd actually
+  prints (`RestartUSec`), so the field is a value — `on-failure (after 100ms)` — instead of
+  a permanent `(?s)`.
 - Disk, memory and listener readings are no longer taken by column position. The disk
   overview of `ssh_snapshot` picked its rows by device name (`^/dev/`), so the root
   filesystem was missing on every container — where it sits on overlay — and the list
@@ -147,9 +160,9 @@ Acceptance found more than this release fixes. The rest is recorded in
 `docs/tech-debt/` with measurements, and scheduled for v2.1:
 - No answer carries `isError`, so a failure is not machine-distinguishable from content,
   and output printed before a timeout kill is dropped (`TD-03`).
-- Error texts can show the internal staging name instead of the path you asked for, raw
-  Node exceptions (`ENOENT`, `EACCES`) and raw `systemctl` messages in report fields;
-  `ssh_disk_breakdown` leaks its `__SSH_MCP_DISK_SEP__` markers into the answer (`TD-15`).
+- `ssh_log_search` promises a glob pattern in its schema, but the path is quoted before it
+  reaches the server, so `/var/log/*.log` comes back as "No such file or directory"
+  (`TD-17`).
 
 ## [1.3.2] - 2026-06-20
 

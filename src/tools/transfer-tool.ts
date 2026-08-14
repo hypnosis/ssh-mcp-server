@@ -48,6 +48,22 @@ interface UploadDirResult extends UploadFileResult {
 }
 
 /**
+ * Сведения о локальном файле — или отказ на человеческом языке.
+ *
+ * Сырое исключение узла (`ENOENT: no such file or directory, stat '…'`) читается
+ * как поломка инструмента, хотя это обычный ответ: файла по названному пути нет.
+ */
+async function statLocal(path: string) {
+  try {
+    return await stat(path);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') throw new Error(`local_path does not exist: ${path}`);
+    if (error?.code === 'EACCES') throw new Error(`local_path is not readable: ${path}`);
+    throw error;
+  }
+}
+
+/**
  * Дописать к ответу то, что случилось уже после успешной замены.
  *
  * Такие вещи нельзя ни выдавать за ошибку (данные на месте), ни глотать:
@@ -267,7 +283,7 @@ export class TransferTool {
       sudo: !!args.sudo,
     });
 
-    const localStat = await stat(localPath);
+    const localStat = await statLocal(localPath);
     const isDir = args.recursive ?? localStat.isDirectory();
 
     if (isDir && !localStat.isDirectory()) {
@@ -377,7 +393,7 @@ export class TransferTool {
       timeoutMs?: number;
     }
   ): Promise<UploadFileResult> {
-    const localStats = await stat(localPath);
+    const localStats = await statLocal(localPath);
     const localHashPromise = opts.verify ? sha256OfFile(localPath) : null;
 
     if (!opts.overwrite) {

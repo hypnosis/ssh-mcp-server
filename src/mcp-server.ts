@@ -15,6 +15,7 @@ import { logger } from './utils/logger.js';
 import type { ToolResult } from './utils/tool-result.js';
 import { ExecTool } from './tools/exec-tool.js';
 import { FileTools } from './tools/file-tools.js';
+import { JobTools } from './tools/job-tools.js';
 import { LogTools } from './tools/log-tools.js';
 import { SnapshotTool } from './tools/snapshot-tool.js';
 import { MonitoringTool } from './tools/monitoring-tool.js';
@@ -36,6 +37,7 @@ export interface McpServerBundle {
 export function createMcpServer(version: string): McpServerBundle {
   const execTool = new ExecTool();
   const fileTools = new FileTools();
+  const jobTools = new JobTools();
   const logTools = new LogTools();
   const snapshotTool = new SnapshotTool();
   const monitoringTool = new MonitoringTool();
@@ -45,6 +47,7 @@ export function createMcpServer(version: string): McpServerBundle {
   const providers: ToolProvider[] = [
     { tools: [execTool.getTool()], call: (request, signal) => execTool.handleCall(request, signal) },
     { tools: fileTools.getTools(), call: (request, signal) => fileTools.handleCall(request, signal) },
+    { tools: jobTools.getTools(), call: (request, signal) => jobTools.handleCall(request, signal) },
     { tools: logTools.getTools(), call: (request, signal) => logTools.handleCall(request, signal) },
     { tools: [snapshotTool.getTool()], call: (request) => snapshotTool.handleCall(request) },
     { tools: [monitoringTool.getTool()], call: (request) => monitoringTool.handleCall(request) },

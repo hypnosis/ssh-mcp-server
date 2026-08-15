@@ -32,6 +32,13 @@ export interface ServerPassport {
   rsync: boolean;
   /** Есть ли утилита `timeout` для удалённого сторожа */
   remoteTimeout: boolean;
+  /**
+   * Есть ли `setsid` — им отвязывается фоновая задача.
+   *
+   * Без него задача остаётся в сессии ssh и её нельзя снять группой:
+   * pid лидера совпадает с pgid только у отдельной сессии.
+   */
+  setsid: boolean;
   install: boolean;
   /** Что сказал `uname -s` — для диагностики и текстов ошибок */
   os: string;
@@ -63,6 +70,7 @@ export const UNKNOWN_PASSPORT: ServerPassport = Object.freeze({
   coreutils: 'unknown',
   rsync: false,
   remoteTimeout: false,
+  setsid: false,
   install: false,
   os: 'unknown',
   home: '',
@@ -80,12 +88,13 @@ export const UNKNOWN_PASSPORT: ServerPassport = Object.freeze({
  * приходится до конца строки, а не как остальные поля.
  */
 export const PASSPORT_PROBE_COMMAND =
-  `sh -c 'printf "${MARKER} bash=%s sha256=%s coreutils=%s rsync=%s timeout=%s install=%s os=%s home=%s\\n" ` +
+  `sh -c 'printf "${MARKER} bash=%s sha256=%s coreutils=%s rsync=%s timeout=%s setsid=%s install=%s os=%s home=%s\\n" ` +
   `"$(command -v bash >/dev/null 2>&1 && echo 1 || echo 0)" ` +
   `"$(command -v sha256sum >/dev/null 2>&1 && echo sha256sum || { command -v openssl >/dev/null 2>&1 && echo openssl || echo none; })" ` +
   `"$(ls --version >/dev/null 2>&1 && echo coreutils || echo busybox)" ` +
   `"$(command -v rsync >/dev/null 2>&1 && echo 1 || echo 0)" ` +
   `"$(command -v timeout >/dev/null 2>&1 && echo 1 || echo 0)" ` +
+  `"$(command -v setsid >/dev/null 2>&1 && echo 1 || echo 0)" ` +
   `"$(command -v install >/dev/null 2>&1 && echo 1 || echo 0)" ` +
   `"$(uname -s 2>/dev/null || echo unknown)" ` +
   `"$HOME"'`;
@@ -119,6 +128,7 @@ export function parsePassport(stdout: string): ServerPassport {
     coreutils: coreutils === 'coreutils' || coreutils === 'busybox' ? coreutils : 'unknown',
     rsync: isSet('rsync'),
     remoteTimeout: isSet('timeout'),
+    setsid: isSet('setsid'),
     install: isSet('install'),
     os: fields.get('os') || 'unknown',
     // Только абсолютный путь: всё остальное — признак того, что переменной на

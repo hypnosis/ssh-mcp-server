@@ -255,6 +255,33 @@ done, failed, nothing to check with — are now distinct in the answer itself.
   column name, so `free` from procps older than 2014 — which has no such column — reports
   `n/a` rather than its cache size. A listening port is taken after the last colon of the
   address, so an IPv6-only listener (`[::]:4847`) is no longer skipped.
+- A working directory the server cannot enter now stops the call. `cwd` used to be joined
+  as `cd <dir> && <command>`, and `&&` binds only up to the first `;`: everything after it
+  ran in the home directory and the call ended with code 0. `cwd: "/opt/app"` with a typo
+  and `rm -rf ./cache; systemctl restart app` deleted files where nobody asked and reported
+  success. The join is now `cd <dir> || exit 1; <command>` — the command text is left
+  untouched — and a failed `cd` ends every call shape with a non-zero code: single command,
+  `;`-chain, batch, `sudo`, and a detached job (whose `exit_code` is non-zero as well).
+- A refused destructive command is marked as a failure (`isError`). The wording of the
+  refusal is unchanged, but a client that reads the flag rather than the text no longer
+  takes a blocked `rm -rf` for a completed one.
+- A batch of files that failed completely is a failed call. `ssh_file_read` and
+  `ssh_file_write` used to answer `Read 2 files:` over two errors, without the failure flag,
+  because the header counted what was attempted. It now counts what succeeded — `Read 0/2
+  files:` — and zero successes marks the call as failed, exactly as the single-file form
+  already did. A partial result stays a success with ✓/✗ per file.
+- `ssh_job_output` and `ssh_job_kill` tell a missing job from an empty one. A job id from
+  another server (or a typo) used to answer `0 bytes total` and `never recorded a pid`; both
+  now say `no such job on the server`, the same answer `ssh_job_status` already gave.
+- `ssh_audit_baseline` no longer counts services and updates it could not count. `0 running
+  services` and `0 upgradable packages` appeared on servers with no `systemctl`, no `apt`,
+  or a systemd that does not answer. Those sections are now left out and listed in
+  `unavailable` with the reason; a real zero from a working `apt` is still reported as zero.
+- `ssh_snapshot` tells a silent systemd from a server without services. With `systemctl`
+  installed but no systemd running, every probe answered with an error that `|| echo
+  inactive` turned into "stopped", and the report printed `No active services detected`. The
+  snapshot now asks the bus itself first and says `NOT CHECKED: systemd did not answer on
+  this server`; servers without `systemctl` keep their previous wording.
 
 ### Known limitations
 These ship with the release. Each is recorded in `docs/tech-debt/` with measurements.

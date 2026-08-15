@@ -217,6 +217,11 @@ ssh_exec({
 })
 ```
 
+**A working directory the server cannot enter stops the call.** Nothing after the failed
+`cd` runs — not the parts separated by `;`, not the rest of a batch — and the answer comes
+back with a non-zero exit code. A typo in `cwd` can no longer send `rm -rf ./cache` into
+your home directory and call it a success.
+
 **Recursive deletes that would destroy the server are refused, not warned about.**
 
 Nothing is sent to the server when a `rm -r` in the call targets:
@@ -522,7 +527,8 @@ ssh_snapshot({
 // - Recent errors from logs
 //
 // Anything the server could not answer says NOT CHECKED instead of showing as a zero:
-// no systemctl, no ss/netstat, no readable syslog, a reading that never came back.
+// no systemctl, a systemd that does not answer, no ss/netstat, no readable syslog,
+// a reading that never came back.
 ```
 
 ### ssh_monitor - Monitoring & Diagnostics
@@ -687,7 +693,7 @@ Auto red-flag rules:
 - **CRITICAL**: filesystem ≥ 90%, `PermitRootLogin yes`, `PasswordAuthentication yes` on port 22
 - **WARNING**: filesystem 70–90%, exited containers, failed systemd units, reboot pending, > 50 upgradable packages
 - **OK**: filesystem < 70% per mount, everything nominal
-- **NOT CHECKED**: a section whose command produced nothing (no `ss`/`netstat`, no `df` output) is listed in `unavailable` rather than reported as an empty — and therefore healthy-looking — result
+- **NOT CHECKED**: a section whose command could not run — no `ss`/`netstat`, no `df` output, no `systemctl`, a systemd that does not answer, no `apt` — is listed in `unavailable` and left out of the result, rather than reported as an empty — and therefore healthy-looking — one
 
 ```typescript
 ssh_audit_baseline({
@@ -980,7 +986,9 @@ src/
 - ✅ Glob patterns work in `ssh_log_tail` and `ssh_log_search`: expanded by name on the
       server, so odd file names stay names
 - ✅ A failed call is marked as failed (`isError`), and a command killed by its timeout
-      still hands over what it managed to print
+      still hands over what it managed to print. A refused destructive command and a batch
+      where nothing succeeded are failures too — the header counts what worked
+      (`Read 0/2 files`), not what was attempted
 - ✅ MCP SDK 0.6.1 → 1.30: the server answers each client with the protocol revision that
       client asked for, and the audit tools return their result already parsed
       (`structuredContent`) next to the unchanged text

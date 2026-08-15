@@ -146,7 +146,18 @@ describe('ssh_exec: detach', () => {
     // Каталог задачи создаётся с самого начала строки — значит `cd` внутри
     expect(startCommand().startsWith('mkdir -p ')).toBe(true);
     // Команда уезжает закавыченной целиком, поэтому кавычки каталога удвоены
-    expect(startCommand()).toContain(`cd '\\''/srv/app'\\'' && make build`);
+    expect(startCommand()).toContain(`cd '\\''/srv/app'\\'' || exit 1; make build`);
+  });
+
+  /**
+   * Тело задачи с неудавшимся переходом обязано закончиться, не выполнив
+   * ничего: иначе задача отчитывается кодом 0 о работе в чужом каталоге.
+   */
+  it('неудачный переход обрывает всю команду задачи', async () => {
+    await new ExecTool().handleCall(call('echo before; pwd', { cwd: '/srv/app' }));
+
+    expect(startCommand()).toContain(`|| exit 1; echo before; pwd`);
+    expect(startCommand()).not.toContain(`'\\'' && `);
   });
 
   /**

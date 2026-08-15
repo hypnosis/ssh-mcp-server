@@ -18,6 +18,8 @@ import {
   inspectCommand,
 } from '../utils/destructive-command.js';
 import { resolveRemovalTargets } from '../managers/removal-guard.js';
+import { buildStartCommand, createJobId, jobPaths, parseJobStart } from '../utils/job-command.js';
+import { shellQuote } from '../utils/shell-arg.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
 /**
@@ -61,6 +63,34 @@ function checkDangerousCommand(command: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Чего фоновая задача не умеет. Отказ выносится до отправки чего бы то ни было.
+ *
+ * Каждый случай — не строгость ради строгости, а место, где detach отработал бы
+ * молча не так, как ждёт вызывающий.
+ */
+function assertDetachable(args: { sudo?: boolean; interactive?: boolean }, commands: string[]): void {
+  if (args.sudo) {
+    throw new Error(
+      'detach cannot be combined with sudo: a background job has nowhere to take a password from. ' +
+        'Run the command without sudo, or run it without detach and wait for it.'
+    );
+  }
+
+  if (args.interactive) {
+    throw new Error(
+      'detach cannot be combined with interactive: a background job has no terminal to answer from.'
+    );
+  }
+
+  if (commands.length > 1) {
+    throw new Error(
+      `detach starts a single job, got an array of ${commands.length} commands. ` +
+        'Start them one at a time, or join them into one command.'
+    );
+  }
 }
 
 /**
@@ -116,6 +146,15 @@ export class ExecTool {
               `(${DEFAULT_TIMEOUT_MS / 1000} seconds)`,
             default: DEFAULT_TIMEOUT_MS,
           },
+          detach: {
+            type: 'boolean',
+            description:
+              'Start the command as a background job on the server and return its id right away, ' +
+              'instead of waiting for it. The job outlives this call and the timeout above does not ' +
+              'apply to it; follow it with ssh_job_status / ssh_job_output and stop it with ssh_job_kill. ' +
+              'Takes a single command and cannot be combined with sudo. Default: false',
+            default: false,
+          },
         },
         required: ['command'],
       },
@@ -143,7 +182,12 @@ export class ExecTool {
       // `finalCommand.substring is not a function` — из такого текста
       // вызывающий не поймёт, что ошибся формой.
       const commands = requireTextList(args.command, 'command', '"uptime"');
-      
+
+      // Что фоновой задаче не по силам, выясняется без сети и до сторожа: эти
+      // отказы не зависят ни от сервера, ни от текста команды
+      const detach = args.detach === true;
+      if (detach) assertDetachable(args, commands);
+
       // Удаление корня, дома или системного дерева останавливается ДО первой
       // отправки — и весь вызов целиком. Проверять по ходу нельзя: половина
       // батча уехала бы, а состояние сервера стало бы неизвестным.
@@ -159,6 +203,12 @@ export class ExecTool {
         if (warning) {
           warnings.push(`${warning}\nCommand: ${cmd.substring(0, 100)}`);
         }
+      }
+
+      // Запуск задачи идёт после сторожа удаления: снос корня отменяет вызов
+      // целиком, и заводить под него каталог задачи не за чем
+      if (detach) {
+        return await this.startJob(sshConfig, commands[0], args.cwd, warnings);
       }
 
       // Single command - return simple result
@@ -273,6 +323,51 @@ export class ExecTool {
       logger.error('ssh_exec failed:', error);
       return toolFailure(error);
     }
+  }
+
+  /**
+   * Запустить команду фоновой задачей и ответить сразу.
+   *
+   * Состояние задачи остаётся на диске сервера, поэтому ответ содержит только
+   * идентификатор: всё остальное спрашивается инструментами `ssh_job_*` и после
+   * перезапуска нашего процесса тоже.
+   */
+  private async startJob(
+    config: SSHConfig,
+    command: string,
+    cwd: string | undefined,
+    warnings: string[]
+  ): Promise<ToolResult> {
+    const passport = await this.executor.passport(config);
+    const id = createJobId();
+    const { dir } = jobPaths(passport.home, id);
+
+    // Рабочий каталог уходит внутрь задачи: применённый к запуску, он сменил бы
+    // каталог служебных файлов, а сама команда осталась бы там же, где была
+    const jobCommand = cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
+
+    // Отмена вызова сюда не передаётся намеренно: обрыв между стартом задачи и
+    // ответом оставил бы её работать без идентификатора, то есть без снятия
+    const started = await this.executor.executeChecked(
+      config,
+      buildStartCommand(dir, jobCommand, passport.setsid)
+    );
+
+    const pid = parseJobStart(started.stdout);
+    const head = warnings.length > 0 ? `${warnings.join('\n\n')}\n\n` : '';
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `${head}Job ${id} started` +
+            (pid ? ` (pid ${pid}).` : ' (the server did not report a pid).') +
+            `\nCommand: ${jobCommand}` +
+            '\nFollow it with ssh_job_status and ssh_job_output, stop it with ssh_job_kill.',
+        },
+      ],
+    };
   }
 
   /**

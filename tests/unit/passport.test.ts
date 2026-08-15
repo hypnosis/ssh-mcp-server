@@ -35,6 +35,11 @@ describe('проба паспорта', () => {
   it('печатает единственную строку с маркером', () => {
     expect(PASSPORT_PROBE_COMMAND).toContain('SSH_MCP_PASSPORT');
   });
+
+  it('спрашивает про setsid: им отвязывается фоновая задача', () => {
+    expect(PASSPORT_PROBE_COMMAND).toContain('setsid=%s');
+    expect(PASSPORT_PROBE_COMMAND).toContain('command -v setsid');
+  });
 });
 
 describe('parsePassport', () => {
@@ -70,6 +75,17 @@ describe('parsePassport', () => {
     expect(passport.remoteTimeout).toBe(false);
   });
 
+  it('читает наличие setsid', () => {
+    expect(parsePassport(`${COREUTILS_LINE} setsid=1`).setsid).toBe(true);
+    expect(parsePassport(`${COREUTILS_LINE} setsid=0`).setsid).toBe(false);
+  });
+
+  it('ответ без поля setsid читается как «его нет»', () => {
+    // Осторожный путь: без setsid задача не получит своей сессии, и снимать
+    // её придётся по одному процессу, а не группой
+    expect(parsePassport(COREUTILS_LINE).setsid).toBe(false);
+  });
+
   it('находит маркер среди баннера и постороннего вывода', () => {
     const noisy = [
       'Welcome to Ubuntu 22.04.3 LTS',
@@ -95,6 +111,7 @@ describe('parsePassport', () => {
       coreutils: 'unknown',
       rsync: false,
       remoteTimeout: false,
+      setsid: false,
       install: false,
       known: false,
     });

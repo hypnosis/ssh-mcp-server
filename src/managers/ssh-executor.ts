@@ -93,9 +93,14 @@ export class SSHExecutor {
       finalCommand = `sudo ${passport.bash ? 'bash' : 'sh'} -c ${shellQuote(command)}`;
     }
 
-    // Add cd if working directory is specified
+    // Add cd if working directory is specified.
+    //
+    // Неудавшийся переход обрывает всю строку, а не только ближайшую команду:
+    // `&&` связывает лишь до первого `;`, и остаток выполнялся в чужом каталоге
+    // с кодом 0. Выход вместо скобок — команда, оканчивающаяся на `&`, внутри
+    // `{ … ; }` даёт синтаксическую ошибку на BusyBox и dropbear
     if (options.cwd) {
-      finalCommand = `cd ${shellQuote(options.cwd)} && ${finalCommand}`;
+      finalCommand = `cd ${shellQuote(options.cwd)} || exit 1; ${finalCommand}`;
     }
 
     logger.debug(`Executing SSH command: ${finalCommand.substring(0, 100)}...`);

@@ -109,7 +109,18 @@ describe('SSHExecutor: сборка команды', () => {
   it('добавляет переход в рабочий каталог', async () => {
     await new SSHExecutor().execute(CONFIG, 'ls', { cwd: '/srv/app' });
 
-    expect(sentCommand()).toBe(`cd '/srv/app' && ls`);
+    expect(sentCommand()).toBe(`cd '/srv/app' || exit 1; ls`);
+  });
+
+  /**
+   * `&&` связывает только ближайшую команду: всё после `;` выполнялось в чужом
+   * каталоге и заканчивалось кодом 0, то есть успехом.
+   */
+  it('неудачный переход обрывает всю строку, а не только первую команду', async () => {
+    await new SSHExecutor().execute(CONFIG, 'echo before; pwd; echo after', { cwd: '/srv/app' });
+
+    expect(sentCommand()).toBe(`cd '/srv/app' || exit 1; echo before; pwd; echo after`);
+    expect(sentCommand()).not.toContain('&&');
   });
 
   it('при sudo и рабочем каталоге сначала переходит, потом повышает права', async () => {
@@ -117,7 +128,17 @@ describe('SSHExecutor: сборка команды', () => {
 
     await new SSHExecutor().execute(CONFIG, 'ls', { sudo: true, cwd: '/srv/app' });
 
-    expect(lastCommand()).toBe(`cd '/srv/app' && sudo bash -c 'ls'`);
+    expect(lastCommand()).toBe(`cd '/srv/app' || exit 1; sudo bash -c 'ls'`);
+  });
+
+  /**
+   * Команда, оканчивающаяся на `&`, внутри `{ … ; }` даёт синтаксическую ошибку
+   * на BusyBox и dropbear, поэтому текст команды не заворачивается ничем.
+   */
+  it('текст команды переходом не обрамляется', async () => {
+    await new SSHExecutor().execute(CONFIG, 'sleep 1 &', { cwd: '/srv/app' });
+
+    expect(sentCommand()).toBe(`cd '/srv/app' || exit 1; sleep 1 &`);
   });
 
   it('экранирует одинарные кавычки в команде', async () => {

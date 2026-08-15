@@ -216,6 +216,7 @@ describe('ssh_exec: чего detach не умеет', () => {
     const result = await new ExecTool().handleCall(call('rm -rf /'));
 
     expect(result.content[0].text).toContain('⛔ BLOCKED');
+    expect(result.isError).toBe(true);
     expect(executeCheckedMock).not.toHaveBeenCalled();
   });
 
@@ -223,6 +224,7 @@ describe('ssh_exec: чего detach не умеет', () => {
     const result = await new ExecTool().handleCall(call('rm -rf /var/www/data/'));
 
     expect(result.content[0].text).toContain('via symlink');
+    expect(result.isError).toBe(true);
     expect(executeCheckedMock).not.toHaveBeenCalled();
   });
 });

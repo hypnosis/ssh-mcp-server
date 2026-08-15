@@ -209,8 +209,23 @@ export class AuditTool {
       parts.push({ key: 'sshd', cmd: 'sshd -T 2>/dev/null | grep -E "^(port|permitrootlogin|passwordauth|pubkeyauth|usedns)"' });
     }
     if (include.includes('services')) {
-      parts.push({ key: 'failed', cmd: 'systemctl --failed --no-legend --plain 2>/dev/null || true' });
-      parts.push({ key: 'running_count', cmd: 'systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | wc -l' });
+      // Отказ systemd доезжает текстом, а не глушится: без него «служб ноль»
+      // печатается и там, где спросить было некого
+      parts.push({
+        key: 'failed',
+        cmd:
+          'if command -v systemctl >/dev/null 2>&1; then ' +
+          'systemctl --failed --no-legend --plain 2>&1; ' +
+          'else echo NO_SYSTEMCTL; fi',
+      });
+      parts.push({
+        key: 'running_count',
+        cmd:
+          'if ! command -v systemctl >/dev/null 2>&1; then echo NO_SYSTEMCTL; ' +
+          'elif out=$(systemctl list-units --type=service --state=running --no-legend --plain 2>&1); then ' +
+          'printf \'%s\\n\' "$out" | grep -c .; ' +
+          'else printf \'%s\\n\' "$out"; fi',
+      });
     }
     if (include.includes('docker')) {
       parts.push({ key: 'docker_ps', cmd: 'docker ps -a --format "{{.ID}}\\t{{.Image}}\\t{{.Status}}\\t{{.Names}}" 2>/dev/null || echo NO_DOCKER' });
@@ -235,7 +250,13 @@ export class AuditTool {
       });
     }
     if (include.includes('updates')) {
-      parts.push({ key: 'upgradable', cmd: '(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l) || echo 0' });
+      parts.push({
+        key: 'upgradable',
+        cmd:
+          'if command -v apt >/dev/null 2>&1; then ' +
+          'apt list --upgradable 2>/dev/null | tail -n +2 | wc -l; ' +
+          'else echo NO_APT; fi',
+      });
       parts.push({ key: 'reboot_required', cmd: '(test -f /var/run/reboot-required && echo YES) || echo NO' });
     }
 
@@ -327,14 +348,24 @@ export class AuditTool {
     }
 
     if (include.has('services')) {
-      result.services = {
-        failed: (s.get('failed') || '')
-          .split('\n')
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .map((l) => l.split(/\s+/)[0]),
-        running_count: parseInt((s.get('running_count') || '0').trim(), 10) || 0,
-      };
+      // Раздела в ответе нет вовсе, когда его нечем выполнить: ноль в
+      // `running_count` — это утверждение о сервере, а не признание незнания
+      const failedText = (s.get('failed') || '').trim();
+      const runningText = (s.get('running_count') || '').trim();
+      const reason = AuditTool.servicesUnavailable(failedText, runningText);
+
+      if (reason) {
+        unavailable.push(`services (${reason})`);
+      } else {
+        result.services = {
+          failed: failedText
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .map((l) => l.split(/\s+/)[0]),
+          running_count: parseInt(runningText || '0', 10) || 0,
+        };
+      }
     }
 
     if (include.has('firewall')) {
@@ -349,10 +380,16 @@ export class AuditTool {
     }
 
     if (include.has('updates')) {
-      result.updates = {
-        upgradable: parseInt((s.get('upgradable') || '0').trim(), 10) || 0,
-        reboot_required: (s.get('reboot_required') || '').trim() === 'YES',
-      };
+      const upgradableText = (s.get('upgradable') || '').trim();
+
+      if (upgradableText === 'NO_APT') {
+        unavailable.push('updates (no apt on the server)');
+      } else {
+        result.updates = {
+          upgradable: parseInt(upgradableText || '0', 10) || 0,
+          reboot_required: (s.get('reboot_required') || '').trim() === 'YES',
+        };
+      }
     }
 
     if (include.has('ssh')) {
@@ -867,6 +904,23 @@ export class AuditTool {
       `--- status ---\n${out.status_head}\n\n` +
       `--- last ${lines} log lines ---\n${out.recent_log}`;
     return { content: [{ type: 'text', text }] };
+  }
+
+  /**
+   * Чем именно раздел служб выполнить нечем — или ничем, если он выполнился.
+   *
+   * Два разных «нет» не сливаются: двоичного файла нет вовсе и файл есть, но
+   * systemd не отвечает. Пустой ответ причиной не считается — это законный
+   * «ни одна служба не запущена».
+   */
+  private static servicesUnavailable(failed: string, running: string): string | undefined {
+    if (failed === 'NO_SYSTEMCTL' || running === 'NO_SYSTEMCTL') {
+      return 'no systemctl on the server';
+    }
+    if (AuditTool.NO_SYSTEMD.test(failed) || AuditTool.NO_SYSTEMD.test(running)) {
+      return 'systemd did not answer on this server';
+    }
+    return undefined;
   }
 
   /** Ответы, которыми systemd сообщает, что его самого тут нет */

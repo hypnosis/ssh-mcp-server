@@ -172,6 +172,12 @@ describe('Команда снятия', () => {
     expect(command).toContain('reason=nopid');
     expect(command).toContain('reason=gone');
   });
+
+  it('отсутствие каталога задачи объявляется до чтения pid', () => {
+    const command = buildKillCommand(dir);
+    expect(command).toContain('if [ ! -d "$d" ]; then printf \'SSH_MCP_JOB killed=0 reason=missing');
+    expect(command.indexOf('reason=missing')).toBeLessThan(command.indexOf('reason=nopid'));
+  });
 });
 
 describe('Команда чтения вывода', () => {
@@ -190,6 +196,12 @@ describe('Команда чтения вывода', () => {
   it('печатает размер до самого вывода', () => {
     const command = buildOutputCommand(dir, 0);
     expect(command.indexOf('size=%s')).toBeLessThan(command.indexOf('tail -c'));
+  });
+
+  it('отсутствие каталога задачи объявляется до чтения файла', () => {
+    const command = buildOutputCommand(dir, 0);
+    expect(command).toContain('if [ ! -d "$d" ]; then printf \'SSH_MCP_JOB state=missing');
+    expect(command.indexOf('state=missing')).toBeLessThan(command.indexOf('output.log'));
   });
 });
 
@@ -307,15 +319,28 @@ describe('Разбор вывода', () => {
     expect(parseJobOutput('SSH_MCP_JOB size=12\nhello\nworld')).toEqual({
       size: 12,
       text: 'hello\nworld',
+      missing: false,
     });
   });
 
   it('пустой вывод при известном размере', () => {
-    expect(parseJobOutput('SSH_MCP_JOB size=0\n')).toEqual({ size: 0, text: '' });
+    expect(parseJobOutput('SSH_MCP_JOB size=0\n')).toEqual({ size: 0, text: '', missing: false });
   });
 
   it('ответ без маркера отдаёт как есть', () => {
-    expect(parseJobOutput('что-то пошло не так')).toEqual({ size: 0, text: 'что-то пошло не так' });
+    expect(parseJobOutput('что-то пошло не так')).toEqual({
+      size: 0,
+      text: 'что-то пошло не так',
+      missing: false,
+    });
+  });
+
+  it('каталога задачи нет — это не пустой вывод', () => {
+    expect(parseJobOutput('SSH_MCP_JOB state=missing\n')).toEqual({
+      size: 0,
+      text: '',
+      missing: true,
+    });
   });
 });
 

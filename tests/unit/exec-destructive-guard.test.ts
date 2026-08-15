@@ -66,6 +66,7 @@ describe('ssh_exec: врезка защиты от разрушительног�
 
     expect(result.content[0].text).toContain('⛔ BLOCKED');
     expect(result.content[0].text).toContain('NOT executed');
+    expect(result.isError).toBe(true);
     expect(sentCommands()).toEqual([]);
   });
 
@@ -73,6 +74,7 @@ describe('ssh_exec: врезка защиты от разрушительног�
     const result = await new ExecTool().handleCall(call('rm -rf /home/deploy'));
 
     expect(result.content[0].text).toContain('the home directory');
+    expect(result.isError).toBe(true);
     expect(passportMock).toHaveBeenCalled();
     expect(sentCommands()).toEqual([]);
   });
@@ -81,6 +83,7 @@ describe('ssh_exec: врезка защиты от разрушительног�
     const result = await new ExecTool().handleCall(call('rm -rf /var/www/data/'));
 
     expect(result.content[0].text).toContain('via symlink');
+    expect(result.isError).toBe(true);
     // На сервер ушёл только резолв, самого удаления там нет
     expect(sentCommands()).toHaveLength(1);
     expect(sentCommands()[0]).toContain('readlink -f');
@@ -94,9 +97,11 @@ describe('ssh_exec: врезка защиты от разрушительног�
   });
 
   it('безопасная уборка проходит и доезжает до сервера', async () => {
-    await new ExecTool().handleCall(call('rm -rf /tmp/build'));
+    const result = await new ExecTool().handleCall(call('rm -rf /tmp/build'));
 
     expect(sentCommands()).toEqual(['rm -rf /tmp/build']);
+    // Обратная сторона пометки: выполненное удаление провалом не объявляется
+    expect(result.isError).toBeUndefined();
   });
 
   it('маркер подтверждения пропускает команду как есть', async () => {
@@ -110,6 +115,7 @@ describe('ssh_exec: врезка защиты от разрушительног�
     const result = await new ExecTool().handleCall(call(['uptime', 'whoami', 'rm -rf /etc']));
 
     expect(result.content[0].text).toContain('⛔ BLOCKED');
+    expect(result.isError).toBe(true);
     expect(sentCommands()).toEqual([]);
   });
 

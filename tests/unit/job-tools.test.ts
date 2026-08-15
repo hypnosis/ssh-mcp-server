@@ -221,6 +221,22 @@ describe('ssh_job_output', () => {
     // Иначе следующее чтение поехало бы от отрицательной позиции
     expect(text).toContain('Next offset: 5');
   });
+
+  /**
+   * Молчащая задача и выдуманный идентификатор до этого отвечали одинаково —
+   * достаточно было перепутать профиль, чтобы принять одно за другое.
+   */
+  it('несуществующая задача названа несуществующей, а не пустым выводом', async () => {
+    serverAnswers('SSH_MCP_JOB state=missing');
+
+    const result = await new JobTools().handleCall(call('ssh_job_output', { id: JOB_ID }));
+
+    expect(result.content[0].text).toContain('no such job');
+    expect(result.content[0].text).not.toContain('no output at this offset');
+    expect(result.content[0].text).not.toContain('Next offset');
+    // Задачи нет — это ответ, а не сбой инструмента
+    expect(result.isError).toBeUndefined();
+  });
 });
 
 describe('ssh_job_list', () => {
@@ -305,7 +321,21 @@ describe('ssh_job_kill', () => {
   it('задача без записанного pid названа своим случаем', async () => {
     serverAnswers('SSH_MCP_JOB killed=0 reason=nopid');
 
-    expect(await answerOf('ssh_job_kill')).toContain('never recorded a pid');
+    const text = await answerOf('ssh_job_kill');
+
+    expect(text).toContain('never recorded a pid');
+    // Причина не про отсутствие задачи: каталог на месте, pid не записан
+    expect(text).not.toContain('no such job');
+  });
+
+  it('несуществующая задача названа несуществующей, а не задачей без pid', async () => {
+    serverAnswers('SSH_MCP_JOB killed=0 reason=missing');
+
+    const result = await new JobTools().handleCall(call('ssh_job_kill', { id: JOB_ID }));
+
+    expect(result.content[0].text).toContain('no such job');
+    expect(result.content[0].text).not.toContain('never recorded a pid');
+    expect(result.isError).toBeUndefined();
   });
 
   it('молчание сервера не выдаётся за снятие', async () => {

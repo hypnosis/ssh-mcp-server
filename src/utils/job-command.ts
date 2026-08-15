@@ -65,6 +65,8 @@ export interface JobOutput {
   /** Полный размер вывода на сервере: следующее чтение начинается отсюда */
   size: number;
   text: string;
+  /** Каталога задачи нет: это не «вывод пуст», а «спрашивать не о чем» */
+  missing: boolean;
 }
 
 /**
@@ -183,6 +185,7 @@ export function buildOutputCommand(dir: string, offset: number): string {
 
   return (
     `d=${dirQ}; ` +
+    `if [ ! -d "$d" ]; then printf '${MARKER} state=missing\\n'; exit 0; fi; ` +
     `if [ ! -f "$d/output.log" ]; then printf '${MARKER} size=0\\n'; exit 0; fi; ` +
     `printf '${MARKER} size=%s\\n' "$(wc -c < "$d/output.log" 2>/dev/null)"; ` +
     `tail -c +${from} "$d/output.log" 2>/dev/null`
@@ -202,6 +205,7 @@ export function buildKillCommand(dir: string, signal: 'TERM' | 'KILL' = 'TERM'):
 
   return (
     `d=${dirQ}; ` +
+    `if [ ! -d "$d" ]; then printf '${MARKER} killed=0 reason=missing\\n'; exit 0; fi; ` +
     `pid=$(cat "$d/pid" 2>/dev/null); ` +
     `if [ -z "$pid" ]; then printf '${MARKER} killed=0 reason=nopid\\n'; exit 0; fi; ` +
     `if ! kill -0 "$pid" 2>/dev/null; then printf '${MARKER} killed=0 reason=gone\\n'; exit 0; fi; ` +
@@ -334,11 +338,15 @@ export function parseJobOutput(stdout: string): JobOutput {
   const newline = stdout.indexOf('\n');
   const head = newline >= 0 ? stdout.slice(0, newline) : stdout;
 
-  if (!head.includes(MARKER)) return { size: 0, text: stdout };
+  if (!head.includes(MARKER)) return { size: 0, text: stdout, missing: false };
+
+  const fields = fieldsOf(head, MARKER);
+  if (fields.get('state') === 'missing') return { size: 0, text: '', missing: true };
 
   return {
-    size: numberOf(fieldsOf(head, MARKER).get('size')) ?? 0,
+    size: numberOf(fields.get('size')) ?? 0,
     text: newline >= 0 ? stdout.slice(newline + 1) : '',
+    missing: false,
   };
 }
 

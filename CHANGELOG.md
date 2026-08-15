@@ -39,6 +39,29 @@ does not suit the machines you run on, stay on `1.x`.
   Nothing to configure. A remote path containing a newline is refused on that path — the
   classic protocol cannot carry it safely.
 
+### Added — commands that outlive the call (4 new tools)
+- `ssh_exec` takes `detach: true`: the command is started as a job on the server and the
+  answer comes back with its id in under a second. Before this, a command longer than the
+  timeout could not be run at all — the client was killed and the work was neither finished
+  nor reachable. The timeout does not apply to a job.
+- `ssh_job_status`, `ssh_job_output`, `ssh_job_list` and `ssh_job_kill` follow it. State lives
+  on the server (`~/.ssh-mcp/jobs/<id>/`: the command, pid, start time, output and exit code),
+  so restarting this server or watching from another window changes nothing.
+- Three outcomes are kept apart: `running`, `finished` with its exit code, and `lost` — no
+  exit code and no process, which means it was signalled or the machine restarted. `lost` is
+  not dressed up as success or as failure, because it is neither.
+- `ssh_job_output` reads from a byte offset and answers with the offset to continue from, so
+  repeated reads never overlap and never skip. The offset counts what was actually read: an
+  answer cut off at the transport buffer does not jump over the middle of the output.
+- `ssh_job_kill` signals the whole process group, so the children of a job stop with it. A job
+  that is already gone is reported, not refused — it may have finished between two calls.
+- `ssh_job_list` removes the directories of jobs that are no longer running and started more
+  than seven days ago; running jobs are never touched, and removal never leaves `~/.ssh-mcp`.
+- Limits: one command per job (an array is refused), and `detach` cannot be combined with
+  `sudo` — a background job has nowhere to take a password from. The refusal happens before
+  anything is sent. The guard against destructive deletes runs on this path too, before the
+  job directory is created.
+
 ### Changed — a failure now looks like a failure, and says what it managed to do
 - A command killed by its `timeout` no longer loses what it printed. The answer carries the
   output collected until the kill, under a note saying it is only that much. Before, the
@@ -241,7 +264,8 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
   (measured). A long transfer still runs until its `timeout`, set before it starts. File
   transfers and the system snapshot do not take cancellation at all, deliberately: one has
   a window where stopping would leave the target empty, the other would come back with
-  blanks instead of a refusal (`TD-08`).
+  blanks instead of a refusal (`TD-08`). Work that has to be stoppable from outside can be
+  started with `detach: true` and stopped by `ssh_job_kill` — that path knows the pid.
 - **The mount-point check needs a `stat` that speaks the GNU or BusyBox syntax.** On a
   server whose `stat` differs (BSD, macOS), the check does not run and says so; the install
   proceeds, and the rename stays the real guard (`TD-09`).

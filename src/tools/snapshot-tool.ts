@@ -193,7 +193,7 @@ export class SnapshotTool {
    */
   private async getServices(
     config: any,
-      ): Promise<{ checked: boolean; items: Array<{ name: string; status: string; uptime: string | null }> }> {
+      ): Promise<{ checked: boolean; reason?: string; items: Array<{ name: string; status: string; uptime: string | null }> }> {
     const services = ['nginx', 'apache2', 'docker', 'postgresql', 'mysql', 'redis', 'mongodb'];
     const results: Array<{ name: string; status: string; uptime: string | null }> = [];
 
@@ -203,7 +203,17 @@ export class SnapshotTool {
       config,
       'command -v systemctl >/dev/null 2>&1 && echo yes || echo no',
     );
-    if (systemctl !== 'yes') return { checked: false, items: [] };
+    if (systemctl !== 'yes') return { checked: false, reason: 'no systemctl on the server', items: [] };
+
+    // Команда на месте, а шина может молчать. Тогда каждая проверка службы
+    // отвечает ошибкой, `|| echo inactive` превращает её в «остановлена», и
+    // непроверенный сервер печатается как сервер без единой работающей службы.
+    // Проба спрашивает про сам systemd, а не про юнит: ответ «нет такого юнита»
+    // не должен читаться как молчание шины
+    const bus = await this.read(config, 'systemctl show --property=Version 2>&1 || true');
+    if (SnapshotTool.SYSTEMD_SILENT.test(bus)) {
+      return { checked: false, reason: 'systemd did not answer on this server', items: [] };
+    }
 
     for (const service of services) {
       const status = await this.read(
@@ -229,7 +239,11 @@ export class SnapshotTool {
 
     return { checked: true, items: results };
   }
-  
+
+  /** Ответы, которыми systemctl сообщает, что шина systemd ему не отвечает */
+  private static readonly SYSTEMD_SILENT =
+    /has not been booted|Failed to connect to bus|Access denied/i;
+
   /**
    * Get CPU information
    */
@@ -492,7 +506,7 @@ export class SnapshotTool {
     output += 'SERVICES\n';
     output += '─'.repeat(70) + '\n';
     if (!snapshot.services.checked) {
-      output += '  NOT CHECKED: no systemctl on the server\n';
+      output += `  NOT CHECKED: ${snapshot.services.reason}\n`;
     } else if (snapshot.services.items.length > 0) {
       snapshot.services.items.forEach((svc: any) => {
         const mark = svc.status === 'active' ? '✓' : svc.status === 'unknown' ? '?' : '✗';

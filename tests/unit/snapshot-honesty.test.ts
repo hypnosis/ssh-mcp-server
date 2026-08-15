@@ -182,6 +182,62 @@ describe('ssh_snapshot: службы и порты', () => {
     expect(await snapshot()).toMatch(/nginx\s+✓ active/);
   });
 
+  it('systemctl есть, а шина молчит — это не «служб не работает»', async () => {
+    respondWith([
+      [/command -v systemctl/, 'yes'],
+      [
+        /show --property=Version/,
+        'System has not been booted with systemd as init system (PID 1). Can\'t operate.\n' +
+          'Failed to connect to bus: Host is down',
+      ],
+      [/is-active/, 'inactive'],
+    ]);
+
+    const text = await snapshot();
+
+    expect(text).toContain('NOT CHECKED: systemd did not answer on this server');
+    expect(text).not.toContain('No active services detected');
+    expect(text).not.toContain('NOT CHECKED: no systemctl');
+  });
+
+  it('отвечающая шина службы проверять не мешает', async () => {
+    respondWith([
+      [/command -v systemctl/, 'yes'],
+      [/show --property=Version/, 'Version=252'],
+      [/is-active nginx/, 'active'],
+      [/is-active/, 'inactive'],
+    ]);
+
+    const text = await snapshot();
+
+    expect(text).toMatch(/nginx\s+✓ active/);
+    expect(text).not.toContain('NOT CHECKED: systemd did not answer');
+  });
+
+  it.each([
+    "System has not been booted with systemd as init system (PID 1). Can't operate.",
+    'Failed to connect to bus: Host is down',
+    'Access denied',
+  ])('шина молчит ответом «%s»', async (answer) => {
+    respondWith([
+      [/command -v systemctl/, 'yes'],
+      [/show --property=Version/, answer],
+      [/is-active/, 'inactive'],
+    ]);
+
+    expect(await snapshot()).toContain('NOT CHECKED: systemd did not answer on this server');
+  });
+
+  it('проба шины уезжает с перехватом ошибки и нулевым кодом', async () => {
+    respondWith([[/command -v systemctl/, 'yes']]);
+    await snapshot();
+
+    const probe = sentCommand(/show --property=Version/);
+
+    expect(probe).toContain('2>&1');
+    expect(probe).toContain('|| true');
+  });
+
   it('сервер без ss и netstat не объявляется сервером без слушателей', async () => {
     respondWith([[/LISTEN/, 'NO_NET_TOOL']]);
 

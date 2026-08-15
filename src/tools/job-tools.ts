@@ -45,6 +45,32 @@ function startedLine(startedAt: number | undefined): string {
   return `Started: ${new Date(startedAt * 1000).toISOString()} (unix ${startedAt})`;
 }
 
+/**
+ * Ответ снятия задачи.
+ *
+ * Нечего снимать — это ответ, а не отказ: задача могла закончиться сама между
+ * вызовом состояния и снятием. Исходы не сливаются: задачи нет вовсе, задача
+ * есть и уже кончилась, задача есть и не назвала pid.
+ */
+function describeKill(
+  id: string,
+  which: string,
+  killed: { killed: boolean; reason?: string }
+): string {
+  if (killed.killed) return `Job ${id}: ${which} sent to its process group.`;
+
+  switch (killed.reason) {
+    case 'missing':
+      return `Job ${id}: ${STATE_NOTE.missing}`;
+    case 'gone':
+      return `Job ${id} is already gone — nothing to stop.`;
+    case 'nopid':
+      return `Job ${id} never recorded a pid — there is nothing to signal.`;
+    default:
+      return `Job ${id}: the server did not answer the stop request (${killed.reason ?? 'no reason given'}).`;
+  }
+}
+
 export class JobTools {
   private executor: SSHExecutor;
 
@@ -206,6 +232,13 @@ export class JobTools {
     });
 
     const output = parseJobOutput(result.stdout);
+
+    // Задачи нет — это ответ, а не пустой вывод: молчащая задача и выдуманный
+    // идентификатор иначе выглядят одинаково
+    if (output.missing) {
+      return { content: [{ type: 'text', text: `Job ${id}: ${STATE_NOTE.missing}` }] };
+    }
+
     const read = Buffer.byteLength(output.text, 'utf8');
 
     // Курсор двигается на прочитанное, а не на размер файла: обрезанный буфером
@@ -271,18 +304,9 @@ export class JobTools {
     const which = args.signal === 'KILL' ? 'KILL' : 'TERM';
 
     const result = await this.executor.execute(config, buildKillCommand(dir, which), { signal });
-    const killed = parseJobKill(result.stdout);
 
-    // Нечего снимать — это ответ, а не отказ: задача могла закончиться сама
-    // между вызовом состояния и снятием
-    const text = killed.killed
-      ? `Job ${id}: ${which} sent to its process group.`
-      : killed.reason === 'gone'
-        ? `Job ${id} is already gone — nothing to stop.`
-        : killed.reason === 'nopid'
-          ? `Job ${id} never recorded a pid — there is nothing to signal.`
-          : `Job ${id}: the server did not answer the stop request (${killed.reason ?? 'no reason given'}).`;
-
-    return { content: [{ type: 'text', text }] };
+    return {
+      content: [{ type: 'text', text: describeKill(id, which, parseJobKill(result.stdout)) }],
+    };
   }
 }

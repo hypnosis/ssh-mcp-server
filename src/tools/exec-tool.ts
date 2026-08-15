@@ -193,7 +193,9 @@ export class ExecTool {
       // батча уехала бы, а состояние сервера стало бы неизвестным.
       const refusal = await this.refuseDestructive(commands, sshConfig, args.sudo);
       if (refusal) {
-        return { content: [{ type: 'text', text: refusal }] };
+        // Отказ помечается флагом наравне с прочими: читающий признак, а не
+        // текст, иначе счёл бы несостоявшийся снос выполненным
+        return { content: [{ type: 'text', text: refusal }], isError: true };
       }
 
       // Check for dangerous commands

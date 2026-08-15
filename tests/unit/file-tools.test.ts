@@ -520,7 +520,7 @@ describe('ssh_file_read: пачка файлов', () => {
   it('сводка печатается целиком: заголовок, размеры и разделитель', async () => {
     expect(await read({ path: ['/etc/hosts', '/etc/motd'] })).toBe(
       [
-        'Read 2 files:',
+        'Read 2/2 files:',
         '',
         '✓ /etc/hosts (20 bytes)',
         '─'.repeat(60),
@@ -545,7 +545,7 @@ describe('ssh_file_read: пачка файлов', () => {
   it('нечитаемый файл помечен крестом, а остальные читаются', async () => {
     expect(await read({ path: ['/etc/missing.conf', '/etc/motd'] })).toBe(
       [
-        'Read 2 files:',
+        'Read 1/2 files:',
         '',
         '✗ /etc/missing.conf',
         '  Error: cat: /etc/missing.conf: No such file or directory',
@@ -616,6 +616,30 @@ describe('ssh_file_read: пачка файлов', () => {
     const text = await read({ path: ['/etc/hosts', '~stranger/notes.txt'] });
     expect(text).toMatch(/^Error: /);
     expect(commandFor(/^cat /)).toBeUndefined();
+  });
+
+  it('ни один файл не прочитан — вызов помечен провалом', async () => {
+    const response = await responseOf(
+      call('ssh_file_read', { path: ['/etc/missing1.conf', '/etc/missing2.conf'] })
+    );
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toContain('Read 0/2 files:');
+  });
+
+  it('частичный исход провалом не объявляется: часть файлов прочитана', async () => {
+    const response = await responseOf(
+      call('ssh_file_read', { path: ['/etc/hosts', '/etc/missing2.conf'] })
+    );
+
+    expect(response.isError).toBeUndefined();
+    expect(response.content[0].text).toContain('Read 1/2 files:');
+  });
+
+  it('удачная пачка пометки не получает', async () => {
+    const response = await responseOf(call('ssh_file_read', { path: ['/etc/hosts', '/etc/motd'] }));
+
+    expect(response.isError).toBeUndefined();
   });
 });
 
@@ -712,7 +736,9 @@ describe('ssh_file_write: пачка файлов', () => {
         ],
       })
     ).toBe(
-      ['Write 2 files:', '', '✓ /etc/app.conf (10 bytes)', '✓ /srv/app.js (6 bytes)', ''].join('\n')
+      ['Write 2/2 files:', '', '✓ /etc/app.conf (10 bytes)', '✓ /srv/app.js (6 bytes)', ''].join(
+        '\n'
+      )
     );
   });
 
@@ -734,7 +760,7 @@ describe('ssh_file_write: пачка файлов', () => {
         { path: '/srv/app.js', content: 'run();' },
       ],
     });
-    expect(text).toMatch(/^Write 2 files:/);
+    expect(text).toMatch(/^Write 1\/2 files:/);
     expect(text).toContain('✗ /etc/app.conf\n  Error:');
     expect(text).toContain('✓ /srv/app.js (6 bytes)');
     expect(server.has('/srv/app.js')).toBe(true);
@@ -760,6 +786,49 @@ describe('ssh_file_write: пачка файлов', () => {
     expect(text).toMatch(/^Error: /);
     expect(commandFor(/^cat > /)).toBeUndefined();
     expect(server.has('/srv/app.js')).toBe(false);
+  });
+
+  it('ни один файл не записан — вызов помечен провалом', async () => {
+    overrides = [[/^cat > /, { exitCode: 1, stderr: 'Permission denied' }]];
+    const response = await responseOf(
+      call('ssh_file_write', {
+        files: [
+          { path: '/etc/app.conf', content: 'key=value\n' },
+          { path: '/srv/app.js', content: 'run();' },
+        ],
+      })
+    );
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toContain('Write 0/2 files:');
+  });
+
+  it('частичный исход провалом не объявляется: часть файлов записана', async () => {
+    overrides = [[/^cat > .*app\.conf/, { exitCode: 1, stderr: 'Permission denied' }]];
+    const response = await responseOf(
+      call('ssh_file_write', {
+        files: [
+          { path: '/etc/app.conf', content: 'key=value\n' },
+          { path: '/srv/app.js', content: 'run();' },
+        ],
+      })
+    );
+
+    expect(response.isError).toBeUndefined();
+    expect(response.content[0].text).toContain('Write 1/2 files:');
+  });
+
+  it('удачная пачка пометки не получает', async () => {
+    const response = await responseOf(
+      call('ssh_file_write', {
+        files: [
+          { path: '/etc/app.conf', content: 'key=value\n' },
+          { path: '/srv/app.js', content: 'run();' },
+        ],
+      })
+    );
+
+    expect(response.isError).toBeUndefined();
   });
 });
 

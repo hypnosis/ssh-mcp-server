@@ -426,8 +426,57 @@ describe('ssh_audit_baseline: службы и обновления', () => {
     expect(structure(await baseline({ running_count: '42' })).services.running_count).toBe(42);
   });
 
-  it('нечитаемый счётчик становится нулём', async () => {
-    expect(structure(await baseline({ running_count: 'wc: not found' })).services.running_count).toBe(0);
+  it('сорванный счёт не выдаётся за «служб ноль»', async () => {
+    const parsed = structure(await baseline({ running_count: 'wc: not found' }));
+
+    expect(parsed.services).toBeUndefined();
+    expect(parsed.unavailable).toContain('services (systemd did not answer on this server)');
+  });
+
+  // Перевод строки в конце — то, как маркер приходит с сервера на самом деле
+  it('нет systemctl — раздела служб нет, а причина названа', async () => {
+    const parsed = structure(
+      await baseline({ failed: 'NO_SYSTEMCTL\n', running_count: 'NO_SYSTEMCTL\n' })
+    );
+
+    expect(parsed.services).toBeUndefined();
+    expect(parsed.unavailable).toContain('services (no systemctl on the server)');
+    // Предупреждение о том, чего не проверяли, — тот же ложный факт
+    expect(parsed.red_flags.warning).toEqual([]);
+  });
+
+  it('systemctl есть, но systemd не ответил — это не «служб ноль»', async () => {
+    const refusal =
+      'System has not been booted with systemd as init system (PID 1). Can\'t operate.\n' +
+      'Failed to connect to bus: Host is down';
+    const parsed = structure(await baseline({ failed: refusal, running_count: refusal }));
+
+    expect(parsed.services).toBeUndefined();
+    expect(parsed.unavailable).toContain('services (systemd did not answer on this server)');
+  });
+
+  it('рабочий systemd отвечает разделом, как раньше', async () => {
+    const parsed = structure(
+      await baseline({ failed: '', running_count: '17' })
+    );
+
+    expect(parsed.services).toEqual({ failed: [], running_count: 17 });
+    expect(parsed.unavailable.join(' ')).not.toContain('services');
+  });
+
+  it('нет apt — раздела обновлений нет, а причина названа', async () => {
+    const parsed = structure(await baseline({ upgradable: 'NO_APT\n' }));
+
+    expect(parsed.updates).toBeUndefined();
+    expect(parsed.unavailable).toContain('updates (no apt on the server)');
+    expect(parsed.red_flags.warning).toEqual([]);
+  });
+
+  it('apt отвечает нулём — это факт, а не «нечем проверить»', async () => {
+    const parsed = structure(await baseline({ upgradable: '0', reboot_required: 'NO' }));
+
+    expect(parsed.updates).toEqual({ upgradable: 0, reboot_required: false });
+    expect(parsed.unavailable.join(' ')).not.toContain('updates');
   });
 
   it('ожидающая перезагрузка — предупреждение', async () => {
@@ -515,6 +564,52 @@ describe('ssh_audit_baseline: сборка команды', () => {
     await baseline({ df: DF_OUTPUT }, { include: ['net'] });
 
     expect(sentCommand()).toContain('NO_NET_TOOL');
+  });
+
+  /** Маркер нужен обеим командам раздела: без него молчит та, у которой его нет */
+  it('маркер отсутствия systemctl уезжает с обеими командами служб', async () => {
+    await baseline({}, { include: ['services'] });
+
+    expect(sentCommand().match(/NO_SYSTEMCTL/g)).toHaveLength(2);
+  });
+
+  it('маркер отсутствия apt уезжает вместе с командой обновлений', async () => {
+    await baseline({}, { include: ['updates'] });
+
+    expect(sentCommand()).toContain('NO_APT');
+  });
+
+  /**
+   * Отказ systemd приходит в поток ошибок: заглушить его значит получить тот же
+   * пустой ответ, что и у сервера, где ни одна служба не запущена.
+   */
+  it('ответ systemd не глушится, иначе отказ неотличим от пустого списка', async () => {
+    await baseline({}, { include: ['services'] });
+
+    expect(sentCommand()).toContain('systemctl --failed --no-legend --plain 2>&1');
+    expect(sentCommand()).toContain('--state=running --no-legend --plain 2>&1');
+  });
+
+  /**
+   * Три исхода различает сама команда, а не разбор: утилиты нет, утилита есть и
+   * ответила, утилита есть и отказала. Замерено на BusyBox, coreutils и dropbear.
+   */
+  it('команда служб различает три исхода прямо на сервере', async () => {
+    await baseline({}, { include: ['services'] });
+    const command = sentCommand();
+
+    // Наличие проверяют обе команды раздела, а не одна из них
+    expect(command.match(/command -v systemctl >\/dev\/null 2>&1/g)).toHaveLength(2);
+    // Счёт идёт только по удавшемуся ответу…
+    expect(command).toContain('grep -c .');
+    // …а отказ уезжает своим текстом, чтобы его узнали по нему
+    expect(command).toContain('else printf \'%s\\n\' "$out"; fi');
+  });
+
+  it('команда обновлений спрашивает apt только там, где он есть', async () => {
+    await baseline({}, { include: ['updates'] });
+
+    expect(sentCommand()).toContain('command -v apt >/dev/null 2>&1');
   });
 });
 

@@ -9,7 +9,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { logger } from '../utils/logger.js';
-import { toolFailure, type ToolResult } from '../utils/tool-result.js';
+import { batchOutcome, toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
@@ -368,8 +368,8 @@ export class FileTools {
     }
     
     // Format output
-    let output = `Read ${results.length} files:\n\n`;
-    
+    let output = '';
+
     for (const result of results) {
       if (result.success) {
         output += `✓ ${result.path} (${result.size} bytes)\n`;
@@ -380,12 +380,10 @@ export class FileTools {
         output += `  Error: ${result.error}\n\n`;
       }
     }
-    
-    return {
-      content: [{ type: 'text', text: output }],
-    };
+
+    return batchOutcome('Read', results.filter((r) => r.success).length, results.length, output);
   }
-  
+
   /**
    * Handle ssh_file_write
    */
@@ -464,8 +462,8 @@ export class FileTools {
     }
     
     // Format output
-    let output = `Write ${results.length} files:\n\n`;
-    
+    let output = '';
+
     for (const result of results) {
       if (result.success) {
         const verified = result.verification ? verificationNote(result.verification) : '';
@@ -478,10 +476,8 @@ export class FileTools {
         output += `  Error: ${result.error}\n`;
       }
     }
-    
-    return {
-      content: [{ type: 'text', text: output }],
-    };
+
+    return batchOutcome('Write', results.filter((r) => r.success).length, results.length, output);
   }
   
   /**

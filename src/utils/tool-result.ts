@@ -36,6 +36,27 @@ function carriesPartialOutput(error: unknown): error is PartialOutputCarrier {
 }
 
 /**
+ * Ответ вызова, обработавшего список путей.
+ *
+ * Заголовок называет число удавшихся, а не число обработанных: «Read 2 files»
+ * над двумя отказами описывает работу, которой не было. Ноль удавшихся — провал
+ * вызова целиком, и он помечается флагом наравне с одиночной формой; частичный
+ * исход провалом не считается — он честно показан значками внутри текста.
+ */
+export function batchOutcome(
+  action: string,
+  succeeded: number,
+  total: number,
+  body: string
+): ToolResult {
+  const result: ToolResult = {
+    content: [{ type: 'text', text: `${action} ${succeeded}/${total} files:\n\n${body}` }],
+  };
+  if (succeeded === 0) result.isError = true;
+  return result;
+}
+
+/**
  * Инструмент не сделал того, о чём его просили.
  *
  * Убитая по таймауту команда успевает что-то напечатать, и это единственный

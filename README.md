@@ -11,7 +11,7 @@
 
 ## ✨ Features
 
-### 14 Powerful Commands:
+### 18 Powerful Commands:
 
 **Core (8):**
 1. **ssh_exec** - Universal command execution (single or batch)
@@ -23,15 +23,21 @@
 7. **ssh_snapshot** - Instant system health check
 8. **ssh_monitor** - Monitor connections, reload profiles, test connections, close a shared connection
 
+**Background jobs — commands that outlive the call (4, v2.0.0+):**
+9. **ssh_job_status** - Is it running, finished with an exit code, or lost
+10. **ssh_job_output** - Output from a byte offset, so repeated reads never overlap
+11. **ssh_job_list** - Jobs on the server, old finished ones cleaned up along the way
+12. **ssh_job_kill** - Stop a job and its children
+
 **Transfer — binary-safe (2, v1.3.0+):**
-9. **ssh_upload** - Binary-safe file/directory upload (sha256 verify, atomic rename)
-10. **ssh_download** - Binary-safe file/directory download (sha256 verify)
+13. **ssh_upload** - Binary-safe file/directory upload (sha256 verify, atomic rename)
+14. **ssh_download** - Binary-safe file/directory download (sha256 verify)
 
 **Audit — read-only deep checks (4, v1.3.0+):**
-11. **ssh_audit_baseline** - One-shot system audit (replaces 5+ ssh_exec calls)
-12. **ssh_tls_check** - TLS expiry + SAN + issuer + Let's Encrypt renew_hook
-13. **ssh_disk_breakdown** - df + top-N du + docker df + journald + caches
-14. **ssh_service_status** - systemctl status + journalctl tail in one call
+15. **ssh_audit_baseline** - One-shot system audit (replaces 5+ ssh_exec calls)
+16. **ssh_tls_check** - TLS expiry + SAN + issuer + Let's Encrypt renew_hook
+17. **ssh_disk_breakdown** - df + top-N du + docker df + journald + caches
+18. **ssh_service_status** - systemctl status + journalctl tail in one call
 
 ### Key Features:
 
@@ -238,6 +244,44 @@ ssh_exec({
 
 Other commands in the same batch are unaffected, and the marker stays in the server's shell
 history as a record of a deliberate decision.
+
+### Background jobs — a command that outlives the call (v2.0.0+)
+
+A command that runs longer than the timeout used to be impossible: the client was killed and
+you got a refusal, with the work neither finished nor reachable. Pass `detach: true` and the
+command is started as a job on the server — the answer comes back with its id right away.
+
+```typescript
+// Starts and answers in under a second
+ssh_exec({
+  profile: "production",
+  command: "apt-get -y dist-upgrade",
+  detach: true
+})
+// → Job mst0f2q1-9ab3c4d5 started (pid 4242).
+
+ssh_job_status({ profile: "production", id: "mst0f2q1-9ab3c4d5" })
+ssh_job_output({ profile: "production", id: "mst0f2q1-9ab3c4d5", offset: 0 })
+ssh_job_kill({ profile: "production", id: "mst0f2q1-9ab3c4d5" })
+ssh_job_list({ profile: "production" })
+```
+
+The job keeps its state on the server — the command, its pid, when it started, its output and
+its exit code live in `~/.ssh-mcp/jobs/<id>/`. Restarting this MCP server, or watching a job
+from another window, changes nothing: nothing is remembered on our side.
+
+**Three outcomes, kept apart.** `running` — no exit code and the process is alive. `finished` —
+there is an exit code. `lost` — no exit code and no process: it was signalled or the server
+restarted, and how far it got is unknown. The last one is not reported as success or as
+failure, because it is neither.
+
+**Reading output never overlaps.** `ssh_job_output` answers with the offset to continue from;
+send it back on the next read and you get exactly what appeared since. The offset counts what
+was actually read, so an answer cut off at the transport buffer does not skip the middle.
+
+**Limits.** One command per job (arrays are refused), and `detach` cannot be combined with
+`sudo` — a background job has nowhere to take a password from. Jobs that are no longer running
+are cleaned up by `ssh_job_list` seven days after they started; running ones are never touched.
 
 ### ssh_file_read - Read Files
 
@@ -817,7 +861,7 @@ SSH MCP Server (stdio)
       ↓
 MCP layer — one source for the tool list and the call routing
       ↓
-14 Tools (exec, file, log, snapshot, monitor, transfer, audit)
+18 Tools (exec, file, job, log, snapshot, monitor, transfer, audit)
       ↓                          ↘ Profile Resolver → ~/.cursor/ssh-profiles.json
 SSH Executor (builds the command: sudo, cwd)
       ↓
@@ -833,7 +877,8 @@ Remote Server(s)
 - **NO streaming** - snapshot results only
 - **REST approach** - arrays where logical
 - **Retry logic** - one retry for idempotent commands after a transport failure; a refused multiplexed session falls back to a connection of its own
-- **Cancellation** - a cancelled call drops the local `ssh` client at once instead of sitting out the command's timeout. It does not stop a command already running on the server, and file transfers and `ssh_snapshot` do not take it at all: one has a window where stopping would leave the target empty, the other would answer with blanks instead of a refusal
+- **Cancellation** - a cancelled call drops the local `ssh` client at once instead of sitting out the command's timeout. It does not stop a command already running on the server, and file transfers and `ssh_snapshot` do not take it at all: one has a window where stopping would leave the target empty, the other would answer with blanks instead of a refusal. Work that has to be stoppable is started with `detach: true` and stopped by `ssh_job_kill`
+- **Background jobs** - a detached command keeps its whole state on the server, so nothing is remembered on our side and a restart of this server loses nothing
 
 ## 🛠️ Development
 

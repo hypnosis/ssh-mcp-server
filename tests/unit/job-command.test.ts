@@ -230,6 +230,99 @@ describe('Команда списка', () => {
   });
 });
 
+/**
+ * Дословный текст команд.
+ *
+ * Проверки выше называют по куску: удали из строки соседний шаг — и они всё
+ * равно зелёные, потому что спрашивают только про свой. Здесь строка сверяется
+ * целиком, поэтому пропавший шаг виден сразу. Тест обязан краснеть на любой
+ * правке команды: расхождение с этими строками — повод пойти на сервер и
+ * померить, а не поправить ожидание.
+ */
+describe('Текст команд целиком', () => {
+  const dir = '/root/.ssh-mcp/jobs/j1';
+  const root = '/root/.ssh-mcp/jobs';
+
+  it('запуск', () => {
+    expect(buildStartCommand(dir, 'sleep 1', true)).toBe(
+      `mkdir -p '${dir}' && ` +
+        `printf '%s' 'sleep 1' > '${dir}'/cmd && ` +
+        `date +%s > '${dir}'/started && ` +
+        `: > '${dir}'/output.log && ` +
+        `{ setsid sh -c 'echo $$ > "$0/pid"; sh -c "$1"; echo $? > "$0/exit_code"' ` +
+        `'${dir}' 'sleep 1' </dev/null >> '${dir}'/output.log 2>&1 & } ; ` +
+        `i=0; while [ ! -s '${dir}'/pid ] && [ $i -lt 20 ]; do ` +
+        `i=$((i+1)); sleep 0.1 2>/dev/null || sleep 1; done; ` +
+        `printf 'SSH_MCP_JOB pid=%s\\n' "$(cat '${dir}'/pid 2>/dev/null)"`
+    );
+  });
+
+  it('состояние', () => {
+    expect(buildStatusCommand(dir)).toBe(
+      `d='${dir}'; ` +
+        `if [ ! -d "$d" ]; then printf 'SSH_MCP_JOB state=missing\\n'; exit 0; fi; ` +
+        `pid=$(cat "$d/pid" 2>/dev/null); ` +
+        `code=$(cat "$d/exit_code" 2>/dev/null); ` +
+        `started=$(cat "$d/started" 2>/dev/null); ` +
+        `size=$(wc -c < "$d/output.log" 2>/dev/null); ` +
+        `alive=0; if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi; ` +
+        `printf 'SSH_MCP_JOB alive=%s pid=%s code=%s started=%s size=%s\\n' ` +
+        `"$alive" "$pid" "$code" "$started" "$size"; ` +
+        `printf 'SSH_MCP_JOB_CMD\\n'; cat "$d/cmd" 2>/dev/null`
+    );
+  });
+
+  it('чтение вывода', () => {
+    expect(buildOutputCommand(dir, 0)).toBe(
+      `d='${dir}'; ` +
+        `if [ ! -d "$d" ]; then printf 'SSH_MCP_JOB state=missing\\n'; exit 0; fi; ` +
+        `if [ ! -f "$d/output.log" ]; then printf 'SSH_MCP_JOB size=0\\n'; exit 0; fi; ` +
+        `printf 'SSH_MCP_JOB size=%s\\n' "$(wc -c < "$d/output.log" 2>/dev/null)"; ` +
+        `tail -c +1 "$d/output.log" 2>/dev/null`
+    );
+  });
+
+  it('снятие', () => {
+    expect(buildKillCommand(dir)).toBe(
+      `d='${dir}'; ` +
+        `if [ ! -d "$d" ]; then printf 'SSH_MCP_JOB killed=0 reason=missing\\n'; exit 0; fi; ` +
+        `pid=$(cat "$d/pid" 2>/dev/null); ` +
+        `if [ -z "$pid" ]; then printf 'SSH_MCP_JOB killed=0 reason=nopid\\n'; exit 0; fi; ` +
+        `if ! kill -0 "$pid" 2>/dev/null; then printf 'SSH_MCP_JOB killed=0 reason=gone\\n'; exit 0; fi; ` +
+        `kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null; ` +
+        `printf 'SSH_MCP_JOB killed=1\\n'`
+    );
+  });
+
+  it('список с уборкой', () => {
+    expect(buildListCommand(root, 60)).toBe(
+      `root='${root}'; ` +
+        `[ -d "$root" ] || exit 0; ` +
+        `now=$(date +%s); ` +
+        `for d in "$root"/*; do ` +
+        `[ -d "$d" ] || continue; ` +
+        `id=$(basename "$d"); ` +
+        `pid=$(cat "$d/pid" 2>/dev/null); ` +
+        `code=$(cat "$d/exit_code" 2>/dev/null); ` +
+        `started=$(cat "$d/started" 2>/dev/null); ` +
+        `size=$(wc -c < "$d/output.log" 2>/dev/null); ` +
+        `alive=0; if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi; ` +
+        `if [ "$alive" = 0 ] && [ -n "$started" ] && [ $((now - started)) -gt 60 ]; then ` +
+        `rm -rf "$d"; printf 'SSH_MCP_JOB_REMOVED id=%s\\n' "$id"; continue; fi; ` +
+        `printf 'SSH_MCP_JOB id=%s alive=%s code=%s started=%s size=%s\\n' ` +
+        `"$id" "$alive" "$code" "$started" "$size"; ` +
+        `done`
+    );
+  });
+
+  it('запуск без setsid отличается только словом отвязки', () => {
+    const withSetsid = buildStartCommand(dir, 'sleep 1', true);
+    const withNohup = buildStartCommand(dir, 'sleep 1', false);
+
+    expect(withNohup).toBe(withSetsid.replace('{ setsid sh -c', '{ nohup sh -c'));
+  });
+});
+
 describe('Разбор состояния', () => {
   it('работает, пока процесс жив и кода нет', () => {
     const status = parseJobStatus(
@@ -288,6 +381,19 @@ describe('Разбор состояния', () => {
   });
 });
 
+/** Ответ, у которого срезано начало: команда всё ещё читается */
+describe('Разбор состояния: обрезанный ответ', () => {
+  it('маркер команды первой строкой команду не теряет', () => {
+    expect(parseJobStatus('SSH_MCP_JOB_CMD\nsleep 100').command).toBe('sleep 100');
+  });
+
+  it('без маркера команды команда не выдумывается из всего ответа', () => {
+    const status = parseJobStatus('SSH_MCP_JOB alive=1 pid=42 code= started=1 size=0');
+
+    expect(status.command).toBeUndefined();
+  });
+});
+
 describe('Разбор списка', () => {
   it('читает задачи и убранные каталоги', () => {
     const listing = parseJobList(
@@ -311,6 +417,81 @@ describe('Разбор списка', () => {
 
   it('строку без идентификатора пропускает', () => {
     expect(parseJobList('SSH_MCP_JOB alive=1 code= started=1 size=0').jobs).toEqual([]);
+  });
+
+  /**
+   * Задача без маркера — чужая строка на канале, а не задача с сервера. Длина
+   * префикса здесь не случайна: маркер ищется по вхождению, и на строке без
+   * него отсчёт «после маркера» съезжает ровно на длину маркера.
+   */
+  it.each([
+    ['короткий префикс', 'id=fake alive=1 code= started=1 size=0'],
+    ['префикс длиной с маркер', 'somelog12 id=ghost alive=1 code=0 started=1 size=0'],
+  ])('строка без маркера задачей не становится: %s', (_name, line) => {
+    expect(parseJobList(line).jobs).toEqual([]);
+  });
+
+  it('живость читается из ответа, а не подразумевается', () => {
+    const [job] = parseJobList('SSH_MCP_JOB id=a1 alive=0 code= started=100 size=0').jobs;
+
+    expect(job.state).toBe('lost');
+  });
+
+  it('строка уборки без идентификатора убранным не считается', () => {
+    expect(parseJobList('SSH_MCP_JOB_REMOVED id=').removed).toEqual([]);
+  });
+});
+
+/**
+ * Поля разбираются из одной строки, и ошибка разбора здесь тиха: лишний пробел,
+ * хвост маркера или значение не из цифр молча превращаются в чужое число.
+ */
+describe('Разбор полей', () => {
+  it('хвост маркера в значение не попадает', () => {
+    const status = parseJobStatus('шум SSH_MCP_JOB   alive=1 pid=42 code= started=1 size=0');
+
+    expect(status.pid).toBe(42);
+    expect(status.state).toBe('running');
+  });
+
+  it('несколько пробелов между полями поля не склеивают', () => {
+    const status = parseJobStatus('SSH_MCP_JOB alive=1  pid=42   size=7 code= started=1');
+
+    expect(status.pid).toBe(42);
+    expect(status.outputSize).toBe(7);
+  });
+
+  it('токен без имени поля пропускается', () => {
+    const status = parseJobStatus('SSH_MCP_JOB =4242 alive=1 pid=42 code= started=1 size=0');
+
+    expect(status.pid).toBe(42);
+  });
+
+  /** Поля берутся после маркера: до него — чужой текст на канале, не ответ */
+  it('поле перед маркером в разбор не попадает', () => {
+    const status = parseJobStatus(
+      'state=missing SSH_MCP_JOB alive=1 pid=42 code= started=1 size=0'
+    );
+
+    expect(status.state).toBe('running');
+    expect(status.pid).toBe(42);
+  });
+
+  it('токен без знака равенства поле не подменяет', () => {
+    const status = parseJobStatus('SSH_MCP_JOB alive=1 pid=42 code= started=1 size=0 pidX');
+
+    expect(status.pid).toBe(42);
+  });
+
+  it.each([
+    ['хвост из букв', '12abc'],
+    ['цифры после букв', 'abc12'],
+    ['знак', '-5'],
+    ['дробь', '1.5'],
+  ])('значение %s числом не считается', (_name, raw) => {
+    const status = parseJobStatus(`SSH_MCP_JOB alive=1 pid=${raw} code= started=1 size=0`);
+
+    expect(status.pid).toBeUndefined();
   });
 });
 
@@ -340,6 +521,31 @@ describe('Разбор вывода', () => {
       size: 0,
       text: '',
       missing: true,
+    });
+  });
+
+  /**
+   * Служебные поля читаются только из первой строки: ищи их по всему ответу —
+   * и вывод самой задачи начнёт распоряжаться разбором.
+   */
+  it('слова из вывода задачи полями не становятся', () => {
+    expect(parseJobOutput('SSH_MCP_JOB size=13\nstate=missing')).toEqual({
+      size: 13,
+      text: 'state=missing',
+      missing: false,
+    });
+  });
+
+  it('ответ без перевода строки оставляет вывод пустым', () => {
+    expect(parseJobOutput('SSH_MCP_JOB size=0')).toEqual({ size: 0, text: '', missing: false });
+  });
+
+  /** Маркер обязан стоять первой строкой: сдвинутый — уже не служебная строка */
+  it('ответ, начатый с пустой строки, служебным не считается', () => {
+    expect(parseJobOutput('\nSSH_MCP_JOB size=5\nhello')).toEqual({
+      size: 0,
+      text: '\nSSH_MCP_JOB size=5\nhello',
+      missing: false,
     });
   });
 });

@@ -44,6 +44,9 @@
     "typescript": "^5.3.0",
     "vitest": "^4.0.16"
   },
+  "overrides": {
+    "qs": "^6.15.3"
+  },
   "engines": {
     "node": ">=18.0.0"
   },

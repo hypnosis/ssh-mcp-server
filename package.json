@@ -1,6 +1,6 @@
 {
   "name": "@hypnosis/ssh-mcp-server",
-  "version": "1.3.2",
+  "version": "2.0.0",
   "description": "SSH MCP Server - Universal tool for managing remote servers via AI assistants (Cursor, Claude Desktop). Supports command execution, file operations, log management and system health check.",
   "type": "module",
   "main": "./dist/index.js",

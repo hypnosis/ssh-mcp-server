@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v2.0.0 (branch `feat/openssh-transport`)
+## [2.0.0] - 2026-08-17
 
 Transport moved from the in-process `ssh2` pool to the system OpenSSH client with
 ControlMaster multiplexing. Sprints CORE_08 → CORE_11; full record with measurements in
@@ -304,7 +304,7 @@ done, failed, nothing to check with — are now distinct in the answer itself.
   read is printed as `NOT CHECKED` instead of disappearing. `available` memory is read by
   column name, so `free` from procps older than 2014 — which has no such column — reports
   `n/a` rather than its cache size. A listening port is taken after the last colon of the
-  address, so an IPv6-only listener (`[::]:4847`) is no longer skipped.
+  address, so an IPv6-only listener (`[::]:2222`) is no longer skipped.
 - A working directory the server cannot enter now stops the call. `cwd` used to be joined
   as `cd <dir> && <command>`, and `&&` binds only up to the first `;`: everything after it
   ran in the home directory and the call ended with code 0. `cwd: "/opt/app"` with a typo

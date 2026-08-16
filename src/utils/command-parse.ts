@@ -12,6 +12,25 @@ const WRAPPERS = /^(sudo|doas|env|nohup|time|timeout|nice|ionice|setsid)$/;
 /** Хвост обёртки: её флаги, присваивания переменных, длительность у timeout */
 const WRAPPER_ARGS = /^(-|\w+=|\d)/;
 
+/**
+ * Флаги обёрток, забирающие следующее слово, — у каждой обёртки свои.
+ *
+ * Без них имя пользователя из `sudo -u postgres dropdb app` встаёт в позицию
+ * команды, а сама команда остаётся невидимой. Список общим быть не может:
+ * `-n` у `nice` — это величина, а у `sudo` — «не спрашивай», и съеденным словом
+ * оказалась бы сама команда. Флаги с числовым значением сюда не входят: число
+ * пропускается разбором хвоста и так.
+ */
+const WRAPPER_FLAGS_WITH_VALUE: Record<string, Set<string>> = {
+  sudo: new Set(['-u', '--user', '-g', '--group']),
+  doas: new Set(['-u']),
+  ionice: new Set(['-c', '--class']),
+  timeout: new Set(['-s', '--signal']),
+  env: new Set(['-u', '--unset']),
+};
+
+const NO_VALUED_FLAGS = new Set<string>();
+
 /** Запуск одной программы в пределах простого сегмента команды */
 export interface Invocation {
   /** Имя без пути: `/sbin/reboot` и `reboot` дают одно и то же */
@@ -93,8 +112,15 @@ export function parseInvocations(command: string): Invocation[] {
 
     let index = 0;
     while (index < tokens.length && WRAPPERS.test(unquote(tokens[index]))) {
+      const valued = WRAPPER_FLAGS_WITH_VALUE[unquote(tokens[index])] ?? NO_VALUED_FLAGS;
       index += 1;
-      while (index < tokens.length && WRAPPER_ARGS.test(tokens[index])) index += 1;
+
+      while (index < tokens.length && WRAPPER_ARGS.test(tokens[index])) {
+        const takesValue = valued.has(unquote(tokens[index]));
+        index += 1;
+        // Значением бывает только слово: следующий флаг значением не считается
+        if (takesValue && index < tokens.length && !tokens[index].startsWith('-')) index += 1;
+      }
     }
 
     const head = tokens[index];

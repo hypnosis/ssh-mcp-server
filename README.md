@@ -690,9 +690,9 @@ Sections (toggle via `include`): `system, disk, mem, net, ssh, services, docker,
 Output format: human-readable summary (host header → CRITICAL/WARNING shortlist → disk table → listeners → sshd → services → docker → firewall → updates) followed by `--- raw JSON ---` and the full structured result. The same result also comes back as `structuredContent`, so a client does not have to cut the text apart.
 
 Auto red-flag rules:
-- **CRITICAL**: filesystem ≥ 90%, `PermitRootLogin yes`, `PasswordAuthentication yes` on port 22
-- **WARNING**: filesystem 70–90%, exited containers, failed systemd units, reboot pending, > 50 upgradable packages
-- **OK**: filesystem < 70% per mount, everything nominal
+- **CRITICAL**: filesystem ≥ 90%, `PermitRootLogin yes`, `PasswordAuthentication yes` (on any port — a non-standard port is not protection)
+- **WARNING**: filesystem 70–90%, exited containers, failed systemd units, reboot pending, > 50 upgradable packages, no firewall (ufw off or absent and the `INPUT` chain accepts everything), docker ports published past an active firewall, sshd config port that disagrees with what sshd actually listens on
+- **OK**: filesystem < 70% per mount, firewall active, everything nominal
 - **NOT CHECKED**: a section whose command could not run — no `ss`/`netstat`, no `df` output, no `systemctl`, a systemd that does not answer, no `apt` — is listed in `unavailable` and left out of the result, rather than reported as an empty — and therefore healthy-looking — one
 
 ```typescript
@@ -834,22 +834,28 @@ export SSH_MCP_PROFILES_CACHE_TTL="60000"
 
 ### Dangerous Command Warnings
 
-The server automatically detects dangerous commands:
+The server warns about what a command is going to do. The check reads the command
+position, not the text: a name that starts a command is a call, the same word inside a
+path, an argument or a quoted string is not.
 
 ```typescript
-ssh_exec({
-  command: "rm -rf /"
-})
-// ⚠️  DANGEROUS COMMAND: rm -rf / detected
+ssh_exec({ command: "reboot" })
+// ⚠️  DANGEROUS COMMAND: reboot detected
 // Command will execute but with warning
+
+ssh_exec({ command: "test -f /var/run/reboot-required && cat /var/run/reboot-required" })
+// no warning — nothing is being rebooted, a file is being read
 ```
 
-Dangerous patterns detected:
-- `rm -rf /`, `rm -rf ~`, `rm -rf *`
+Warned about:
+- `reboot`, `shutdown`, `halt`, `poweroff` — including behind `sudo`, `timeout`, `nice`, `env`
 - `chmod 777`
-- `reboot`, `shutdown`, `halt`
-- `docker system prune -a`
-- `DROP DATABASE`, `TRUNCATE`
+- `docker system prune -a`, `docker rm -f $(docker ps -aq)`
+- `DROP DATABASE`, `DROP TABLE`, `TRUNCATE`, `DELETE FROM` — only when a database client
+  (`psql`, `mysql`, `sqlite3`, …) is the command being run
+
+Recursive deletion is not on this list: it is **refused**, not warned about — see
+[`ssh_exec`](#ssh_exec---execute-commands) above.
 
 ### Recommendations
 

@@ -16,6 +16,8 @@
  * закрыть тестами, а сеть добавляется одним слоем выше.
  */
 
+import { splitSegments, tokenize, unquote } from './command-parse.js';
+
 /** Маркер осознанного подтверждения — тот же приём, что у хука про перезагрузку */
 export const CONFIRMATION_MARKER = '# CONFIRMED-DESTRUCTIVE';
 
@@ -53,12 +55,6 @@ export function isConfirmed(command: string): boolean {
   return command.includes(CONFIRMATION_MARKER);
 }
 
-/** Убрать кавычки, которыми аргумент мог быть обёрнут целиком */
-function unquote(argument: string): string {
-  const paired = /^'(.*)'$/.exec(argument) ?? /^"(.*)"$/.exec(argument);
-  return paired ? paired[1] : argument;
-}
-
 /**
  * Даёт ли набор флагов рекурсивное удаление.
  *
@@ -73,23 +69,6 @@ function isRecursive(tokens: string[]): boolean {
     if (token.includes('r') || token.includes('R')) return true;
   }
   return false;
-}
-
-/**
- * Разрезать команду на простые сегменты.
- *
- * Разделители shell (`;`, `&&`, `||`, `|`, перевод строки) не могут стоять
- * внутри аргумента, если он не в кавычках, — а внутри кавычек нам делать
- * нечего: путь с точкой с запятой в имени не тот случай, ради которого
- * стоит усложнять разбор.
- */
-function splitSegments(command: string): string[] {
-  return command.split(/(?:&&|\|\||[;|\n])/);
-}
-
-/** Разбить сегмент на слова, не разрывая закавыченные куски */
-function tokenize(segment: string): string[] {
-  return segment.match(/'[^']*'|"[^"]*"|\S+/g) ?? [];
 }
 
 /**

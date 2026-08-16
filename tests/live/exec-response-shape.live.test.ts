@@ -128,10 +128,26 @@ if (unavailable && LAB_REQUIRED) {
       });
 
       it('опасная команда получает предупреждение и всё равно выполняется', async () => {
-        const text = await answer(profile, { command: 'echo "DROP TABLE users;"' });
+        const text = await answer(profile, { command: 'psql -c "DROP TABLE users;"; echo done' });
 
         expect(text).toContain('⚠️  DANGEROUS COMMAND: DROP TABLE detected');
+        expect(text).toContain('done');
+      });
+
+      it('тот же запрос в тексте базы не касается — и предупреждения нет', async () => {
+        const text = await answer(profile, { command: 'echo "DROP TABLE users;"' });
+
+        expect(text).not.toContain('DANGEROUS COMMAND');
         expect(text).toContain('DROP TABLE users;\n');
+      });
+
+      it('чтение файла с reboot в имени тревоги не поднимает', async () => {
+        const text = await answer(profile, {
+          command: '(test -f /var/run/reboot-required && echo YES) || echo NO',
+        });
+
+        expect(text).not.toContain('DANGEROUS COMMAND');
+        expect(text.trim()).toBe('NO');
       });
     });
   }

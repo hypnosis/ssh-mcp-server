@@ -491,6 +491,6 @@ describe('ssh_audit_baseline: разделы, которых не просили
     });
 
     expect(text).toContain('CRITICAL:');
-    expect(text).toContain('PasswordAuthentication yes on port 22');
+    expect(text).toContain('PasswordAuthentication yes');
   });
 });

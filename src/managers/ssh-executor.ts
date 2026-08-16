@@ -1,24 +1,47 @@
 /**
  * SSH Executor
- * SSH command execution with connection pooling (v1.1.0)
+ *
+ * Собирает строку команды (sudo, рабочий каталог) и отдаёт её транспорту.
+ * Как команда доедет до сервера — дело раннера; повторы и таймауты живут
+ * там же, потому что только транспорт знает, что именно сломалось.
  */
 
+import { getRunner } from '../runner/get-runner.js';
+import { DEFAULT_EXEC_TIMEOUT_MS } from '../runner/openssh-runner.js';
+import { type ServerPassport } from '../runner/passport.js';
 import { logger } from '../utils/logger.js';
-import { retryWithTimeout, createSSHRetryPredicate } from '../utils/retry.js';
+import { exitCodeHint } from '../utils/output-notes.js';
+import { shellQuote } from '../utils/shell-arg.js';
+import { hideArtifactNames } from '../utils/tmp-name.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
-import { SSHManager } from './ssh-manager.js';
+
+/** Дверь к сроку транспорта для инструментов: они берут его здесь, а не в раннере */
+export const DEFAULT_TIMEOUT_MS = DEFAULT_EXEC_TIMEOUT_MS;
 
 export interface SSHExecuteOptions {
-  /** Command execution timeout (ms) */
+  /**
+   * Command execution timeout (ms). Ноль означает «потолка нет»: так зовут
+   * команды, длительность которых задаёт объём данных, — сверка хэшей дерева
+   * на гигабайты не обязана укладываться в общие 30 секунд.
+   */
   timeout?: number;
-  /** Output encoding */
-  encoding?: BufferEncoding;
   /** Working directory */
   cwd?: string;
   /** Use sudo */
   sudo?: boolean;
-  /** Profile name for connection pool */
-  profileName?: string;
+  /**
+   * Safe to repeat after a transport failure.
+   * Ставится только чтению: повтор мутирующей команды опаснее её отказа.
+   */
+  idempotent?: boolean;
+  /** Данные на вход команды (например, манифест для `sha256sum -c -`) */
+  stdin?: string | Buffer;
+  /**
+   * Отмена вызова, пришедшая от клиента. Команда получает её только там, где
+   * оборваться безопасно: уборка и замена файлов идут без сигнала, иначе
+   * отмена остановила бы тот самый код, который убирает за отменой.
+   */
+  signal?: AbortSignal;
 }
 
 export interface SSHExecuteResult {
@@ -28,20 +51,23 @@ export interface SSHExecuteResult {
   stderr: string;
   /** Exit code */
   exitCode: number;
+  /**
+   * Вывод не поместился в буфер транспорта и показан частично.
+   * Отдавать такой ответ как полный нельзя — он выглядит достоверным.
+   */
+  truncated: boolean;
 }
 
 /**
  * SSH Executor for command execution
- * v1.1.0 - Uses SSHManager with connection pooling
  */
 export class SSHExecutor {
-  private manager: SSHManager;
-  
-  constructor() {
-    this.manager = new SSHManager();
-  }
   /**
-   * Execute command on remote server
+   * Execute command on remote server.
+   *
+   * Ненулевой код возврата — часть результата, а не ошибка: `grep` без
+   * совпадений возвращает 1, и вызывающий вправе решать сам, что это значит.
+   *
    * @param config - SSH configuration
    * @param command - Command to execute
    * @param options - Execution options
@@ -52,60 +78,97 @@ export class SSHExecutor {
     command: string,
     options: SSHExecuteOptions = {}
   ): Promise<SSHExecuteResult> {
-    const timeout = options.timeout || 30000;
-    
     // Add sudo if needed.
-    // Wrap in `bash -c` so shell constructs (subshells `(...)`, `if/elif/fi`, pipes)
+    // Wrap in `<shell> -c` so shell constructs (subshells `(...)`, `if/elif/fi`, pipes)
     // survive sudo. Plain `sudo (if ...; fi)` is a shell syntax error — sudo expects a
-    // program, not a shell construct. `sudo bash -c '<cmd>'` runs the whole thing as one.
+    // program, not a shell construct.
+    //
+    // Язык берётся из паспорта. Жёсткий `bash` означал, что на машине без него
+    // не работает ни одна операция с повышением прав: измерено на Alpine, где
+    // любой sudo-вызов отвечал «bash: command not found». `sh` есть везде,
+    // поэтому он же и ответ на «паспорт не прочитан».
     let finalCommand = command;
     if (options.sudo) {
-      finalCommand = `sudo bash -c ${this.escapeShell(command)}`;
+      const passport = await this.passport(config);
+      finalCommand = `sudo ${passport.bash ? 'bash' : 'sh'} -c ${shellQuote(command)}`;
     }
-    
-    // Add cd if working directory is specified
+
+    // Add cd if working directory is specified.
+    //
+    // Неудавшийся переход обрывает всю строку, а не только ближайшую команду:
+    // `&&` связывает лишь до первого `;`, и остаток выполнялся в чужом каталоге
+    // с кодом 0. Выход вместо скобок — команда, оканчивающаяся на `&`, внутри
+    // `{ … ; }` даёт синтаксическую ошибку на BusyBox и dropbear
     if (options.cwd) {
-      finalCommand = `cd ${this.escapeShell(options.cwd)} && ${finalCommand}`;
+      finalCommand = `cd ${shellQuote(options.cwd)} || exit 1; ${finalCommand}`;
     }
-    
+
     logger.debug(`Executing SSH command: ${finalCommand.substring(0, 100)}...`);
-    
-    // Execute with retry logic using SSHManager
-    const executeFn = async () => {
-      const stdout = await this.manager.execute(config, finalCommand, {
-        timeout,
-        encoding: options.encoding,
-        profileName: options.profileName,
-      });
-      
-      return {
-        stdout,
-        stderr: '',
-        exitCode: 0,
-      };
-    };
-    
-    return retryWithTimeout(executeFn, {
-      maxAttempts: 3,
-      timeout,
-      shouldRetry: createSSHRetryPredicate(),
+
+    const runner = await getRunner(config);
+    const result = await runner.exec(finalCommand, {
+      timeoutMs: options.timeout ?? DEFAULT_TIMEOUT_MS,
+      idempotent: options.idempotent,
+      stdin: options.stdin,
+      signal: options.signal,
     });
+
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode,
+      truncated: result.truncated,
+    };
   }
-  
+
   /**
-   * Escape string for shell
+   * Execute a command that must succeed.
+   *
+   * Для шагов, после которых нельзя идти дальше: не создан каталог, не
+   * переименован файл, не применены права. Раньше такую проверку делал за нас
+   * транспорт — он бросал на любом ненулевом коде; теперь код честный, и места,
+   * где неудача означает провал операции, называются явно.
    */
-  private escapeShell(str: string): string {
-    return `'${str.replace(/'/g, "'\"'\"'")}'`;
+  async executeChecked(
+    config: SSHConfig,
+    command: string,
+    options: SSHExecuteOptions = {}
+  ): Promise<SSHExecuteResult> {
+    const result = await this.execute(config, command, options);
+
+    if (result.exitCode !== 0) {
+      const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
+      const shortCommand = command.length > 120 ? `${command.substring(0, 120)}…` : command;
+      throw new Error(
+        hideArtifactNames(
+          `Command failed (exit ${result.exitCode}): ${shortCommand} — ${detail}`
+        ) + exitCodeHint(result.exitCode)
+      );
+    }
+
+    return result;
   }
-  
+
+  /**
+   * Паспорт сервера: что на нём есть из утилит.
+   *
+   * Спрашивается у транспорта, а не собирается здесь своей командой: только он
+   * умеет провести пробу мимо шлюза первой команды. Проба через `exec` замыкала
+   * круг — команды, стоящие в шлюзе, ждут паспорт, а паспорт ждёт шлюз.
+   */
+  async passport(config: SSHConfig): Promise<ServerPassport> {
+    const runner = await getRunner(config);
+    return runner.passport();
+  }
+
   /**
    * Test connection to server
    */
-  async testConnection(config: SSHConfig, profileName?: string): Promise<boolean> {
+  async testConnection(config: SSHConfig): Promise<boolean> {
     try {
-      await this.execute(config, 'echo "test"', { timeout: 5000, profileName });
-      return true;
+      const runner = await getRunner(config);
+      const result = await runner.ping();
+      return result.ok;
     } catch {
       return false;
     }

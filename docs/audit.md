@@ -28,9 +28,10 @@ Before v1.3.0 the typical `server-auditor` agent sequence looked like this: one 
 | Section | Commands | Purpose |
 |---------|----------|---------|
 | `system` | `hostname`, `uptime`, `date -u`, `/etc/os-release`, `uname -r`, `/proc/loadavg` | Identification + load |
-| `disk` | `df -hT -x tmpfs -x devtmpfs -x squashfs` | Filesystem usage by mount |
+| `disk` | `df -hT` (tmpfs/devtmpfs/squashfs dropped while parsing — BusyBox `df` has no `-x`) | Filesystem usage by mount |
 | `mem` | `free -h` (Linux) / `vm_stat` (macOS) | Memory totals |
-| `net` | `ss -tulpenH` (fallback `netstat -tulpn`), `ip -br a` | Listening ports + interfaces |
+
+| `net` | `ss -tulpenH` (fallback `netstat -tulpn`, then `NO_NET_TOOL`), `ip -br a` | Listening ports + interfaces |
 | `ssh` | `sshd -T \| grep -E ...` | Effective sshd config (**requires sudo**) |
 | `services` | `systemctl --failed`, `systemctl list-units --state=running \| wc -l` | Failed units + running count |
 | `docker` | `docker ps -a --format ...`, `docker system df` | Containers + Docker disk |
@@ -39,16 +40,29 @@ Before v1.3.0 the typical `server-auditor` agent sequence looked like this: one 
 
 **Flags:**
 
-- `include: ["disk", "mem", "services"]` — restrict to a subset (default: all except `ssh`)
-- `include_sudo_sections: true` — enable the `ssh` section (runs the whole compound under sudo)
+- `include: ["disk", "mem", "services"]` — restrict to a subset (default: every section, `ssh` included)
+- `include_sudo_sections: true` — read the sshd settings under sudo (runs the whole compound under sudo). Without it the section still runs: as root the settings are readable anyway
 - `compact: true` (default) — trim long sections (listeners, interfaces, docker rows) to keep the response small for the LLM
 
 **Output:**
 
 A single text block with two parts:
 
-1. Human-readable summary — host header, CRITICAL/WARNING shortlist, disk table, listeners, sshd line, services, docker, firewall, updates
+1. Human-readable summary — host header, CRITICAL/WARNING shortlist, `NOT CHECKED` list, disk table, listeners, sshd line, services, docker, firewall, updates
 2. `--- raw JSON ---` followed by the full structured result
+
+The same result also arrives as `structuredContent`, already parsed, with its shape
+declared in the tool listing. Cutting the text at `--- raw JSON ---` still works — the two
+carry the same object, and a live test compares them.
+
+**Rows are read by name, not by position.** A filesystem name too long for its column — an
+overlay path from docker, a long NFS address — is wrapped by `df` onto a second line; both
+halves are joined back, so the volume keeps its name instead of losing it. A row neither
+half of the parser can read is listed under `NOT CHECKED` rather than dropped. Memory
+columns are matched against the header, so `available` on a `free` that has no such column
+(procps older than 2014) reads `n/a` instead of the cache size that happens to sit last.
+
+**Sections that could not be checked** land in `unavailable` (and in the `NOT CHECKED` block) instead of quietly reading as zero: a server without `ss` and `netstat` used to report `listeners (0)`, which is "nothing is listening", not "there was nothing to look with". No red flag is raised for such a section.
 
 **Auto red-flag classification:**
 
@@ -78,13 +92,15 @@ If `check_renew_hook: true` (default), additionally inspects:
 - `/etc/letsencrypt/renewal/*.conf` for `renew_hook = ...`
 - `/etc/letsencrypt/renewal-hooks/deploy/` for any deploy script
 
-Returns CRITICAL/WARNING flags + structured JSON.
+Returns UNKNOWN/CRITICAL/WARNING flags + structured JSON — in the text, and as
+`structuredContent` alongside it.
 
 | Severity | Trigger |
 |----------|---------|
+| **UNKNOWN** | the certificate was never read — no `openssl` on the server, connection refused, domain unreachable. The reason is quoted from the command output; `not_after` and `san_includes_hostname` are `null`, and no certificate verdict is issued |
 | **CRITICAL** | certificate expired |
 | **CRITICAL** | ≤ 7 days until expiry |
-| **CRITICAL** | SAN does not include the requested domain |
+| **CRITICAL** | SAN does not include the requested domain (only when the certificate was actually read) |
 | **WARNING** | ≤ 30 days until expiry |
 | **WARNING** | no Let's Encrypt deploy_hook configured (when `check_renew_hook: true`) |
 
@@ -92,16 +108,18 @@ Returns CRITICAL/WARNING flags + structured JSON.
 
 Single batched call collecting:
 
-| Section | Command |
-|---------|---------|
-| `df` | `df -hT` |
-| `du_<path>` | `du -shx <path>/* \| sort -rh \| head -<top_n>` for each entry in `paths` |
-| `docker` | `docker system df -v` (or `NO_DOCKER`) |
-| `journald` | `journalctl --disk-usage` (or `NO_JOURNALD`) |
-| `var_log` | `du -sh /var/log/* \| sort -rh \| head -<top_n>` |
-| `cache` | `du -sh "$HOME"/.cache/* \| sort -rh \| head -<top_n>` |
+| Section | Command | Printed as |
+|---------|---------|------------|
+| `df` | `df -hT` | `--- filesystems ---` |
+| `du_<path>` | `du -shx <path>/* \| sort -rh \| head -<top_n>` for each entry in `paths` | `--- largest entries under <path> ---` |
+| `docker` | `docker system df -v` | `--- docker ---` (`not installed` when absent) |
+| `journald` | `journalctl --disk-usage` | `--- journald ---` (`not installed` when absent) |
+| `var_log` | `du -sh /var/log/* \| sort -rh \| head -<top_n>` | `--- /var/log ---` |
+| `cache` | `du -sh "$HOME"/.cache/* \| sort -rh \| head -<top_n>` | `--- $HOME/.cache ---` |
 
-Defaults: `top_n: 20`, `paths: ["/"]`. `paths` is shell-quoted before interpolation.
+Defaults: `top_n: 20`, `paths: ["/"]`. `paths` is shell-quoted before interpolation. The
+separator that splits the batched output is internal: the answer carries titled sections,
+not markers.
 
 ### ssh_service_status
 
@@ -111,12 +129,22 @@ Single batched call collecting, for one systemd unit:
 |---------|---------|
 | `status` | `systemctl status <unit> --no-pager \| head -40` |
 | `is_enabled` | `systemctl is-enabled <unit>` |
-| `show` | `systemctl show <unit> --property=Restart,RestartSec,LoadState,ActiveState,SubState` |
+| `show` | `systemctl show <unit> --property=Restart,RestartUSec,LoadState,ActiveState,SubState` |
 | `log` | `journalctl -u <unit> -n <log_lines> --no-pager [--since <since>]` |
 
 Defaults: `log_lines: 50`. `since` is optional and accepts any `journalctl --since` value (`"1h ago"`, `"2026-05-03"`, etc.). Unit name is validated against `^[a-zA-Z0-9@._-]+$` to keep the input safe for shell interpolation.
 
-Returns a structured response with `enabled`, `active`, `restart`, the head of `systemctl status`, and the recent log tail.
+Returns `enabled`, `active`, `restart`, the head of `systemctl status` and the recent log
+tail. Three outcomes are kept apart instead of mixing a raw systemctl message into a field:
+
+| On the server | Answer |
+|---|---|
+| no `systemctl`, or systemd not running | `NOT CHECKED: systemd did not answer on this server`, and `NOT CHECKED` in all three fields |
+| systemd running, no such unit | `enabled: no unit by that name`, with the real `active: inactive/dead` |
+| the unit exists | `enabled: enabled`, `active: active/running`, `restart: on-failure (after 100ms)` |
+
+The restart pause is asked for as `RestartUSec` — the name systemd prints. `RestartSec` is
+accepted on the command line but never returned, so that field used to be a permanent `?`.
 
 ---
 

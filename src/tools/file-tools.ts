@@ -5,20 +5,53 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { logger } from '../utils/logger.js';
+import { batchOutcome, toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
-import { ConnectionPool } from '../managers/connection-pool.js';
+import { getRunner } from '../runner/get-runner.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
-import { createPathValidator } from '../utils/path-validator.js';
+import { sha256OfBuffer } from '../utils/sha256.js';
+import { verifyRemoteFiles } from '../managers/remote-verify.js';
+import { install } from '../managers/installer.js';
+import { remotePathOps } from '../managers/remote-path-ops.js';
+import { resolveRemotePath, type ExpandedPath } from '../managers/path-guard.js';
+import { buildSudoStagingPath } from '../utils/tmp-name.js';
+import { shellGlob, shellMode, shellQuote } from '../utils/shell-arg.js';
+import { requireEntryList, requireText, requireTextList } from '../utils/tool-args.js';
 import {
-  sha256OfBuffer,
-  buildRemoteSha256Command,
-  parseRemoteSha256,
-} from '../utils/sha256.js';
-import { buildTempPath, shellQuote } from '../utils/tmp-name.js';
+  binaryReadMessage,
+  looksDamagedAsText,
+  truncatedReadMessage,
+  withTruncationNote,
+} from '../utils/output-notes.js';
+
+/**
+ * До какого размера содержимое едет прямо в канале команды.
+ *
+ * Выше этой границы файл отдаётся транспорту: держать мегабайты в памяти
+ * процесса и гнать их одним куском незачем, а транспорт умеет их потоком.
+ */
+const INLINE_WRITE_LIMIT = 256 * 1024;
+
+/**
+ * Что стало со сверкой записанного: сверяли и сошлось, сверить было нечем,
+ * сверки не просили. Три исхода не смешиваются.
+ */
+type VerificationOutcome =
+  | { status: 'verified' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'skipped' };
+
+/** Пометка о сверке для ответа; у несверявшейся записи её нет */
+function verificationNote(outcome: VerificationOutcome): string {
+  if (outcome.status === 'verified') return ' (sha256 verified)';
+  if (outcome.status === 'unavailable') return ` (NOT verified: ${outcome.reason})`;
+  return '';
+}
 
 /**
  * File Tools
@@ -83,7 +116,8 @@ export class FileTools {
         name: 'ssh_file_write',
         description:
           'Write file(s) to remote server. Supports single file or batch writing. ' +
-          'Optional flags per file: verify (sha256 after write), atomic (write to .tmp + rename), ' +
+          'Optional flags per file: verify (sha256 after write), atomic (ignored — the write always ' +
+          'uses a temp path next to the target and renames into place), ' +
           'binary (content is base64; uploaded via SFTP — required for binaries). ' +
           'For files >256KB, binaries, or directories prefer ssh_upload.',
         inputSchema: {
@@ -109,7 +143,8 @@ export class FileTools {
                     atomic: {
                       type: 'boolean',
                       description:
-                        'Write to a temp path next to target and rename on success. Default: false.',
+                        'Ignored: the write always writes to a temp path next to the target and ' +
+                        'renames into place. Accepted so existing calls keep working.',
                     },
                     binary: {
                       type: 'boolean',
@@ -177,32 +212,30 @@ export class FileTools {
   /**
    * Handle tool call
    */
-  async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
+  async handleCall(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     const toolName = request.params.name;
     
     try {
       switch (toolName) {
         case 'ssh_file_read':
-          return await this.handleFileRead(request);
+          return await this.handleFileRead(request, signal);
         case 'ssh_file_write':
           return await this.handleFileWrite(request);
         case 'ssh_file_list':
-          return await this.handleFileList(request);
+          return await this.handleFileList(request, signal);
         default:
           throw new Error(`Unknown tool: ${toolName}`);
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
-      return {
-        content: [{ type: 'text', text: `Error: ${error.message}` }],
-      };
+      return toolFailure(error);
     }
   }
   
   /**
    * Handle ssh_file_read
    */
-  private async handleFileRead(request: CallToolRequest) {
+  private async handleFileRead(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     
     // Validate array parameter format
@@ -210,38 +243,48 @@ export class FileTools {
     if (!validation.isValid) {
       return createValidationErrorResponse(validation.errorMessage!);
     }
-    
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
-    const paths = Array.isArray(args.path) ? args.path : [args.path];
+    const requested = requireTextList(args.path, 'path', '"/etc/hosts"');
     const binary = args.binary === true;
     const encoding = binary ? 'base64' : (args.encoding || 'utf8');
     const sudo = args.sudo || false;
-    
-    // Validate paths against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      for (const path of paths) {
-        const pathValidation = pathValidator.validate(path);
-        if (!pathValidation.valid) {
-          throw new Error(`Path validation failed: ${pathValidation.error}`);
-        }
-      }
+
+    // Пути раскрываются и проверяются правилами до первой команды — весь
+    // список сразу, как и раньше: отказ на пятом файле не должен приходить
+    // после того, как первые четыре уже прочитаны
+    const paths: string[] = [];
+    for (const path of requested) {
+      const target = await resolveRemotePath(this.executor, sshConfig, path, { sudo });
+      for (const warning of target.warnings) logger.warn(`[file-tools] ${warning}`);
+      paths.push(target.path);
     }
-    
+
     // Single file - simple result
     if (paths.length === 1) {
       if (binary) {
-        const b64 = await this.readFileBinary(sshConfig, paths[0], profileName);
+        const b64 = await this.readFileBinary(sshConfig, paths[0]);
         return { content: [{ type: 'text', text: b64 }] };
       }
-      const command = this.buildSafeCommand(paths[0], 'cat', encoding);
+      const command = this.buildReadCommand(paths[0], encoding);
 
-      const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+      const result = await this.executor.execute(sshConfig, command, {
+        sudo,
+        idempotent: true,
+        signal,
+      });
 
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read file: ${result.stderr || result.stdout}`);
+      }
+
+      // Часть файла нельзя отдавать как файл: дальше её примут за содержимое
+      if (result.truncated) {
+        throw new Error(`Failed to read file: ${truncatedReadMessage(paths[0])}`);
+      }
+
+      if (encoding === 'utf8' && looksDamagedAsText(result.stdout)) {
+        throw new Error(`Failed to read file: ${binaryReadMessage(paths[0])}`);
       }
 
       return {
@@ -261,7 +304,7 @@ export class FileTools {
     for (const path of paths) {
       try {
         if (binary) {
-          const b64 = await this.readFileBinary(sshConfig, path, profileName);
+          const b64 = await this.readFileBinary(sshConfig, path);
           results.push({
             path,
             content: b64,
@@ -270,11 +313,31 @@ export class FileTools {
           });
           continue;
         }
-        const command = this.buildSafeCommand(path, 'cat', encoding);
+        const command = this.buildReadCommand(path, encoding);
 
-        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+        const result = await this.executor.execute(sshConfig, command, {
+          sudo,
+          idempotent: true,
+          signal,
+        });
 
-        if (result.exitCode === 0) {
+        if (result.exitCode === 0 && result.truncated) {
+          results.push({
+            path,
+            content: '',
+            size: 0,
+            success: false,
+            error: truncatedReadMessage(path),
+          });
+        } else if (result.exitCode === 0 && encoding === 'utf8' && looksDamagedAsText(result.stdout)) {
+          results.push({
+            path,
+            content: '',
+            size: 0,
+            success: false,
+            error: binaryReadMessage(path),
+          });
+        } else if (result.exitCode === 0) {
           results.push({
             path,
             content: result.stdout,
@@ -291,6 +354,9 @@ export class FileTools {
           });
         }
       } catch (error: any) {
+        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
+        // возвращал бы список с пробелами вместо отказа
+        if (signal?.aborted) throw error;
         results.push({
           path,
           content: '',
@@ -302,8 +368,8 @@ export class FileTools {
     }
     
     // Format output
-    let output = `Read ${results.length} files:\n\n`;
-    
+    let output = '';
+
     for (const result of results) {
       if (result.success) {
         output += `✓ ${result.path} (${result.size} bytes)\n`;
@@ -314,40 +380,52 @@ export class FileTools {
         output += `  Error: ${result.error}\n\n`;
       }
     }
-    
-    return {
-      content: [{ type: 'text', text: output }],
-    };
+
+    return batchOutcome('Read', results.filter((r) => r.success).length, results.length, output);
   }
-  
+
   /**
    * Handle ssh_file_write
    */
   private async handleFileWrite(request: CallToolRequest) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const files = Array.isArray(args.files) ? args.files : [args.files];
-    
-    // Validate paths against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      for (const file of files) {
-        const pathValidation = pathValidator.validate(file.path);
-        if (!pathValidation.valid) {
-          throw new Error(`Path validation failed: ${pathValidation.error}`);
-        }
-      }
+    // Форма проверяется целиком до первой записи: без этого отсутствующий
+    // `files` падал внутренним `Cannot read properties of undefined`, а
+    // `files: []` отвечал бодрым «Write 0 files» на невыполненную работу.
+    const requested = requireEntryList(args.files, 'files', ['path', 'content'],
+      '{"path": "/etc/app.conf", "content": "..."}');
+
+    // Пути раскрываются и проверяются правилами до первой записи — весь список
+    // сразу: отказ на пятом файле не должен приходить после того, как первые
+    // четыре уже легли на сервер
+    const files: Array<{ file: any; target: ExpandedPath }> = [];
+    for (const file of requested) {
+      files.push({
+        file,
+        target: await resolveRemotePath(this.executor, sshConfig, file.path, {
+          sudo: file.sudo === true,
+        }),
+      });
     }
-    
+
     // Single file - simple result
     if (files.length === 1) {
-      const file = files[0];
-      await this.writeFileRouted(sshConfig, file, profileName);
+      const { file, target } = files[0];
+      const written = await this.writeFileRouted(sshConfig, file, target);
+
+      // Печатается путь, по которому файл оказался на самом деле: при `~` он
+      // отличается от запрошенного, и человек должен видеть настоящий адрес
+      const notes = written.warnings.map((warning) => `\n⚠ ${warning}`).join('');
 
       return {
-        content: [{ type: 'text', text: `File written successfully: ${file.path}` }],
+        content: [
+          {
+            type: 'text',
+            text: `File written successfully: ${written.path}${verificationNote(written.verification)}${notes}`,
+          },
+        ],
       };
     }
 
@@ -356,22 +434,26 @@ export class FileTools {
       path: string;
       success: boolean;
       bytesWritten: number;
+      warnings?: string[];
+      verification?: VerificationOutcome;
       error?: string;
     }> = [];
 
-    for (const file of files) {
+    for (const { file, target } of files) {
       try {
-        await this.writeFileRouted(sshConfig, file, profileName);
+        const written = await this.writeFileRouted(sshConfig, file, target);
         results.push({
-          path: file.path,
+          path: written.path,
           success: true,
+          warnings: written.warnings,
+          verification: written.verification,
           bytesWritten: file.binary
             ? Buffer.from(file.content || '', 'base64').length
             : Buffer.byteLength(file.content, 'utf8'),
         });
       } catch (error: any) {
         results.push({
-          path: file.path,
+          path: target.path,
           success: false,
           bytesWritten: 0,
           error: error.message,
@@ -380,77 +462,36 @@ export class FileTools {
     }
     
     // Format output
-    let output = `Write ${results.length} files:\n\n`;
-    
+    let output = '';
+
     for (const result of results) {
       if (result.success) {
-        output += `✓ ${result.path} (${result.bytesWritten} bytes)\n`;
+        const verified = result.verification ? verificationNote(result.verification) : '';
+        output += `✓ ${result.path} (${result.bytesWritten} bytes)${verified}\n`;
+        for (const warning of result.warnings || []) {
+          output += `  ⚠ ${warning}\n`;
+        }
       } else {
         output += `✗ ${result.path}\n`;
         output += `  Error: ${result.error}\n`;
       }
     }
-    
-    return {
-      content: [{ type: 'text', text: output }],
-    };
+
+    return batchOutcome('Write', results.filter((r) => r.success).length, results.length, output);
   }
   
   /**
-   * Write file to remote server
-   */
-  private async writeFile(
-    sshConfig: any,
-    path: string,
-    content: string,
-    mode?: string,
-    sudo: boolean = false,
-    profileName?: string
-  ): Promise<void> {
-    // Expand tilde in path
-    const expanded = this.expandRemoteTilde(path);
-    
-    // Escape content for heredoc
-    const escapedContent = content.replace(/'/g, "'\"'\"'");
-    
-    // Build safe path for write
-    let safePath: string;
-    if (expanded.startsWith('$HOME')) {
-      const homePrefix = '$HOME';
-      const restPath = expanded.substring(5);
-      const escapedRest = this.escapeForDoubleQuotes(restPath);
-      safePath = `"${homePrefix}${escapedRest}"`;
-    } else {
-      safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
-    }
-    
-    // Write command via heredoc
-    let command = `cat > ${safePath} << 'SSHEOF'\n${escapedContent}\nSSHEOF`;
-    
-    // Add chmod if permissions specified
-    if (mode) {
-      command += ` && chmod ${mode} ${safePath}`;
-    }
-    
-    const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
-
-    if (result.exitCode !== 0) {
-      throw new Error(`Failed to write file: ${result.stderr || result.stdout}`);
-    }
-  }
-
-  /**
-   * Route a write to either the heredoc fast path or SFTP path,
-   * depending on the per-file flags.
+   * Записать файл на сервер.
    *
-   * SFTP path is taken when ANY of:
-   *  - file.binary === true
-   *  - file.verify === true
-   *  - file.atomic === true
-   *  - utf8 content size > 256KB
+   * Путь один на любое содержимое: данные попадают во временный путь рядом с
+   * целью и встают на место установщиком. Различается только способ наполнения
+   * временного пути — мелкое едет потоком в stdin команды `cat`, крупное и
+   * двоичное отдаётся транспорту.
    *
-   * SFTP path also handles file.sudo via /tmp staging + `sudo install`.
-   * Otherwise the legacy heredoc writer is used (back-compat).
+   * Содержимое не появляется в строке команды никогда. Прежний быстрый путь
+   * вклеивал его в heredoc, и на живых серверах это портило запись: апостроф
+   * превращался в пять символов, строка `SSHEOF` внутри текста обрывала файл,
+   * а его остаток исполнялся как команды.
    */
   private async writeFileRouted(
     sshConfig: any,
@@ -463,202 +504,154 @@ export class FileTools {
       atomic?: boolean;
       binary?: boolean;
     },
-    profileName: string
-  ): Promise<void> {
-    const useSftp =
-      file.binary === true ||
-      file.verify === true ||
-      file.atomic === true ||
-      Buffer.byteLength(file.content || '', 'utf8') > 256 * 1024;
-
-    if (!useSftp) {
-      // Legacy fast path — unchanged behaviour
-      await this.writeFile(
-        sshConfig,
-        file.path,
-        file.content,
-        file.mode,
-        file.sudo || false,
-        profileName
-      );
-      return;
-    }
-
-    await this.writeFileSftp(sshConfig, file, profileName);
-  }
-
-  /**
-   * SFTP write path: writes the buffer to a local temp file, fastPut to remote,
-   * then optional sha256 verify, atomic rename, chmod, and sudo install.
-   */
-  private async writeFileSftp(
-    sshConfig: any,
-    file: {
-      path: string;
-      content: string;
-      mode?: string;
-      sudo?: boolean;
-      verify?: boolean;
-      atomic?: boolean;
-      binary?: boolean;
-    },
-    profileName: string
-  ): Promise<void> {
+    /** Раскрытый и уже проверенный правилами путь назначения */
+    target: ExpandedPath
+  ): Promise<{ path: string; warnings: string[]; verification: VerificationOutcome }> {
     const buf = file.binary
       ? Buffer.from(file.content || '', 'base64')
       : Buffer.from(file.content || '', 'utf8');
 
-    const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-write-'));
-    const localFile = join(localDir, 'payload.bin');
-    writeFileSync(localFile, buf);
+    // Права проверяются до первой команды: отказ на полпути оставил бы после
+    // себя временный путь и запись, которой не просили
+    const mode = file.mode ? shellMode(file.mode, 'mode') : undefined;
 
     const expectedHash = sha256OfBuffer(buf);
-    const atomic = file.atomic !== false && (file.atomic || file.verify);
-    // For sudo writes we always stage in /tmp, then `sudo install`. atomic flag
-    // is irrelevant in that path because install does an atomic rename itself.
-    const remoteTarget = file.sudo
-      ? `/tmp/.ssh-mcp-write-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      : atomic
-        ? buildTempPath(file.path)
-        : file.path;
+    // Исход сверки уезжает в ответ: без него «сошлось» и «сверить было нечем»
+    // выглядят для клиента одинаково успешной записью
+    let verification: VerificationOutcome = { status: 'skipped' };
+    const ops = remotePathOps({
+      executor: this.executor,
+      config: sshConfig,
+      sudo: file.sudo,
+    });
 
-    const pool = ConnectionPool.getInstance();
-    const sftp = await pool.getSftp(profileName, sshConfig);
-    try {
-      // Ensure parent dir on remote (best-effort, non-sudo path only)
-      if (!file.sudo) {
-        const parent = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
-        if (parent && parent !== '/') {
-          await this.executor.execute(
-            sshConfig,
-            `mkdir -p ${shellQuote(parent)}`,
-            { profileName }
-          );
+    const outcome = await install(ops, {
+      finalPath: target.path,
+      kind: 'file',
+      stage: (staging) =>
+        buf.length > INLINE_WRITE_LIMIT
+          ? this.stageByTransport(sshConfig, staging, buf, file.sudo)
+          : this.stageByStdin(sshConfig, staging, buf, file.sudo),
+      verify: async (staging) => {
+        if (!file.verify) return null;
+
+        const result = await verifyRemoteFiles(
+          this.executor,
+          sshConfig,
+          [{ path: staging, hash: expectedHash }],
+          { sudo: file.sudo }
+        );
+
+        if (result.status === 'mismatched') {
+          return `local=${expectedHash}, remote differs`;
         }
-      }
-      await new Promise<void>((resolve, reject) => {
-        sftp.fastPut(localFile, remoteTarget, { concurrency: 4, chunkSize: 32768 }, (err) => {
-          if (err) reject(new Error(`SFTP fastPut failed: ${err.message}`));
-          else resolve();
-        });
-      });
-    } finally {
-      sftp.end();
-      pool.releaseClient(profileName);
-      try { rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
-    }
 
-    try {
-      if (file.verify) {
-        const cmd = buildRemoteSha256Command(shellQuote(remoteTarget));
-        const r = await this.executor.execute(sshConfig, cmd, {
-          profileName,
-          sudo: file.sudo,
-        });
-        if (r.stdout.includes('NO_SHA256_TOOL')) {
-          logger.warn(`[file-tools] sha256 tools not available on remote; verify skipped`);
+        // «Проверить нечем» — не то же самое, что испорченная запись:
+        // отказывать здесь значило бы рушить исправную запись на сервере
+        // без sha256sum и openssl
+        if (result.status === 'unavailable') {
+          logger.warn(`[file-tools] verification skipped: ${result.reason}`);
+          verification = { status: 'unavailable', reason: result.reason };
         } else {
-          const actual = parseRemoteSha256(r.stdout);
-          if (actual !== expectedHash) {
-            await this.executor
-              .execute(sshConfig, `rm -f ${shellQuote(remoteTarget)}`, {
-                profileName,
-                sudo: file.sudo,
-              })
-              .catch(() => undefined);
-            throw new Error(
-              `sha256 mismatch after write: local=${expectedHash}, remote differs`
-            );
-          }
+          verification = { status: 'verified' };
         }
+
+        return null;
+      },
+      finalize: async (staging) => {
+        if (!mode) return;
+        await this.executor.executeChecked(
+          sshConfig,
+          `chmod ${mode} -- ${shellQuote(staging)}`,
+          { sudo: file.sudo }
+        );
+      },
+    });
+
+    return {
+      path: outcome.path,
+      warnings: [...target.warnings, ...outcome.warnings],
+      verification,
+    };
+  }
+
+  /**
+   * Наполнить временный путь потоком в stdin.
+   *
+   * Содержимое идёт байтами по каналу, а не текстом команды, поэтому shell его
+   * не разбирает: ни кавычки, ни границы строк, ни нулевой байт ничего не
+   * значат. Проверено вживую на BusyBox и dash, на обоих бэкендах.
+   */
+  private async stageByStdin(
+    sshConfig: any,
+    staging: string,
+    content: Buffer,
+    sudo?: boolean
+  ): Promise<void> {
+    await this.executor.executeChecked(sshConfig, `cat > ${shellQuote(staging)}`, {
+      sudo,
+      stdin: content,
+    });
+  }
+
+  /** Наполнить временный путь через транспорт: для крупного и двоичного */
+  private async stageByTransport(
+    sshConfig: any,
+    staging: string,
+    content: Buffer,
+    sudo?: boolean
+  ): Promise<void> {
+    const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-write-'));
+    const localFile = join(localDir, 'payload.bin');
+    writeFileSync(localFile, content);
+
+    try {
+      const runner = await getRunner(sshConfig);
+
+      if (!sudo) {
+        await runner.upload(localFile, staging);
+        return;
       }
 
-      if (file.sudo) {
-        // Move staged file into place
-        const flags: string[] = [];
-        if (file.mode) flags.push(`-m ${file.mode}`);
-        const parent = file.path.substring(0, file.path.lastIndexOf('/')) || '/';
-        if (parent && parent !== '/') {
-          await this.executor.execute(
-            sshConfig,
-            `mkdir -p ${shellQuote(parent)}`,
-            { profileName, sudo: true }
-          );
-        }
-        await this.executor.execute(
+      // Под sudo передача идёт от имени пользователя в /tmp, а рядом с целью
+      // копия появляется уже с правами. `install` здесь не годится: он
+      // копирует поверх, то есть уничтожает старое содержимое до того, как
+      // записано новое, — ровно то, чего этот протокол не допускает
+      const handoff = buildSudoStagingPath();
+      await runner.upload(localFile, handoff);
+      try {
+        await this.executor.executeChecked(
           sshConfig,
-          `install ${flags.join(' ')} ${shellQuote(remoteTarget)} ${shellQuote(file.path)}`,
-          { profileName, sudo: true }
+          `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
+          { sudo: true }
         );
+      } finally {
         await this.executor
-          .execute(sshConfig, `rm -f ${shellQuote(remoteTarget)}`, { profileName })
+          .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, {})
           .catch(() => undefined);
-      } else if (atomic) {
-        await this.executor.execute(
-          sshConfig,
-          `mv -f ${shellQuote(remoteTarget)} ${shellQuote(file.path)}`,
-          { profileName }
-        );
-        if (file.mode) {
-          await this.executor.execute(
-            sshConfig,
-            `chmod ${file.mode} ${shellQuote(file.path)}`,
-            { profileName }
-          );
-        }
-      } else {
-        // Non-atomic, non-sudo: chmod final path if mode set
-        if (file.mode) {
-          await this.executor.execute(
-            sshConfig,
-            `chmod ${file.mode} ${shellQuote(file.path)}`,
-            { profileName }
-          );
-        }
       }
-    } catch (err) {
-      // best-effort cleanup of staged file
-      await this.executor
-        .execute(sshConfig, `rm -f ${shellQuote(remoteTarget)}`, {
-          profileName,
-          sudo: file.sudo,
-        })
-        .catch(() => undefined);
-      throw err;
+    } finally {
+      try { rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   }
 
   /**
-   * Read a file via SFTP into a Buffer and return base64.
-   * Used when binary=true to avoid utf8 corruption from `cat` over PTY.
+   * Забрать файл целиком и вернуть base64.
+   * Нужно при binary=true: `cat` через PTY портит байты вне utf8.
    */
   private async readFileBinary(
     sshConfig: any,
-    remotePath: string,
-    profileName: string
+    remotePath: string
   ): Promise<string> {
     const localDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-read-'));
     const localFile = join(localDir, 'payload.bin');
-    const pool = ConnectionPool.getInstance();
-    const sftp = await pool.getSftp(profileName, sshConfig);
     try {
-      await new Promise<void>((resolve, reject) => {
-        sftp.fastGet(
-          remotePath,
-          localFile,
-          { concurrency: 4, chunkSize: 32768 },
-          (err) => {
-            if (err) reject(new Error(`SFTP fastGet failed: ${err.message}`));
-            else resolve();
-          }
-        );
-      });
-      const buf = (await import('fs/promises')).readFile(localFile);
-      const data = await buf;
+      const runner = await getRunner(sshConfig);
+      await runner.download(remotePath, localFile);
+
+      const data = await readFile(localFile);
       return data.toString('base64');
     } finally {
-      sftp.end();
-      pool.releaseClient(profileName);
       try { rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   }
@@ -666,33 +659,14 @@ export class FileTools {
   /**
    * Handle ssh_file_list
    */
-  private async handleFileList(request: CallToolRequest) {
+  private async handleFileList(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    // Validate path against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      const pathValidation = pathValidator.validate(args.path);
-      if (!pathValidation.valid) {
-        throw new Error(`Path validation failed: ${pathValidation.error}`);
-      }
-    }
-    
-    const expanded = this.expandRemoteTilde(args.path);
-    
-    // Build safe path
-    let safePath: string;
-    if (expanded.startsWith('$HOME')) {
-      const homePrefix = '$HOME';
-      const restPath = expanded.substring(5);
-      const escapedRest = this.escapeForDoubleQuotes(restPath);
-      safePath = `"${homePrefix}${escapedRest}"`;
-    } else {
-      safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
-    }
-    
+    const path = requireText(args.path, 'path', '"/var/log"');
+    const target = await resolveRemotePath(this.executor, sshConfig, path, {});
+    const safePath = shellQuote(target.path);
+
     let command = 'ls -lah';
     
     if (args.recursive) {
@@ -700,143 +674,34 @@ export class FileTools {
     }
     
     if (args.pattern) {
-      command += ` ${safePath}/${args.pattern}`;
+      // Шаблон обязан раскрыться на сервере, поэтому в кавычки он не уходит:
+      // всё, кроме знаков шаблона, обезврежено обратным слэшем
+      command += ` ${safePath}/${shellGlob(args.pattern, 'pattern')}`;
     } else {
       command += ` ${safePath}`;
     }
     
-    const result = await this.executor.execute(sshConfig, command, { profileName });
-    
+    const result = await this.executor.execute(sshConfig, command, {
+      idempotent: true,
+      signal,
+    });
+
     if (result.exitCode !== 0) {
       throw new Error(`Failed to list files: ${result.stderr || result.stdout}`);
     }
-    
+
     return {
-      content: [{ type: 'text', text: result.stdout }],
+      content: [{ type: 'text', text: withTruncationNote(result.stdout, result.truncated) }],
     };
   }
   
   /**
-   * Expand tilde (~) for remote execution
-   * Converts ~ to $HOME for shell expansion on remote server
-   * 
-   * Examples:
-   *   ~/file       → $HOME/file
-   *   ~            → $HOME
-   *   ~user/file   → ~user/file (left as-is, shell will expand)
-   *   /abs/path    → /abs/path (no change)
-   * 
-   * Note: We use $HOME instead of ~ because:
-   * 1. Single quotes prevent ~ expansion: cat '~/file' won't work
-   * 2. $HOME works in double quotes: cat "$HOME/file" works
-   * 3. We can safely escape everything except $HOME in double quotes
+   * Команда чтения файла.
+   *
+   * Путь приходит сюда уже раскрытым и уезжает в одинарных кавычках — тем же
+   * способом, что и при записи.
    */
-  private expandRemoteTilde(path: string): string {
-    if (!path) return path;
-    
-    // ~/path → $HOME/path
-    if (path.startsWith('~/')) {
-      return '$HOME/' + path.substring(2);
-    }
-    
-    // ~ → $HOME
-    if (path === '~') {
-      return '$HOME';
-    }
-    
-    // ~user/path → leave as-is (shell will expand ~user)
-    // /absolute/path → leave as-is
-    // ./relative/path → leave as-is
-    return path;
-  }
-  
-  /**
-   * Escape path for single-quoted context (safest)
-   * Used for paths without tilde or variables
-   * 
-   * Single quotes prevent ALL expansions (variables, commands, globs)
-   * Only need to handle embedded single quotes: ' → '\''
-   */
-  private escapeForSingleQuotes(path: string): string {
-    // Replace ' with '\'' (end quote, escaped quote, start quote)
-    return path.replace(/'/g, "'\\''");
-  }
-  
-  /**
-   * Escape path for double-quoted context
-   * Used when we need variable expansion (e.g., $HOME)
-   * 
-   * Double quotes allow variable expansion but we must escape:
-   * - Backslashes (\)
-   * - Double quotes (")
-   * - Dollar signs ($) - except $HOME which we want to expand
-   * - Backticks (`)
-   * - Exclamation marks (!) - for history expansion
-   */
-  private escapeForDoubleQuotes(str: string): string {
-    return str
-      .replace(/\\/g, '\\\\')   // \ → \\
-      .replace(/"/g, '\\"')     // " → \"
-      .replace(/\$/g, '\\$')    // $ → \$ (prevent variable expansion)
-      .replace(/`/g, '\\`')     // ` → \` (prevent command substitution)
-      .replace(/!/g, '\\!');    // ! → \! (prevent history expansion)
-  }
-  
-  /**
-   * Build safe shell command with proper quoting
-   * 
-   * Strategy:
-   * - If path contains ~ → expand to $HOME → use double quotes
-   * - Otherwise → use single quotes (safest)
-   * 
-   * Double quotes are used for $HOME expansion but everything else is escaped
-   * to prevent injection attacks (variables, commands, etc.)
-   */
-  private buildSafeCommand(path: string, command: string, encoding?: string): string {
-    const expanded = this.expandRemoteTilde(path);
-    
-    // Path with $HOME → use double quotes for expansion
-    if (expanded.startsWith('$HOME')) {
-      // Split: $HOME (don't escape) + rest (escape everything)
-      const homePrefix = '$HOME';
-      const restPath = expanded.substring(5); // After $HOME
-      
-      // Escape only the part after $HOME
-      const escapedRest = this.escapeForDoubleQuotes(restPath);
-      const safePath = `"${homePrefix}${escapedRest}"`;
-      
-      // Build command based on encoding
-      if (encoding === 'base64') {
-        return `base64 ${safePath}`;
-      } else if (command === 'cat') {
-        return `cat ${safePath}`;
-      } else if (command === 'tail') {
-        return `tail ${safePath}`;
-      } else {
-        return `${command} ${safePath}`;
-      }
-    } else {
-      // Regular path → use single quotes (safest)
-      const safePath = `'${this.escapeForSingleQuotes(expanded)}'`;
-      
-      // Build command based on encoding
-      if (encoding === 'base64') {
-        return `base64 ${safePath}`;
-      } else if (command === 'cat') {
-        return `cat ${safePath}`;
-      } else if (command === 'tail') {
-        return `tail ${safePath}`;
-      } else {
-        return `${command} ${safePath}`;
-      }
-    }
-  }
-  
-  /**
-   * Legacy escape method (kept for backward compatibility)
-   * @deprecated Use escapeForSingleQuotes() or escapeForDoubleQuotes() instead
-   */
-  private escapePath(path: string): string {
-    return this.escapeForSingleQuotes(path);
+  private buildReadCommand(path: string, encoding: string): string {
+    return `${encoding === 'base64' ? 'base64' : 'cat'} ${shellQuote(path)}`;
   }
 }

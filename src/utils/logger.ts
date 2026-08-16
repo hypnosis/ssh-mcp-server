@@ -5,8 +5,9 @@
  * ENV variables:
  * - SSH_MCP_LOG_LEVEL: debug, info, warn, error (default: info)
  * - SSH_MCP_LOG_TIMESTAMP: true, false (default: true)
- * - SSH_MCP_LOG_COLORS: true, false (default: false)
  */
+
+import { inspect } from 'util';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -20,10 +21,66 @@ interface ContextLogger {
   error(message: string, ...args: any[]): void;
 }
 
+/**
+ * Секреты профилей, которым нельзя попадать в лог.
+ *
+ * Лог уходит в stderr, то есть прямо в вывод MCP-клиента. Сегодня код пишет
+ * туда `hasPassword: true`, а не сам пароль, но это держится на внимательности:
+ * одна строка `logger.debug('config:', config)` — и секрет в логе навсегда.
+ * Сторож закрывает это в одной точке, независимо от длины секрета.
+ */
+const loggedSecrets = new Set<string>();
+
+/**
+ * Запомнить секрет, который логгер обязан вычищать из своего вывода.
+ *
+ * Вместе с самим секретом запоминаем его печатную форму: `inspect` экранирует
+ * обратный слэш и перевод строки, поэтому пароль `a\b` попадает в лог как
+ * `a\\b` и поиск сырой подстроки его не находит (замерено).
+ */
+export function hideFromLogs(secret: string | undefined): void {
+  if (!secret) return;
+  loggedSecrets.add(secret);
+
+  const printed = JSON.stringify(secret).slice(1, -1);
+  if (printed !== secret) loggedSecrets.add(printed);
+}
+
+/** Забыть все секреты — нужно тестам, чтобы прогоны не влияли друг на друга */
+export function forgetLoggedSecrets(): void {
+  loggedSecrets.clear();
+}
+
+function maskSecrets(text: string): string {
+  let masked = text;
+  for (const secret of loggedSecrets) {
+    masked = masked.split(secret).join('***');
+  }
+  return masked;
+}
+
+/**
+ * Очистить то, что печатается: строку — напрямую, объект — только если секрет
+ * в нём действительно есть (иначе объект теряет читаемый вид на ровном месте).
+ *
+ * Смотрим на объект через `inspect`, а не через `JSON.stringify`: замер показал,
+ * что сериализация в JSON пропускает секрет мимо сторожа сразу тремя путями —
+ * `Error` превращается в `{}` (а текст с паролем живёт в message и stack),
+ * циклическая ссылка бросает исключение, `Map` сериализуется в пустой объект.
+ * `inspect` печатает ровно то же, что увидит человек в логе.
+ */
+function scrub(value: unknown): unknown {
+  if (loggedSecrets.size === 0) return value;
+  if (typeof value === 'string') return maskSecrets(value);
+
+  const shown = inspect(value, { depth: 4 });
+  const masked = maskSecrets(shown);
+  return masked === shown ? value : masked;
+}
+
 class Logger {
   private level: LogLevel = 'info';
   private enableTimestamp: boolean = true;
-  private enableColors: boolean = false;
 
   constructor() {
     // Read from environment variables
@@ -31,7 +88,6 @@ class Logger {
                  (process.env.LOG_LEVEL as LogLevel) || 
                  'info';
     this.enableTimestamp = process.env.SSH_MCP_LOG_TIMESTAMP !== 'false';
-    this.enableColors = process.env.SSH_MCP_LOG_COLORS === 'true';
   }
 
   private shouldLog(level: LogLevel): boolean {
@@ -54,7 +110,7 @@ class Logger {
     prefix += `[${level.toUpperCase()}]`;
     
     // MCP: stdout для протокола, stderr для логов
-    console.error(prefix, message, ...args);
+    console.error(prefix, maskSecrets(message), ...args.map(scrub));
   }
 
   debug(message: string, ...args: any[]): void {

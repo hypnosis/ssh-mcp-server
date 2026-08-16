@@ -3,7 +3,15 @@
  * Управление SSH конфигурацией для удаленных серверов
  */
 
-import { logger } from './logger.js';
+import type { PathSecurityConfig } from './path-validator.js';
+
+/**
+ * Политика проверки ключа хоста.
+ * `accept-new` — запомнить ключ при первом подключении, но заметить подмену.
+ */
+export type StrictHostKeyChecking = 'yes' | 'accept-new' | 'no';
+
+export const STRICT_HOST_KEY_CHECKING_VALUES: StrictHostKeyChecking[] = ['yes', 'accept-new', 'no'];
 
 /**
  * SSH конфигурация для подключения к удаленному серверу
@@ -21,38 +29,18 @@ export interface SSHConfig {
   passphrase?: string;
   /** Пароль для аутентификации (не рекомендуется для production) */
   password?: string;
-}
-
-
-/**
- * Валидация SSH конфигурации
- */
-export function validateSSHConfig(config: Partial<SSHConfig>): string[] {
-  const errors: string[] = [];
-
-  if (!config.host || typeof config.host !== 'string' || config.host.trim().length === 0) {
-    errors.push('SSH host is required and must be a non-empty string');
-  }
-
-  if (!config.username || typeof config.username !== 'string' || config.username.trim().length === 0) {
-    errors.push('SSH username is required and must be a non-empty string');
-  }
-
-  if (config.port !== undefined) {
-    if (typeof config.port !== 'number' || config.port < 1 || config.port > 65535) {
-      errors.push('SSH port must be a number between 1 and 65535');
-    }
-  }
-
-  if (config.privateKeyPath !== undefined) {
-    if (typeof config.privateKeyPath !== 'string' || config.privateKeyPath.trim().length === 0) {
-      errors.push('SSH privateKeyPath must be a non-empty string');
-    }
-  }
-
-  if (!config.privateKeyPath && !config.password) {
-    logger.warn('SSH config: neither privateKeyPath nor password specified. Authentication may fail.');
-  }
-
-  return errors;
+  /** Политика проверки ключа хоста (по умолчанию accept-new; только бэкенд openssh) */
+  strictHostKeyChecking?: StrictHostKeyChecking;
+  /** Игнорировать пользовательский ~/.ssh/config (только бэкенд openssh) */
+  ignoreUserConfig?: boolean;
+  /**
+   * Ограничения на пути: белый и чёрный списки каталогов.
+   *
+   * Поле задаётся в профиле и обязано доехать сюда: инструменты берут правила
+   * только отсюда. Пока его здесь не было, `pathSecurity` из файла профилей
+   * молча терялся при сборке конфига — README обещал защиту, а валидатор ни
+   * разу не создавался (замерено на живых серверах: запись в запрещённый
+   * каталог проходила).
+   */
+  pathSecurity?: PathSecurityConfig;
 }

@@ -5,10 +5,30 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
+import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
-import { createPathValidator } from '../utils/path-validator.js';
+import {
+  TRUNCATED_OUTPUT_NOTE,
+  withTruncationNote,
+  DEFAULT_MAX_MATCHES,
+  limitMatches,
+  matchLimitNote,
+} from '../utils/output-notes.js';
+import { shellCount, shellQuote } from '../utils/shell-arg.js';
+import { requireText, requireTextList } from '../utils/tool-args.js';
+import { resolveRemotePath } from '../managers/path-guard.js';
+import { posix as posixPath } from 'path';
+
+/** Знаки, из-за которых имя считается шаблоном, а не именем файла */
+const GLOB_CHARS = /[*?[]/;
+
+/** Сколько файлов шаблон раскрывает за раз */
+const MAX_GLOB_MATCHES = 50;
+
+/** Маркер ответа: путь существует под своим именем, шаблон раскрывать нечего */
+const GLOB_LITERAL = 'SSH_MCP_GLOB_LITERAL';
 
 /**
  * Log Tools
@@ -41,7 +61,7 @@ export class LogTools {
                 { type: 'string' },
                 { type: 'array', items: { type: 'string' } },
               ],
-              description: 'Log file path or array of paths',
+              description: 'Log file path, glob pattern (*.log), or array of paths',
             },
             lines: {
               type: 'number',
@@ -90,6 +110,11 @@ export class LogTools {
               description: 'Case sensitive search. Default: false',
               default: false,
             },
+            maxMatches: {
+              type: 'number',
+              description: `Maximum matches per log file. Default: ${DEFAULT_MAX_MATCHES}`,
+              default: DEFAULT_MAX_MATCHES,
+            },
             sudo: {
               type: 'boolean',
               description: 'Read logs with sudo. Default: false',
@@ -105,30 +130,28 @@ export class LogTools {
   /**
    * Handle tool call
    */
-  async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
+  async handleCall(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     const toolName = request.params.name;
     
     try {
       switch (toolName) {
         case 'ssh_log_tail':
-          return await this.handleLogTail(request);
+          return await this.handleLogTail(request, signal);
         case 'ssh_log_search':
-          return await this.handleLogSearch(request);
+          return await this.handleLogSearch(request, signal);
         default:
           throw new Error(`Unknown tool: ${toolName}`);
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
-      return {
-        content: [{ type: 'text', text: `Error: ${error.message}` }],
-      };
+      return toolFailure(error);
     }
   }
   
   /**
    * Handle ssh_log_tail
    */
-  private async handleLogTail(request: CallToolRequest) {
+  private async handleLogTail(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     
     // Validate array parameter format
@@ -136,54 +159,54 @@ export class LogTools {
     if (!validation.isValid) {
       return createValidationErrorResponse(validation.errorMessage!);
     }
-    
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const paths = Array.isArray(args.path) ? args.path : [args.path];
-    const lines = args.lines || 100;
+    const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
+    // Тип из схемы ничего не гарантирует: MCP отдаёт аргументы как есть
+    const lines = shellCount(args.lines ?? 100, 'lines');
     const sudo = args.sudo || false;
-    
-    // Validate paths against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      for (const path of paths) {
-        const pathValidation = pathValidator.validate(path);
-        if (!pathValidation.valid) {
-          throw new Error(`Path validation failed: ${pathValidation.error}`);
-        }
-      }
-    }
-    
+
+    // Правила профиля проверяет buildSafePath — уже на раскрытом пути
+    const { paths, notes } = await this.expandPatterns(sshConfig, requested, sudo);
+
     // Single log - simple result
     if (paths.length === 1) {
-      const safePath = this.buildSafePath(paths[0]);
+      const safePath = await this.buildSafePath(sshConfig, paths[0], sudo);
       const command = `tail -n ${lines} ${safePath}`;
-      const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
-      
+      const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true, signal });
+
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read log: ${result.stderr || result.stdout}`);
       }
-      
+
       return {
-        content: [{ type: 'text', text: result.stdout || '(empty log)' }],
+        content: [
+          {
+            type: 'text',
+            text: this.withGlobNotes(
+              withTruncationNote(result.stdout || '(empty log)', result.truncated),
+              notes
+            ),
+          },
+        ],
       };
     }
-    
+
     // Множественные логи - структурированный результат
     const results: Array<{
       path: string;
       lines: string[];
       totalLines: number;
       success: boolean;
+      truncated?: boolean;
       error?: string;
     }> = [];
     
     for (const path of paths) {
       try {
-        const safePath = this.buildSafePath(path);
+        const safePath = await this.buildSafePath(sshConfig, path, sudo);
         const command = `tail -n ${lines} ${safePath}`;
-        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+        const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true, signal });
         
         if (result.exitCode === 0) {
           const logLines = result.stdout.split('\n').filter(line => line.length > 0);
@@ -192,6 +215,7 @@ export class LogTools {
             lines: logLines,
             totalLines: logLines.length,
             success: true,
+            truncated: result.truncated,
           });
         } else {
           results.push({
@@ -203,6 +227,9 @@ export class LogTools {
           });
         }
       } catch (error: any) {
+        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
+        // возвращал бы список с пробелами вместо отказа
+        if (signal?.aborted) throw error;
         results.push({
           path,
           lines: [],
@@ -219,22 +246,24 @@ export class LogTools {
     for (const result of results) {
       if (result.success) {
         output += `=== ${result.path} (${result.totalLines} lines) ===\n`;
-        output += result.lines.join('\n') + '\n\n';
+        output += result.lines.join('\n') + '\n';
+        if (result.truncated) output += `${TRUNCATED_OUTPUT_NOTE}\n`;
+        output += '\n';
       } else {
         output += `=== ${result.path} (ERROR) ===\n`;
         output += `Error: ${result.error}\n\n`;
       }
     }
-    
+
     return {
-      content: [{ type: 'text', text: output }],
+      content: [{ type: 'text', text: this.withGlobNotes(output, notes) }],
     };
   }
-  
+
   /**
    * Handle ssh_log_search
    */
-  private async handleLogSearch(request: CallToolRequest) {
+  private async handleLogSearch(request: CallToolRequest, signal?: AbortSignal) {
     const args = request.params.arguments as any;
     
     // Validate array parameter format
@@ -242,39 +271,34 @@ export class LogTools {
     if (!validation.isValid) {
       return createValidationErrorResponse(validation.errorMessage!);
     }
-    
-    const profileName = args.profile || 'default';
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const paths = Array.isArray(args.path) ? args.path : [args.path];
-    const query = args.query;
-    const context = args.context || 0;
+    const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
+    const query = requireText(args.query, 'query', '"error"');
+    const context = shellCount(args.context ?? 0, 'context');
     const caseSensitive = args.caseSensitive || false;
+    const maxMatches = shellCount(args.maxMatches ?? DEFAULT_MAX_MATCHES, 'maxMatches');
     const sudo = args.sudo || false;
-    
-    // Validate paths against security rules (if configured)
-    const pathValidator = createPathValidator(sshConfig);
-    if (pathValidator) {
-      for (const path of paths) {
-        const pathValidation = pathValidator.validate(path);
-        if (!pathValidation.valid) {
-          throw new Error(`Path validation failed: ${pathValidation.error}`);
-        }
-      }
-    }
-    
+
+    // Правила профиля проверяет buildSafePath — уже на раскрытом пути
+    const { paths, notes } = await this.expandPatterns(sshConfig, requested, sudo);
+
     // Build grep flags
     const grepFlags = [];
     grepFlags.push('-E'); // Extended regex
     if (!caseSensitive) grepFlags.push('-i'); // Case insensitive
     if (context > 0) grepFlags.push(`-C ${context}`); // Context lines
     grepFlags.push('-n'); // Line numbers
+    // Одно совпадение сверх предела — признак, что в журнале есть ещё.
+    // Предел ставит сама grep, а не хвостовой `head`: он вернул бы ноль и за
+    // отсутствующий файл, и «нечего искать» стало бы неотличимо от ошибки
+    grepFlags.push(`-m ${maxMatches + 1}`);
     
     // Single log - simple result
     if (paths.length === 1) {
-      const safePath = this.buildSafePath(paths[0]);
-      const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
-      const result = await this.executor.execute(sshConfig, command, { sudo });
+      const safePath = await this.buildSafePath(sshConfig, paths[0], sudo);
+      const command = `grep ${grepFlags.join(' ')} ${shellQuote(query)} ${safePath}`;
+      const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true, signal });
       
       // grep exit code 1 = no matches (not an error)
       if (result.exitCode !== 0 && result.exitCode !== 1) {
@@ -283,38 +307,55 @@ export class LogTools {
       
       if (!result.stdout) {
         return {
-          content: [{ type: 'text', text: 'No matches found' }],
+          content: [{ type: 'text', text: this.withGlobNotes('No matches found', notes) }],
         };
       }
-      
+
+      const limited = limitMatches(result.stdout, maxMatches);
+
       return {
-        content: [{ type: 'text', text: result.stdout }],
+        content: [
+          {
+            type: 'text',
+            text: this.withGlobNotes(
+              limited.limited
+                ? `${withTruncationNote(limited.text, result.truncated)}\n\n${matchLimitNote(maxMatches)}`
+                : withTruncationNote(limited.text, result.truncated),
+              notes
+            ),
+          },
+        ],
       };
     }
-    
+
     // Множественные логи - структурированный результат
     const results: Array<{
       path: string;
       matches: string;
       matchCount: number;
       success: boolean;
+      truncated?: boolean;
+      limited?: boolean;
       error?: string;
     }> = [];
     
     for (const path of paths) {
       try {
-        const safePath = this.buildSafePath(path);
-        const command = `grep ${grepFlags.join(' ')} '${this.escapeQuery(query)}' ${safePath}`;
-        const result = await this.executor.execute(sshConfig, command, { sudo, profileName });
+        const safePath = await this.buildSafePath(sshConfig, path, sudo);
+        const command = `grep ${grepFlags.join(' ')} ${shellQuote(query)} ${safePath}`;
+        const result = await this.executor.execute(sshConfig, command, { sudo, idempotent: true, signal });
         
         // grep exit code 1 = no matches
         if (result.exitCode === 0 || result.exitCode === 1) {
-          const matchCount = result.stdout ? result.stdout.split('\n').filter(line => line.length > 0).length : 0;
+          const limited = limitMatches(result.stdout, maxMatches);
+          const matchCount = limited.text ? limited.text.split('\n').filter(line => line.length > 0).length : 0;
           results.push({
             path,
-            matches: result.stdout || '(no matches)',
+            matches: limited.text || '(no matches)',
             matchCount,
             success: true,
+            truncated: result.truncated,
+            limited: limited.limited,
           });
         } else {
           results.push({
@@ -326,6 +367,9 @@ export class LogTools {
           });
         }
       } catch (error: any) {
+        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
+        // возвращал бы список с пробелами вместо отказа
+        if (signal?.aborted) throw error;
         results.push({
           path,
           matches: '',
@@ -342,124 +386,134 @@ export class LogTools {
     for (const result of results) {
       if (result.success) {
         output += `=== ${result.path} (${result.matchCount} matches) ===\n`;
-        output += result.matches + '\n\n';
+        output += result.matches + '\n';
+        if (result.truncated) output += `${TRUNCATED_OUTPUT_NOTE}\n`;
+        if (result.limited) output += `${matchLimitNote(maxMatches)}\n`;
+        output += '\n';
       } else {
         output += `=== ${result.path} (ERROR) ===\n`;
         output += `Error: ${result.error}\n\n`;
       }
     }
-    
+
     return {
-      content: [{ type: 'text', text: output }],
+      content: [{ type: 'text', text: this.withGlobNotes(output, notes) }],
     };
   }
   
   /**
-   * Expand tilde (~) for remote execution
-   * Converts ~ to $HOME for shell expansion on remote server
-   * 
-   * Examples:
-   *   ~/file       → $HOME/file
-   *   ~            → $HOME
-   *   ~user/file   → ~user/file (left as-is, shell will expand)
-   *   /abs/path    → /abs/path (no change)
-   * 
-   * Note: We use $HOME instead of ~ because:
-   * 1. Single quotes prevent ~ expansion: tail '~/file' won't work
-   * 2. $HOME works in double quotes: tail "$HOME/file" works
-   * 3. We can safely escape everything except $HOME in double quotes
+   * Файлы, которые назвал шаблон.
+   *
+   * Раскрывает его `find` по имени, а не оболочка сервера: путь уезжает в
+   * кавычках, иначе вместе со звёздочкой ожили бы пробел, `$(…)` и перевод
+   * строки в имени. Каталог проверяется правилами профиля здесь, каждое
+   * найденное имя — обычным путём в месте вызова.
+   *
+   * Путь, существующий под своим именем, шаблоном не считается: скобка в имени
+   * файла читалась и раньше.
    */
-  private expandRemoteTilde(path: string): string {
-    if (!path) return path;
-    
-    // ~/path → $HOME/path
-    if (path.startsWith('~/')) {
-      return '$HOME/' + path.substring(2);
+  private async expandPatterns(
+    sshConfig: any,
+    paths: string[],
+    sudo: boolean
+  ): Promise<{ paths: string[]; notes: string[] }> {
+    const expanded: string[] = [];
+    const notes: string[] = [];
+
+    for (const path of paths) {
+      const pattern = posixPath.basename(path);
+      const directory = posixPath.dirname(path);
+
+      if (GLOB_CHARS.test(directory)) {
+        throw new Error(
+          `cannot expand "${path}": a pattern is supported in the file name, not in the directory.`
+        );
+      }
+
+      if (!GLOB_CHARS.test(pattern)) {
+        expanded.push(path);
+        continue;
+      }
+
+      const target = await resolveRemotePath(this.executor, sshConfig, directory, {
+        sudo,
+      });
+      for (const warning of target.warnings) {
+        logger.warn(`[log-tools] ${warning}`);
+      }
+
+      const literal = posixPath.join(target.path, pattern);
+      const result = await this.executor.execute(
+        sshConfig,
+        `if [ -e ${shellQuote(literal)} ]; then printf '${GLOB_LITERAL}\\n'; else ` +
+          `find ${shellQuote(target.path)} -maxdepth 1 ! -type d ` +
+          `-name ${shellQuote(pattern)} -print0 2>/dev/null; fi`,
+        { sudo, idempotent: true }
+      );
+
+      if (result.stdout.split('\n').some((line) => line.trim() === GLOB_LITERAL)) {
+        expanded.push(literal);
+        continue;
+      }
+
+      // Скрытые файлы шаблон без точки не называет — как и оболочка
+      const matches = result.stdout
+        .split('\0')
+        .filter((name) => name.length > 0)
+        .filter((name) => pattern.startsWith('.') || !posixPath.basename(name).startsWith('.'))
+        .sort();
+
+      if (matches.length === 0) {
+        throw new Error(
+          result.truncated
+            ? `cannot expand "${path}": the list of matching files was too long to read.`
+            : `no files match "${path}"`
+        );
+      }
+
+      if (result.truncated) {
+        notes.push(`Note: the list of files matching "${path}" was cut off, so it may be incomplete.`);
+      }
+
+      if (matches.length > MAX_GLOB_MATCHES) {
+        notes.push(
+          `Note: "${path}" matched ${matches.length} files, showing the first ${MAX_GLOB_MATCHES}.`
+        );
+      }
+
+      expanded.push(...matches.slice(0, MAX_GLOB_MATCHES));
     }
-    
-    // ~ → $HOME
-    if (path === '~') {
-      return '$HOME';
+
+    return { paths: expanded, notes };
+  }
+
+  /** Пометки о раскрытии шаблона идут под ответом, а не вместо него */
+  private withGlobNotes(text: string, notes: string[]): string {
+    return notes.length > 0 ? `${text}\n\n${notes.join('\n')}` : text;
+  }
+
+  /**
+   * Путь журнала для команды.
+   *
+   * `~` раскрывается у нас по домашнему каталогу из паспорта и уезжает в
+   * одинарных кавычках — тем же способом, что в записи и чтении файлов.
+   *
+   * Правила профиля проверяются здесь же, после раскрытия. Раньше они стояли
+   * выше по коду и смотрели на сырой путь: `~/secret` валидатор подменял
+   * выдуманным `/home/user/secret`, и под root запрет `/root` не срабатывал —
+   * замер на обоих контейнерах отдавал содержимое запрещённого файла.
+   */
+  private async buildSafePath(
+    sshConfig: any,
+    path: string,
+    sudo: boolean
+  ): Promise<string> {
+    const target = await resolveRemotePath(this.executor, sshConfig, path, { sudo });
+
+    for (const warning of target.warnings) {
+      logger.warn(`[log-tools] ${warning}`);
     }
-    
-    // ~user/path → leave as-is (shell will expand ~user)
-    // /absolute/path → leave as-is
-    // ./relative/path → leave as-is
-    return path;
-  }
-  
-  /**
-   * Escape path for single-quoted context (safest)
-   * Used for paths without tilde or variables
-   * 
-   * Single quotes prevent ALL expansions (variables, commands, globs)
-   * Only need to handle embedded single quotes: ' → '\''
-   */
-  private escapeForSingleQuotes(path: string): string {
-    // Replace ' with '\'' (end quote, escaped quote, start quote)
-    return path.replace(/'/g, "'\\''");
-  }
-  
-  /**
-   * Escape path for double-quoted context
-   * Used when we need variable expansion (e.g., $HOME)
-   * 
-   * Double quotes allow variable expansion but we must escape:
-   * - Backslashes (\)
-   * - Double quotes (")
-   * - Dollar signs ($) - except $HOME which we want to expand
-   * - Backticks (`)
-   * - Exclamation marks (!) - for history expansion
-   */
-  private escapeForDoubleQuotes(str: string): string {
-    return str
-      .replace(/\\/g, '\\\\')   // \ → \\
-      .replace(/"/g, '\\"')     // " → \"
-      .replace(/\$/g, '\\$')    // $ → \$ (prevent variable expansion)
-      .replace(/`/g, '\\`')     // ` → \` (prevent command substitution)
-      .replace(/!/g, '\\!');    // ! → \! (prevent history expansion)
-  }
-  
-  /**
-   * Build safe shell command with proper quoting
-   * 
-   * Strategy:
-   * - If path contains ~ → expand to $HOME → use double quotes
-   * - Otherwise → use single quotes (safest)
-   * 
-   * Double quotes are used for $HOME expansion but everything else is escaped
-   * to prevent injection attacks (variables, commands, etc.)
-   */
-  private buildSafePath(path: string): string {
-    const expanded = this.expandRemoteTilde(path);
-    
-    // Path with $HOME → use double quotes for expansion
-    if (expanded.startsWith('$HOME')) {
-      // Split: $HOME (don't escape) + rest (escape everything)
-      const homePrefix = '$HOME';
-      const restPath = expanded.substring(5); // After $HOME
-      
-      // Escape only the part after $HOME
-      const escapedRest = this.escapeForDoubleQuotes(restPath);
-      return `"${homePrefix}${escapedRest}"`;
-    } else {
-      // Regular path → use single quotes (safest)
-      return `'${this.escapeForSingleQuotes(expanded)}'`;
-    }
-  }
-  
-  /**
-   * Legacy escape method (kept for backward compatibility)
-   * @deprecated Use escapeForSingleQuotes() or escapeForDoubleQuotes() instead
-   */
-  private escapePath(path: string): string {
-    return this.escapeForSingleQuotes(path);
-  }
-  
-  /**
-   * Escape query for grep
-   */
-  private escapeQuery(query: string): string {
-    return query.replace(/'/g, "'\\''");
+
+    return shellQuote(target.path);
   }
 }

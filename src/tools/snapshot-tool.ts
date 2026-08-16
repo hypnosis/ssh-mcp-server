@@ -5,29 +5,10 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
+import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
-
-interface SystemSnapshot {
-  timestamp: string;
-  hostname: string;
-  uptime: string;
-  services: Array<{ name: string; status: string; uptime: string | null }>;
-  resources: {
-    cpu: { cores: number; usage: number; loadAvg: string };
-    memory: { total: string; used: string; free: string; percent: number };
-    disk: Array<{ mount: string; size: string; used: string; avail: string; percent: string }>;
-  };
-  docker?: {
-    containers: Array<{ id: string; name: string; status: string; uptime: string }>;
-    images: number;
-  };
-  network: {
-    listening: Array<{ port: string; service: string }>;
-    connections: number;
-  };
-  recentErrors: Array<{ source: string; message: string; time: string }>;
-}
+import { parseDfTable, dedupeByDevice } from '../utils/df-table.js';
 
 /**
  * Snapshot Tool
@@ -61,10 +42,12 @@ export class SnapshotTool {
   /**
    * Handle tool call
    */
-  async handleCall(request: CallToolRequest): Promise<{ content: Array<{ type: string; text: string }> }> {
+  // Отмену снимок не берёт: сорванное чтение здесь заменяется пустым
+  // показателем, и отменённый вызов вернулся бы снимком с пустотами вместо
+  // отказа — то есть неполным ответом, выданным за полный
+  async handleCall(request: CallToolRequest): Promise<ToolResult> {
     try {
       const args = request.params.arguments as any;
-      const profileName = args.profile || 'default';
       const sshConfig = resolveSSHConfig({ profile: args.profile });
       
       logger.info('Collecting system snapshot...');
@@ -82,16 +65,16 @@ export class SnapshotTool {
         network,
         errors,
       ] = await Promise.all([
-        this.getTimestamp(sshConfig, profileName),
-        this.getHostname(sshConfig, profileName),
-        this.getUptime(sshConfig, profileName),
-        this.getServices(sshConfig, profileName),
-        this.getCPU(sshConfig, profileName),
-        this.getMemory(sshConfig, profileName),
-        this.getDisk(sshConfig, profileName),
-        this.getDocker(sshConfig, profileName),
-        this.getNetwork(sshConfig, profileName),
-        this.getRecentErrors(sshConfig, profileName),
+        this.getTimestamp(sshConfig),
+        this.getHostname(sshConfig),
+        this.getUptime(sshConfig),
+        this.getServices(sshConfig),
+        this.getCPU(sshConfig),
+        this.getMemory(sshConfig),
+        this.getDisk(sshConfig),
+        this.getDocker(sshConfig),
+        this.getNetwork(sshConfig),
+        this.getRecentErrors(sshConfig),
       ]);
       
       // Format beautiful output
@@ -111,147 +94,295 @@ export class SnapshotTool {
       };
     } catch (error: any) {
       logger.error('ssh_snapshot failed:', error);
-      return {
-        content: [{ type: 'text', text: `Error: ${error.message}` }],
-      };
+      return toolFailure(error);
     }
   }
   
   /**
+   * Сколько чтений снимка идёт по соединению одновременно.
+   *
+   * Залп из десяти мгновенных команд dropbear обрывает: часть каналов
+   * возвращается кодом 255 с пустым выводом и без текста ошибки. Обрыв лечит
+   * повтор в транспорте, а очередь нужна, чтобы не устраивать сервер этот залп:
+   * замер на стенде с dropbear дал шесть срывов на шесть снимков вместо
+   * тринадцати. OpenSSH-серверы десять одновременных чтений держат без потерь.
+   */
+  private static readonly READ_CONCURRENCY = 4;
+
+  /** Хвост очереди чтений: следующее ждёт, пока освободится место */
+  private readSlots: Array<Promise<void>> = [];
+
+  /**
+   * Read a value from the server.
+   *
+   * Снимок состоит из независимых чтений: неудача одного не должна отменять
+   * остальные, поэтому вместо исключения возвращается запасное значение.
+   * Все команды снимка — только чтение, поэтому повтор при обрыве связи безопасен.
+   */
+  private async read(
+    config: any,
+    command: string,
+    options: { sudo?: boolean; fallback?: string } = {}
+  ): Promise<string> {
+    return this.withSlot(async () => {
+      try {
+        const result = await this.executor.execute(config, command, {
+          sudo: options.sudo,
+          idempotent: true,
+        });
+
+        if (result.exitCode !== 0) {
+          logger.debug(`[Snapshot] "${command}" exited with ${result.exitCode}: ${result.stderr.trim()}`);
+          return options.fallback ?? '';
+        }
+
+        return result.stdout.trim();
+      } catch (error: any) {
+        // Сорванное чтение — это пустой показатель, а не пустой снимок:
+        // оборвись канал дважды подряд, отчёт целиком заменялся строкой ошибки
+        logger.debug(`[Snapshot] "${command}" failed: ${error?.message ?? error}`);
+        return options.fallback ?? '';
+      }
+    });
+  }
+
+  /** Пропустить работу, когда одновременных чтений станет меньше предела */
+  private async withSlot<T>(work: () => Promise<T>): Promise<T> {
+    while (this.readSlots.length >= SnapshotTool.READ_CONCURRENCY) {
+      await Promise.race(this.readSlots);
+    }
+
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.readSlots.push(slot);
+
+    try {
+      return await work();
+    } finally {
+      this.readSlots = this.readSlots.filter((s) => s !== slot);
+      release();
+    }
+  }
+
+  /**
    * Get timestamp
    */
-  private async getTimestamp(config: any, profileName: string): Promise<string> {
-    const result = await this.executor.execute(config, 'date -u +"%Y-%m-%dT%H:%M:%SZ"', { profileName });
-    return result.stdout.trim();
+  private async getTimestamp(config: any): Promise<string> {
+    return this.read(config, 'date -u +"%Y-%m-%dT%H:%M:%SZ"', { fallback: 'unknown' });
   }
-  
+
   /**
    * Get hostname
    */
-  private async getHostname(config: any, profileName: string): Promise<string> {
-    const result = await this.executor.execute(config, 'hostname', { profileName });
-    return result.stdout.trim();
+  private async getHostname(config: any): Promise<string> {
+    return this.read(config, 'hostname', { fallback: 'unknown' });
   }
-  
+
   /**
    * Get uptime
    */
-  private async getUptime(config: any, profileName: string): Promise<string> {
-    const result = await this.executor.execute(config, 'uptime -p', { profileName });
-    return result.stdout.trim().replace('up ', '');
+  private async getUptime(config: any): Promise<string> {
+    return (await this.read(config, 'uptime -p', { fallback: 'unknown' }))
+      .replace('up ', '');
   }
   
   /**
    * Get service status
    */
-  private async getServices(config: any, profileName: string): Promise<Array<{ name: string; status: string; uptime: string | null }>> {
+  private async getServices(
+    config: any,
+      ): Promise<{ checked: boolean; reason?: string; items: Array<{ name: string; status: string; uptime: string | null }> }> {
     const services = ['nginx', 'apache2', 'docker', 'postgresql', 'mysql', 'redis', 'mongodb'];
     const results: Array<{ name: string; status: string; uptime: string | null }> = [];
-    
+
+    // Без systemctl каждая проверка отвечает «inactive», и сервер без systemd
+    // выглядит сервером, где ни одна служба не работает
+    const systemctl = await this.read(
+      config,
+      'command -v systemctl >/dev/null 2>&1 && echo yes || echo no',
+    );
+    if (systemctl !== 'yes') return { checked: false, reason: 'no systemctl on the server', items: [] };
+
+    // Команда на месте, а шина может молчать. Тогда каждая проверка службы
+    // отвечает ошибкой, `|| echo inactive` превращает её в «остановлена», и
+    // непроверенный сервер печатается как сервер без единой работающей службы.
+    // Проба спрашивает про сам systemd, а не про юнит: ответ «нет такого юнита»
+    // не должен читаться как молчание шины
+    const bus = await this.read(config, 'systemctl show --property=Version 2>&1 || true');
+    if (SnapshotTool.SYSTEMD_SILENT.test(bus)) {
+      return { checked: false, reason: 'systemd did not answer on this server', items: [] };
+    }
+
     for (const service of services) {
-      try {
-        const result = await this.executor.execute(config, `systemctl is-active ${service} 2>/dev/null || echo inactive`, { profileName });
-        const status = result.stdout.trim();
-        
-        if (status === 'active') {
-          // Get uptime
-          const uptimeResult = await this.executor.execute(
-            config,
-            `systemctl show ${service} --property=ActiveEnterTimestamp --value 2>/dev/null || echo ""`,
-            { profileName }
-          );
-          results.push({ name: service, status, uptime: uptimeResult.stdout.trim() || null });
-        }
-      } catch {
-        // Service not found, skip
+      const status = await this.read(
+        config,
+        `systemctl is-active ${service} 2>/dev/null || echo inactive`,
+      );
+
+      // Пустой ответ — это сорванное чтение, а не остановленная служба:
+      // молча пропав из списка, она выглядела бы проверенной
+      if (!status) {
+        results.push({ name: service, status: 'unknown', uptime: null });
+        continue;
+      }
+
+      if (status === 'active') {
+        const startedAt = await this.read(
+          config,
+          `systemctl show ${service} --property=ActiveEnterTimestamp --value 2>/dev/null || echo ""`,
+        );
+        results.push({ name: service, status, uptime: startedAt || null });
       }
     }
-    
-    return results;
+
+    return { checked: true, items: results };
   }
-  
+
+  /** Ответы, которыми systemctl сообщает, что шина systemd ему не отвечает */
+  private static readonly SYSTEMD_SILENT =
+    /has not been booted|Failed to connect to bus|Access denied/i;
+
   /**
    * Get CPU information
    */
-  private async getCPU(config: any, profileName: string): Promise<{ cores: number; usage: number; loadAvg: string }> {
-    const coresResult = await this.executor.execute(config, 'nproc', { profileName });
-    const loadResult = await this.executor.execute(config, 'cat /proc/loadavg', { profileName });
-    const usageResult = await this.executor.execute(
-      config,
-      'top -bn1 | grep "Cpu(s)" | awk \'{print $2}\' | cut -d"%" -f1',
-      { profileName }
-    );
-    
-    const cores = parseInt(coresResult.stdout.trim());
-    const usage = parseFloat(usageResult.stdout.trim()) || 0;
-    const loadAvg = loadResult.stdout.trim().split(' ').slice(0, 3).join(' ');
-    
-    return { cores, usage, loadAvg };
+  private async getCPU(
+    config: any,
+      ): Promise<{ cores: number | null; usage: number | null; loadAvg: string | null }> {
+    const coresOutput = await this.read(config, 'nproc');
+    const loadOutput = await this.read(config, 'cat /proc/loadavg');
+    // Строка сводки разбирается здесь, а не колонкой в awk: у procps она
+    // «%Cpu(s): … 95.1 id», у BusyBox «CPU: … 99% idle», и вырезанная вслепую
+    // вторая колонка на BusyBox приносила число из таблицы процессов
+    const topOutput = await this.read(config, 'top -bn1 2>/dev/null | head -6');
+
+    // Нечитанное число ядер — это не ноль ядер: пустой ответ обрыва выглядел
+    // исправной машиной без процессоров
+    const parsedCores = parseInt(coresOutput);
+    const cores = isNaN(parsedCores) ? null : parsedCores;
+    const usage = SnapshotTool.parseCpuUsage(topOutput);
+    const load = loadOutput.split(' ').slice(0, 3).join(' ').trim();
+
+    return { cores, usage, loadAvg: load || null };
+  }
+
+  /**
+   * Занятость процессора из сводной строки `top`: считается от простоя, потому
+   * что доля простоя есть в обоих форматах. `null` — строки не нашлось.
+   */
+  private static parseCpuUsage(topOutput: string): number | null {
+    const line = topOutput
+      .split('\n')
+      .find((l) => /^\s*%?cpu(\(s\))?\s*:/i.test(l));
+    if (!line) return null;
+
+    const idle = line.match(/([\d.]+)\s*%?\s*id(?:le)?\b/);
+    if (!idle) return null;
+
+    const usage = 100 - parseFloat(idle[1]);
+    if (isNaN(usage)) return null;
+
+    return Math.min(100, Math.max(0, usage));
   }
   
   /**
    * Get Memory information
    */
-  private async getMemory(config: any, profileName: string): Promise<{ total: string; used: string; free: string; percent: number }> {
-    const result = await this.executor.execute(config, 'free -h | grep Mem', { profileName });
-    const parts = result.stdout.trim().split(/\s+/);
-    
+  private async getMemory(config: any): Promise<{ total: string; used: string; free: string; percent: number | null }> {
+    const parts = (await this.read(config, 'free -h | grep Mem')).split(/\s+/);
+    const total = SnapshotTool.parseSize(parts[1]);
+    const used = SnapshotTool.parseSize(parts[2]);
+
     return {
       total: parts[1] || 'unknown',
       used: parts[2] || 'unknown',
       free: parts[3] || 'unknown',
-      percent: parts[2] && parts[1] ? Math.round((parseFloat(parts[2]) / parseFloat(parts[1])) * 100) : 0,
+      percent: total && used ? Math.round((used / total) * 100) : null,
     };
+  }
+
+  /** Множители суффиксов `free -h`: и `Gi` от coreutils, и `G` от BusyBox — степени 1024 */
+  private static readonly SIZE_FACTOR: Record<string, number> = {
+    b: 1,
+    k: 1024,
+    m: 1024 ** 2,
+    g: 1024 ** 3,
+    t: 1024 ** 4,
+    p: 1024 ** 5,
+  };
+
+  /**
+   * Размер с суффиксом в байты. Без приведения к общей единице `506Mi` и
+   * `3.8Gi` делились как 506 и 3.8 — отчёт объявлял 13316% занятой памяти.
+   */
+  private static parseSize(text: string | undefined): number | null {
+    const parsed = (text ?? '').match(/^([\d.]+)\s*([a-zA-Z]?)/);
+    if (!parsed) return null;
+
+    const value = parseFloat(parsed[1]);
+    if (isNaN(value)) return null;
+
+    const factor = parsed[2] ? SnapshotTool.SIZE_FACTOR[parsed[2].toLowerCase()] : 1;
+    return factor ? value * factor : null;
   }
   
   /**
    * Get Disk information
+   *
+   * Тип тома нужен, чтобы отсечь служебные системы ядра: отбор по имени
+   * устройства (`^/dev/`) выбрасывал из обзора корень везде, где он лежит
+   * на overlay, — то есть в любом контейнере.
    */
-  private async getDisk(config: any, profileName: string): Promise<Array<{ mount: string; size: string; used: string; avail: string; percent: string }>> {
-    const result = await this.executor.execute(config, 'df -h | grep -E "^/dev/"', { profileName });
-    const lines = result.stdout.trim().split('\n');
-    
-    return lines.map(line => {
-      const parts = line.split(/\s+/);
-      return {
-        mount: parts[5] || '?',
-        size: parts[1] || '?',
-        used: parts[2] || '?',
-        avail: parts[3] || '?',
-        percent: parts[4] || '?',
-      };
-    });
+  private async getDisk(
+    config: any,
+      ): Promise<{
+    items: Array<{ mount: string; size: string; used: string; avail: string; percent: string }>;
+    unparsed: string[];
+  }> {
+    const output = await this.read(config, 'df -hT');
+    if (!output) return { items: [], unparsed: [] };
+
+    const table = parseDfTable(output);
+    return {
+      items: dedupeByDevice(table.rows).map((row) => ({
+        mount: row.mount,
+        size: row.size,
+        used: row.used,
+        avail: row.avail,
+        percent: `${row.pct}%`,
+      })),
+      unparsed: table.unparsed,
+    };
   }
   
   /**
    * Get Docker information
    */
-  private async getDocker(config: any, profileName: string): Promise<{ containers: any[]; images: number } | undefined> {
+  private async getDocker(config: any): Promise<{ containers: any[]; images: number } | undefined> {
     try {
       // Check for Docker presence
-      const checkResult = await this.executor.execute(config, 'which docker', { profileName });
-      if (checkResult.exitCode !== 0) {
+      const dockerPath = await this.read(config, 'which docker');
+      if (!dockerPath) {
         return undefined;
       }
-      
+
       // Container list
-      const containersResult = await this.executor.execute(
+      const containersOutput = await this.read(
         config,
         'docker ps --format "{{.ID}}|{{.Names}}|{{.Status}}"',
-        { profileName }
       );
-      
-      const containers = containersResult.stdout.trim().split('\n')
+
+      const containers = containersOutput.split('\n')
         .filter(line => line.length > 0)
         .map(line => {
           const [id, name, status] = line.split('|');
           return { id, name, status, uptime: status };
         });
-      
+
       // Image count
-      const imagesResult = await this.executor.execute(config, 'docker images -q | wc -l', { profileName });
-      const images = parseInt(imagesResult.stdout.trim()) || 0;
-      
+      const images = parseInt(await this.read(config, 'docker images -q | wc -l')) || 0;
+
       return { containers, images };
     } catch {
       return undefined;
@@ -261,58 +392,83 @@ export class SnapshotTool {
   /**
    * Get Network information
    */
-  private async getNetwork(config: any, profileName: string): Promise<{ listening: Array<{ port: string; service: string }>; connections: number }> {
-    // Open ports
-    const portsResult = await this.executor.execute(
+  private async getNetwork(
+    config: any,
+      ): Promise<{ checked: boolean; listening: Array<{ port: string; service: string }>; connections: number }> {
+    // Маркер обязателен: конвейер заканчивается на `sort`, поэтому отсутствие
+    // ss отдавало пустой список с кодом 0 — «никто не слушает» вместо
+    // «смотреть было нечем», и запасной netstat не звали никогда
+    const portsOutput = await this.read(
       config,
-      'ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u || netstat -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | cut -d: -f2 | sort -u',
-      { profileName }
+      'if command -v ss >/dev/null 2>&1; then ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | sort -u; ' +
+        'elif command -v netstat >/dev/null 2>&1; then netstat -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | sort -u; ' +
+        'else echo NO_NET_TOOL; fi',
     );
-    
-    const ports = portsResult.stdout.trim().split('\n')
-      .filter(port => port.length > 0 && !isNaN(parseInt(port)))
-      .map(port => ({ port, service: this.getServiceByPort(port) }));
-    
+
+    if (portsOutput.trim() === 'NO_NET_TOOL') {
+      return { checked: false, listening: [], connections: 0 };
+    }
+
+    // Порт отделяется последним двоеточием, а не первым: у адреса IPv6
+    // (`[::]:2222`, `:::22`) двоеточий несколько, и по первому порт был пуст
+    const seen = new Set<string>();
+    for (const address of portsOutput.split('\n')) {
+      const port = address.slice(address.lastIndexOf(':') + 1).trim();
+      if (port && /^\d+$/.test(port)) seen.add(port);
+    }
+
+    const ports = [...seen].map(port => ({ port, service: this.getServiceByPort(port) }));
+
     // Connection count
-    const connectionsResult = await this.executor.execute(
+    const connectionsOutput = await this.read(
       config,
-      'ss -tn 2>/dev/null | grep ESTAB | wc -l || netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l',
-      { profileName }
+      'if command -v ss >/dev/null 2>&1; then ss -tn 2>/dev/null | grep ESTAB | wc -l; ' +
+        'else netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l; fi',
     );
-    const connections = parseInt(connectionsResult.stdout.trim()) || 0;
-    
-    return { listening: ports, connections };
+
+    return { checked: true, listening: ports, connections: parseInt(connectionsOutput) || 0 };
   }
   
   /**
    * Get recent errors
    */
-  private async getRecentErrors(config: any, profileName: string): Promise<Array<{ source: string; message: string; time: string }>> {
-    const errors: Array<{ source: string; message: string; time: string }> = [];
-    
-    // Errors from syslog
-    try {
-      const result = await this.executor.execute(
-        config,
-        'tail -n 100 /var/log/syslog 2>/dev/null | grep -iE "error|fatal|critical" | tail -n 3 || echo ""',
-        { sudo: true, profileName }
-      );
-      
-      if (result.stdout.trim()) {
-        const lines = result.stdout.trim().split('\n');
-        lines.forEach(line => {
-          if (line.length > 0) {
-            errors.push({
-              source: 'syslog',
-              message: line.substring(0, 100),
-              time: 'recent',
-            });
-          }
-        });
-      }
-    } catch {}
-    
-    return errors;
+  private async getRecentErrors(
+    config: any,
+      ): Promise<{ checked: boolean; reason?: string; items: Array<{ source: string; message: string; time: string }> }> {
+    // Молчание журнала имеет три причины, и раньше все три выглядели как
+    // «ошибок нет»: файла нет, читать нечем, читали и не нашли
+    const command =
+      'if [ ! -f /var/log/syslog ]; then echo NO_SYSLOG; ' +
+      'elif [ ! -r /var/log/syslog ]; then echo SYSLOG_UNREADABLE; ' +
+      'else tail -n 100 /var/log/syslog | grep -iE "error|fatal|critical" | tail -n 3; fi';
+
+    // Сперва под sudo — журнал обычно закрыт от обычного пользователя. Там, где
+    // sudo нет вовсе (root на BusyBox), команда падает целиком, и без второй
+    // попытки причина звучала бы «не прошло» даже на сервере без журнала
+    let output = await this.read(config, command, {
+      sudo: true,
+      fallback: 'READ_FAILED',
+    });
+    if (output === 'READ_FAILED') {
+      output = await this.read(config, command, { fallback: 'READ_FAILED' });
+    }
+
+    if (output === 'NO_SYSLOG') {
+      return { checked: false, reason: 'no /var/log/syslog on the server', items: [] };
+    }
+    if (output === 'SYSLOG_UNREADABLE') {
+      return { checked: false, reason: '/var/log/syslog is not readable', items: [] };
+    }
+    if (output === 'READ_FAILED') {
+      return { checked: false, reason: 'the read did not go through', items: [] };
+    }
+
+    const items = output
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => ({ source: 'syslog', message: line.substring(0, 100), time: 'recent' }));
+
+    return { checked: true, items };
   }
   
   /**
@@ -349,23 +505,43 @@ export class SnapshotTool {
     output += '─'.repeat(70) + '\n';
     output += 'SERVICES\n';
     output += '─'.repeat(70) + '\n';
-    if (snapshot.services.length > 0) {
-      snapshot.services.forEach((svc: any) => {
-        output += `  ${svc.name.padEnd(15)} ${svc.status === 'active' ? '✓' : '✗'} ${svc.status}\n`;
+    if (!snapshot.services.checked) {
+      output += `  NOT CHECKED: ${snapshot.services.reason}\n`;
+    } else if (snapshot.services.items.length > 0) {
+      snapshot.services.items.forEach((svc: any) => {
+        const mark = svc.status === 'active' ? '✓' : svc.status === 'unknown' ? '?' : '✗';
+        const label = svc.status === 'unknown' ? 'NOT CHECKED' : svc.status;
+        output += `  ${svc.name.padEnd(15)} ${mark} ${label}\n`;
       });
     } else {
       output += '  No active services detected\n';
     }
     output += '\n';
-    
+
     output += '─'.repeat(70) + '\n';
     output += 'RESOURCES\n';
     output += '─'.repeat(70) + '\n';
-    output += `  CPU:    ${snapshot.resources.cpu.cores} cores, ${snapshot.resources.cpu.usage.toFixed(1)}% used, load: ${snapshot.resources.cpu.loadAvg}\n`;
-    output += `  Memory: ${snapshot.resources.memory.used} / ${snapshot.resources.memory.total} (${snapshot.resources.memory.percent}% used)\n`;
+    const cpuUsage =
+      snapshot.resources.cpu.usage === null
+        ? 'usage NOT CHECKED'
+        : `${snapshot.resources.cpu.usage.toFixed(1)}% used`;
+    const memPercent =
+      snapshot.resources.memory.percent === null
+        ? 'usage NOT CHECKED'
+        : `${snapshot.resources.memory.percent}% used`;
+    const cores =
+      snapshot.resources.cpu.cores === null
+        ? 'cores NOT CHECKED'
+        : `${snapshot.resources.cpu.cores} cores`;
+    const load = snapshot.resources.cpu.loadAvg ?? 'NOT CHECKED';
+    output += `  CPU:    ${cores}, ${cpuUsage}, load: ${load}\n`;
+    output += `  Memory: ${snapshot.resources.memory.used} / ${snapshot.resources.memory.total} (${memPercent})\n`;
     output += `  Disk:\n`;
-    snapshot.resources.disk.forEach((d: any) => {
+    snapshot.resources.disk.items.forEach((d: any) => {
       output += `    ${d.mount.padEnd(10)} ${d.used.padEnd(8)} / ${d.size.padEnd(8)} (${d.percent})\n`;
+    });
+    snapshot.resources.disk.unparsed.forEach((line: string) => {
+      output += `    NOT CHECKED: df printed a row in an unexpected shape: ${line}\n`;
     });
     output += '\n';
     
@@ -386,20 +562,28 @@ export class SnapshotTool {
     output += '─'.repeat(70) + '\n';
     output += 'NETWORK\n';
     output += '─'.repeat(70) + '\n';
-    output += `  Established connections: ${snapshot.network.connections}\n`;
-    output += `  Listening ports:\n`;
-    snapshot.network.listening.forEach((p: any) => {
-      output += `    ${p.port.padEnd(6)} ${p.service}\n`;
-    });
+    if (!snapshot.network.checked) {
+      output += '  NOT CHECKED: neither ss nor netstat on the server\n';
+    } else {
+      output += `  Established connections: ${snapshot.network.connections}\n`;
+      output += `  Listening ports:\n`;
+      snapshot.network.listening.forEach((p: any) => {
+        output += `    ${p.port.padEnd(6)} ${p.service}\n`;
+      });
+    }
     output += '\n';
     
-    if (snapshot.recentErrors.length > 0) {
+    if (!snapshot.recentErrors.checked || snapshot.recentErrors.items.length > 0) {
       output += '─'.repeat(70) + '\n';
       output += 'RECENT ERRORS\n';
       output += '─'.repeat(70) + '\n';
-      snapshot.recentErrors.forEach((err: any) => {
-        output += `  [${err.source}] ${err.message}\n`;
-      });
+      if (snapshot.recentErrors.checked) {
+        snapshot.recentErrors.items.forEach((err: any) => {
+          output += `  [${err.source}] ${err.message}\n`;
+        });
+      } else {
+        output += `  NOT CHECKED: ${snapshot.recentErrors.reason}\n`;
+      }
       output += '\n';
     }
     

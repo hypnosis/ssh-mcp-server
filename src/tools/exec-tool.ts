@@ -17,36 +17,31 @@ import {
   findRemovalTargets,
   inspectCommand,
 } from '../utils/destructive-command.js';
+import { parseInvocations, unquote } from '../utils/command-parse.js';
 import { resolveRemovalTargets } from '../managers/removal-guard.js';
 import { buildStartCommand, createJobId, jobPaths, parseJobStart } from '../utils/job-command.js';
 import { shellQuote } from '../utils/shell-arg.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
-/**
- * Dangerous command patterns
- */
 /*
- * Удаление в этом списке больше не значится: шаблон `rm -rf /` срабатывал на
+ * Предупреждение говорит о том, что команда делает, а не о том, какие слова в
+ * ней встретились. Удаление ушло отсюда первым: шаблон `rm -rf /` срабатывал на
  * любом абсолютном пути и печатал «rm -rf / detected» даже на `echo "rm -rf /"`.
  * Предупреждение, которое кричит на штатной уборке, агент перестаёт читать —
  * и настоящий снос корня в этом шуме теряется. Настоящую проверку делает
  * destructive-command.ts: она смотрит, куда путь ведёт, и не пускает команду.
  */
-const DANGEROUS_PATTERNS = [
-  // Permissions
-  { pattern: /\bchmod\s+777\b/, message: 'chmod 777 detected (security risk)' },
-  
-  // System commands
-  { pattern: /\breboot\b/, message: 'reboot detected' },
-  { pattern: /\bshutdown\b/, message: 'shutdown detected' },
-  { pattern: /\bhalt\b/, message: 'halt detected' },
-  { pattern: /\bpoweroff\b/, message: 'poweroff detected' },
-  
-  // Docker bulk deletion
-  { pattern: /\bdocker\s+system\s+prune\s+-a/, message: 'docker system prune -a detected' },
-  { pattern: /\bdocker\s+rm\s+.*-f\s+\$\(docker\s+ps/, message: 'docker rm all containers detected' },
-  
-  // Database
+
+/** Команды, останавливающие машину */
+const HALTING_COMMANDS = ['reboot', 'shutdown', 'halt', 'poweroff'];
+
+/** Клиенты БД: запрос виден только у них, в аргументе или на входе */
+const DB_CLIENTS = [
+  'psql', 'mysql', 'mariadb', 'sqlite3', 'mongo', 'mongosh', 'clickhouse-client',
+];
+
+/** Запросы, теряющие данные разом */
+const SQL_PATTERNS = [
   { pattern: /\bDROP\s+DATABASE\b/i, message: 'DROP DATABASE detected' },
   { pattern: /\bDROP\s+TABLE\b/i, message: 'DROP TABLE detected' },
   { pattern: /\bTRUNCATE\b/i, message: 'TRUNCATE detected' },
@@ -54,14 +49,38 @@ const DANGEROUS_PATTERNS = [
 ];
 
 /**
- * Check command for dangerous patterns
+ * Предупреждение о том, что команда собирается сделать.
+ *
+ * Имя ищется в позиции команды: `reboot` первым словом — вызов, `reboot`
+ * внутри пути или строки — упоминание, и о нём молчим.
  */
 function checkDangerousCommand(command: string): string | null {
-  for (const { pattern, message } of DANGEROUS_PATTERNS) {
-    if (pattern.test(command)) {
-      return `⚠️  DANGEROUS COMMAND: ${message}`;
+  const warning = (message: string) => `⚠️  DANGEROUS COMMAND: ${message}`;
+  const invocations = parseInvocations(command);
+
+  for (const { name, args } of invocations) {
+    if (HALTING_COMMANDS.includes(name)) return warning(`${name} detected`);
+
+    if (name === 'chmod' && args.some((argument) => unquote(argument) === '777'))
+      return warning('chmod 777 detected (security risk)');
+
+    if (name === 'docker') {
+      // `-a` приезжает и слитно с другими флагами: `prune -af` чистит так же
+      const takesAll = args.some((argument) => argument === '--all' || /^-[a-z]*a/.test(argument));
+      if (args[0] === 'system' && args[1] === 'prune' && takesAll)
+        return warning('docker system prune -a detected');
+      if (args[0] === 'rm' && args.includes('-f') && /\$\(docker\s+ps/.test(args.join(' ')))
+        return warning('docker rm all containers detected');
     }
   }
+
+  // Запрос ищется по всей команде, но только если клиент БД в ней вызван: так
+  // ловится и `-c "…"`, и текст на входе, а разговор о запросе остаётся молча
+  if (invocations.some(({ name }) => DB_CLIENTS.includes(name))) {
+    for (const { pattern, message } of SQL_PATTERNS)
+      if (pattern.test(command)) return warning(message);
+  }
+
   return null;
 }
 

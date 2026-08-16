@@ -41,6 +41,60 @@ describe('parseInvocations: что команда запускает', () => {
     expect(parseInvocations('env DEBUG=1 poweroff').map((i) => i.name)).toEqual(['poweroff']);
   });
 
+  it('значение флага обёртки за команду не принимается', () => {
+    expect(parseInvocations('sudo -u postgres dropdb app')).toEqual([
+      { name: 'dropdb', args: ['app'] },
+    ]);
+    expect(parseInvocations('doas -u deploy reboot').map((i) => i.name)).toEqual(['reboot']);
+    expect(parseInvocations('timeout -k 5 10 halt').map((i) => i.name)).toEqual(['halt']);
+  });
+
+  it('флаг без значения следующее слово не съедает', () => {
+    expect(parseInvocations('sudo -i reboot').map((i) => i.name)).toEqual(['reboot']);
+    expect(parseInvocations('sudo -u -i reboot').map((i) => i.name)).toEqual(['reboot']);
+  });
+
+  // Один и тот же флаг у разных обёрток значит разное: у `nice` это величина,
+  // у `sudo` — «не спрашивай», и общий список съел бы саму команду
+  it.each([
+    ['sudo -n reboot'],
+    ['sudo --non-interactive halt'],
+    ['timeout -n poweroff'],
+  ])('%s — флаг чужой обёртки команду не прячет', (command) => {
+    expect(parseInvocations(command)).toHaveLength(1);
+  });
+
+  it.each([
+    ['sudo -u postgres'],
+    ['sudo -u'],
+    ['env --unset'],
+    ['nice -n'],
+    ['timeout -k'],
+  ])('%s — команды за обёрткой нет, разбор пуст и не падает', (command) => {
+    expect(parseInvocations(command)).toEqual([]);
+  });
+
+  // Каждый флаг из списка своей обёртки: пропущенный уводит команду в значение
+  it.each([
+    ['sudo -u postgres dropdb app', 'dropdb'],
+    ['sudo --user postgres dropdb app', 'dropdb'],
+    ['sudo -g admins dropdb app', 'dropdb'],
+    ['sudo --group admins dropdb app', 'dropdb'],
+    ['doas -u deploy reboot', 'reboot'],
+    ['nice -n 10 halt', 'halt'],
+    ['nice -n -10 halt', 'halt'],
+    ['ionice -c best-effort poweroff', 'poweroff'],
+    ['ionice --class best-effort poweroff', 'poweroff'],
+    ['ionice -c 2 poweroff', 'poweroff'],
+    ['timeout -s KILL 5 reboot', 'reboot'],
+    ['timeout --signal KILL 5 reboot', 'reboot'],
+    ['timeout -k 5 10 reboot', 'reboot'],
+    ['env -u PATH reboot', 'reboot'],
+    ['env --unset PATH reboot', 'reboot'],
+  ])('%s — команда видна как %s', (command, name) => {
+    expect(parseInvocations(command).map((i) => i.name)).toEqual([name]);
+  });
+
   it('имя обёртки должно совпасть целиком, а не началом', () => {
     expect(parseInvocations('envsubst < template.tpl').map((i) => i.name)).toEqual(['envsubst']);
     expect(parseInvocations('timeouts-report --json').map((i) => i.name)).toEqual([

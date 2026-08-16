@@ -17,7 +17,7 @@ import {
   findRemovalTargets,
   inspectCommand,
 } from '../utils/destructive-command.js';
-import { inspectIrreversible } from '../utils/irreversible-command.js';
+import { DB_CLIENTS, inspectIrreversible } from '../utils/irreversible-command.js';
 import { parseInvocations, unquote } from '../utils/command-parse.js';
 import { resolveRemovalTargets } from '../managers/removal-guard.js';
 import { buildStartCommand, createJobId, jobPaths, parseJobStart } from '../utils/job-command.js';
@@ -33,14 +33,8 @@ import type { SSHConfig } from '../utils/ssh-config.js';
  * destructive-command.ts: она смотрит, куда путь ведёт, и не пускает команду.
  */
 
-/** Клиенты БД: запрос виден только у них, в аргументе или на входе */
-const DB_CLIENTS = [
-  'psql', 'mysql', 'mariadb', 'sqlite3', 'mongo', 'mongosh', 'clickhouse-client',
-];
-
-/** Запросы, теряющие данные разом */
+/** Запросы, меняющие данные разом; снос базы целиком — не сюда, а в отказ */
 const SQL_PATTERNS = [
-  { pattern: /\bDROP\s+DATABASE\b/i, message: 'DROP DATABASE detected' },
   { pattern: /\bDROP\s+TABLE\b/i, message: 'DROP TABLE detected' },
   { pattern: /\bTRUNCATE\b/i, message: 'TRUNCATE detected' },
   { pattern: /\bDELETE\s+FROM\s+\w+\s*;/i, message: 'DELETE without WHERE detected' },

@@ -182,8 +182,14 @@ function inspectDiskWrite(args: string[]): string | null {
  */
 const DESTROYERS = ['rm', 'mv'];
 
-/** Осмотр — не чтение данных: так проверяют, что удаление прошло */
-const INSPECTORS = new Set(['ls', 'test', 'stat', 'rm']);
+/**
+ * Команды, которые данных не читают.
+ *
+ * Осмотр — так проверяют, что удаление прошло. Создание пустого — так место
+ * готовят заново, и приёмников у него бывает сколько угодно: у `mkdir -p A B`
+ * оба аргумента появляются, а не читаются.
+ */
+const NON_READERS = new Set(['ls', 'test', 'stat', 'rm', 'mkdir', 'touch', 'mkfifo']);
 
 /** Архиваторы: приёмник у них стоит за ключом `f`, а не последним */
 const ARCHIVERS = new Set(['tar']);
@@ -248,8 +254,12 @@ function destroyedBy(name: string, args: string[]): string[] {
     .filter((argument) => !argument.startsWith('-'))
     .map(normalizePath);
 
-  // `mv` уносит источник со старого места, а приёмник, наоборот, появляется
-  return name === 'mv' ? words.slice(0, -1) : words;
+  // `mv` уносит источник со старого места, а приёмник, наоборот, появляется.
+  // Приёмник ищется там же, где у остальных: флаг `-t` ставит его вперёд
+  if (name !== 'mv') return words;
+
+  const sink = findSink(name, args);
+  return words.filter((word) => word !== sink);
 }
 
 /**
@@ -261,7 +271,7 @@ function inspectOrder(invocations: Invocation[]): string | null {
   const destroyed: string[] = [];
 
   for (const { name, args } of invocations) {
-    if (destroyed.length > 0 && !INSPECTORS.has(name)) {
+    if (destroyed.length > 0 && !NON_READERS.has(name)) {
       const sink = findSink(name, args);
       const sources = args
         .map(unquote)

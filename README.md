@@ -898,6 +898,10 @@ purpose:
   parsed at all. The destination is looked up in one position — last, or named by `-t`,
   `of=`, the `f` key of `tar`, the first argument of `zip`.
 
+Looking (`ls`, `test`, `stat`) and creating something empty (`mkdir`, `touch`, `mkfifo`)
+do not count as reading: that is how you check the deletion went through, and how you
+prepare the place again. So `rm -rf A B && mkdir -p A B` passes.
+
 A command coming from a file the server never read is outside all of this: the guard
 reads what it is given.
 

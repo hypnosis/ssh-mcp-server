@@ -5,7 +5,7 @@
  * всегда, бесполезен ровно так же, как потухший.
  *
  * Секции — дословные выводы боевой машины и контейнеров лаборатории:
- * `ss -tulpenH` и `sshd -T` с finlab, `netstat -tulpn` с alpine.
+ * `ss -tulpenH` и `sshd -T` с prod-host, `netstat -tulpn` с alpine.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -55,10 +55,10 @@ const sshdConfig = (port: string, passwordAuth = 'no', rootLogin = 'without-pass
     `passwordauthentication ${passwordAuth}`,
   ].join('\n');
 
-/** Дословный `ss -tulpenH` с finlab: sshd на 4847, обе версии протокола */
-const SS_SSHD_4847 = [
-  'tcp LISTEN 0 128 0.0.0.0:4847 0.0.0.0:* users:(("sshd",pid=749,fd=3)) ino:8243 sk:2 cgroup:/system.slice/ssh.service <->',
-  'tcp LISTEN 0 128 [::]:4847 [::]:* users:(("sshd",pid=749,fd=4)) ino:8245 sk:3 cgroup:/system.slice/ssh.service v6only:1 <->',
+/** Дословный `ss -tulpenH` с prod-host: sshd на 2222, обе версии протокола */
+const SS_SSHD_2222 = [
+  'tcp LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("sshd",pid=749,fd=3)) ino:8243 sk:2 cgroup:/system.slice/ssh.service <->',
+  'tcp LISTEN 0 128 [::]:2222 [::]:* users:(("sshd",pid=749,fd=4)) ino:8245 sk:3 cgroup:/system.slice/ssh.service v6only:1 <->',
 ].join('\n');
 
 /** Дословный `netstat -tulpn` с alpine: тот же факт, другие колонки */
@@ -74,7 +74,7 @@ const SS_NO_SSHD = [
   'tcp LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=11519,fd=10)) ino:39609 sk:1003 cgroup:/system.slice/docker-9476b2a82ff7.scope <->',
 ].join('\n');
 
-/** Дословный `ufw status verbose` с finlab: экран включён, входящее закрыто */
+/** Дословный `ufw status verbose` с prod-host: экран включён, входящее закрыто */
 const UFW_ACTIVE = [
   'Status: active',
   'Logging: on (low)',
@@ -83,9 +83,9 @@ const UFW_ACTIVE = [
   '',
   'To                         Action      From',
   '--                         ------      ----',
-  '4847/tcp                   ALLOW IN    Anywhere                   # SSH',
+  '2222/tcp                   ALLOW IN    Anywhere                   # SSH',
   '80/tcp                     ALLOW IN    Anywhere                   # HTTP',
-  '443/tcp                    ALLOW IN    Anywhere                   # VLESS',
+  '443/tcp                    ALLOW IN    Anywhere                   # HTTPS',
 ].join('\n');
 
 /** Дословный ответ ufw, установленного и не включённого */
@@ -95,7 +95,7 @@ const UFW_INACTIVE = 'Status: inactive';
 const INPUT_ACCEPT = 'Chain INPUT (policy ACCEPT)';
 const INPUT_DROP = 'Chain INPUT (policy DROP)';
 
-/** Дословный `iptables -t nat -S DOCKER` с finlab: два опубликованных порта */
+/** Дословный `iptables -t nat -S DOCKER` с prod-host: два опубликованных порта */
 const DOCKER_NAT_PUBLISHED = [
   '-N DOCKER',
   '-A DOCKER ! -i docker0 -p tcp -m tcp --dport 19999 -j DNAT --to-destination 172.17.0.2:80',
@@ -121,7 +121,7 @@ beforeEach(() => {
 
 describe('порт из конфигурации сверяется со слушателями', () => {
   it('порты сошлись — предупреждения нет', async () => {
-    serverSays(sectioned({ sshd: sshdConfig('4847'), listeners: SS_SSHD_4847, interfaces: '' }));
+    serverSays(sectioned({ sshd: sshdConfig('2222'), listeners: SS_SSHD_2222, interfaces: '' }));
 
     const result = await parsed({ include: ['ssh', 'net'], include_sudo_sections: true });
 
@@ -129,22 +129,22 @@ describe('порт из конфигурации сверяется со слу�
   });
 
   it('конфигурация говорит одно, слушается другое — предупреждение', async () => {
-    serverSays(sectioned({ sshd: sshdConfig('2222'), listeners: SS_SSHD_4847, interfaces: '' }));
+    serverSays(sectioned({ sshd: sshdConfig('2200'), listeners: SS_SSHD_2222, interfaces: '' }));
 
     const result = await parsed({ include: ['ssh', 'net'], include_sudo_sections: true });
 
     expect(result.red_flags.warning).toContain(
-      'sshd config says port 2222, but sshd listens on 4847'
+      'sshd config says port 2200, but sshd listens on 2222'
     );
   });
 
   it('расхождение находится и в выводе netstat, где колонки другие', async () => {
-    serverSays(sectioned({ sshd: sshdConfig('4847'), listeners: NETSTAT_SSHD_22, interfaces: '' }));
+    serverSays(sectioned({ sshd: sshdConfig('2222'), listeners: NETSTAT_SSHD_22, interfaces: '' }));
 
     const result = await parsed({ include: ['ssh', 'net'], include_sudo_sections: true });
 
     expect(result.red_flags.warning).toContain(
-      'sshd config says port 4847, but sshd listens on 22'
+      'sshd config says port 2222, but sshd listens on 22'
     );
   });
 
@@ -153,12 +153,12 @@ describe('порт из конфигурации сверяется со слу�
       'tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=749,fd=3)) ino:8243 sk:2 cgroup:/system.slice/ssh.service <->',
       'tcp LISTEN 0 128 0.0.0.0:2200 0.0.0.0:* users:(("sshd",pid=749,fd=5)) ino:8247 sk:4 cgroup:/system.slice/ssh.service <->',
     ].join('\n');
-    serverSays(sectioned({ sshd: sshdConfig('4847'), listeners: twoPorts, interfaces: '' }));
+    serverSays(sectioned({ sshd: sshdConfig('2222'), listeners: twoPorts, interfaces: '' }));
 
     const result = await parsed({ include: ['ssh', 'net'], include_sudo_sections: true });
 
     expect(result.red_flags.warning).toContain(
-      'sshd config says port 4847, but sshd listens on 22, 2200'
+      'sshd config says port 2222, but sshd listens on 22, 2200'
     );
   });
 
@@ -172,7 +172,7 @@ describe('порт из конфигурации сверяется со слу�
   });
 
   it('sshd среди слушателей не видно — порт конфигурации не выдаётся за реальный', async () => {
-    serverSays(sectioned({ sshd: sshdConfig('4847'), listeners: SS_NO_SSHD, interfaces: '' }));
+    serverSays(sectioned({ sshd: sshdConfig('2222'), listeners: SS_NO_SSHD, interfaces: '' }));
 
     const result = await parsed({ include: ['ssh', 'net'], include_sudo_sections: true });
 
@@ -183,7 +183,7 @@ describe('порт из конфигурации сверяется со слу�
   });
 
   it('слушателей не отдали вовсе — второй жалобы про порт не появляется', async () => {
-    serverSays(sectioned({ sshd: sshdConfig('4847'), listeners: 'NO_NET_TOOL', interfaces: '' }));
+    serverSays(sectioned({ sshd: sshdConfig('2222'), listeners: 'NO_NET_TOOL', interfaces: '' }));
 
     const result = await parsed({ include: ['ssh', 'net'], include_sudo_sections: true });
 
@@ -319,7 +319,7 @@ describe('порты контейнеров мимо фаервола', () => {
   });
 
   it('перенаправление в цепочку публикацией не считается', async () => {
-    // Дословные строки `iptables -t nat -S` с finlab: ими трафик заводится
+    // Дословные строки `iptables -t nat -S` с prod-host: ими трафик заводится
     // в цепочку DOCKER, портов они не открывают
     const redirects = [
       '-N DOCKER',

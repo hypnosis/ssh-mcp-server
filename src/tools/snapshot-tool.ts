@@ -410,7 +410,7 @@ export class SnapshotTool {
     }
 
     // Порт отделяется последним двоеточием, а не первым: у адреса IPv6
-    // (`[::]:4847`, `:::22`) двоеточий несколько, и по первому порт был пуст
+    // (`[::]:2222`, `:::22`) двоеточий несколько, и по первому порт был пуст
     const seen = new Set<string>();
     for (const address of portsOutput.split('\n')) {
       const port = address.slice(address.lastIndexOf(':') + 1).trim();

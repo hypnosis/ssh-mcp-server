@@ -269,11 +269,11 @@ describe('ssh_snapshot: службы и порты', () => {
   });
 
   it('порт берётся после последнего двоеточия, иначе слушатель IPv6 пропадает', async () => {
-    respondWith([[/LISTEN/, '0.0.0.0:22\n[::]:4847\n:::9090']]);
+    respondWith([[/LISTEN/, '0.0.0.0:22\n[::]:2222\n:::9090']]);
 
     const text = await snapshot();
 
-    expect(text).toMatch(/4847\s+unknown/);
+    expect(text).toMatch(/2222\s+unknown/);
     expect(text).toMatch(/9090\s+unknown/);
   });
 

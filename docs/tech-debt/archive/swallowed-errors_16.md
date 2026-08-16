@@ -65,7 +65,7 @@ root `sshd -T` читается и без sudo. Полный аудит alpine �
 Живьём: debian и alpine под root печатают `sshd: port=22 root=without-password pwauth=yes
 pubkey=yes` — раньше этой строки не было вовсе; router (dropbear, где `sshd -T` нет)
 отвечает `NOT CHECKED: sshd config (sshd -T gave no output — run with
-include_sudo_sections: true)`; боевой сервер показал `port=8022 … pwauth=no`.
+include_sudo_sections: true)`; боевой сервер показал `port=2222 … pwauth=no`.
 
 ## Чем проверено
 

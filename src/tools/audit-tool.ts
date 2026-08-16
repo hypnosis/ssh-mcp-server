@@ -248,6 +248,24 @@ export class AuditTool {
           'iptables -nL 2>/dev/null | wc -l; ' +
           'else echo NO_IPTABLES; fi',
       });
+      // Порты контейнеров публикуются правилами в таблице nat, а она
+      // срабатывает раньше правил ufw: включённый экран их не закрывает
+      parts.push({
+        key: 'docker_nat',
+        cmd:
+          'if ! command -v docker >/dev/null 2>&1; then echo NO_DOCKER; ' +
+          'elif out=$(iptables -t nat -S DOCKER 2>/dev/null); then printf \'%s\\n\' "$out"; ' +
+          'else echo NO_DOCKER_NAT_ACCESS; fi',
+      });
+      // Число правил о защите не говорит: сотня строк бывает и у машины, где
+      // всё разрешено. Отвечает на это политика входящей цепочки
+      parts.push({
+        key: 'iptables_input',
+        cmd:
+          'if ! command -v iptables >/dev/null 2>&1; then echo NO_IPTABLES; ' +
+          'elif out=$(iptables -nL INPUT 2>/dev/null); then printf \'%s\\n\' "$out" | head -1; ' +
+          'else echo NO_IPTABLES_ACCESS; fi',
+      });
     }
     if (include.includes('updates')) {
       parts.push({
@@ -368,11 +386,19 @@ export class AuditTool {
       }
     }
 
+    // Политика входящей цепочки в схему ответа не входит, но решает, есть ли
+    // на машине фильтрация вообще
+    let inputPolicy = '';
+    /** Порты контейнеров, опубликованные мимо фильтра */
+    let publishedPorts: string[] = [];
+
     if (include.has('firewall')) {
       result.firewall = this.parseFirewall(
         trimLines(s.get('ufw') || '', 12),
         (s.get('iptables') || '').trim()
       );
+      inputPolicy = (((s.get('iptables_input') || '').match(/policy\s+(\w+)/) || [])[1] || '').toUpperCase();
+      publishedPorts = AuditTool.dockerPublishedPorts(s.get('docker_nat') || '');
       if (result.firewall.ufw.status === 'no_access')
         unavailable.push('firewall/ufw (installed, but its status is not readable — needs sudo?)');
       if (result.firewall.iptables.status === 'no_access')
@@ -440,8 +466,49 @@ export class AuditTool {
     if (result.ssh) {
       if (/^yes$/i.test(result.ssh.permit_root_login))
         result.red_flags.critical.push('PermitRootLogin yes');
-      if (/^yes$/i.test(result.ssh.password_auth) && /^22$/.test(result.ssh.port))
-        result.red_flags.critical.push('PasswordAuthentication yes on port 22');
+      // Порт в условии не участвует: разрешённый пароль опасен на любом порту,
+      // а нестандартный порт лишь убирает мусорный перебор
+      if (/^yes$/i.test(result.ssh.password_auth))
+        result.red_flags.critical.push('PasswordAuthentication yes');
+    }
+
+    // Порт из конфигурации и порт слушателя — факты из разных источников: порт
+    // может задавать сокет, и тогда директива `Port` игнорируется демоном
+    if (result.ssh?.port && result.net && result.net.listeners.length > 0) {
+      const listening = AuditTool.sshdListenerPorts(result.net.listeners);
+      if (listening.length === 0)
+        unavailable.push('sshd port (no sshd among the listeners — the config port is unconfirmed)');
+      else if (!listening.includes(result.ssh.port))
+        result.red_flags.warning.push(
+          `sshd config says port ${result.ssh.port}, but sshd listens on ${listening.join(', ')}`
+        );
+    }
+    if (result.firewall) {
+      const { ufw, iptables } = result.firewall;
+      const ufwActive = ufw.active === true;
+      // Политика встроенной цепочки бывает только ACCEPT или DROP: REJECT
+      // ядро в этой роли не принимает
+      const chainFilters = inputPolicy === 'DROP';
+      // Про экран, который не дали посмотреть, сказать нечего: он уже назван
+      // в списке непроверенного, и второй раз это не находка
+      const chainKnown = iptables.status === 'not_installed' || inputPolicy !== '';
+
+      // Экран включён, а порты контейнеров всё равно снаружи: правило nat
+      // отрабатывает до фильтра, и отчёт «экран включён» вводит в заблуждение
+      if ((ufwActive || chainFilters) && publishedPorts.length > 0)
+        result.red_flags.warning.push(
+          `docker publishes port(s) ${publishedPorts.join(', ')} past the firewall (nat/DOCKER runs before the filter rules)`
+        );
+
+      if (ufwActive) result.red_flags.ok.push('firewall active (ufw)');
+      else if (chainFilters)
+        result.red_flags.ok.push(`firewall active (iptables INPUT policy ${inputPolicy})`);
+      else if (ufw.status !== 'no_access' && chainKnown)
+        result.red_flags.warning.push(
+          `no firewall: ufw ${ufw.status === 'not_installed' ? 'not installed' : 'inactive'}, ` +
+            `${iptables.status === 'not_installed' ? 'iptables not installed' : `iptables INPUT policy ${inputPolicy}`}` +
+            ' — incoming traffic is not filtered'
+        );
     }
     if (result.docker) {
       const exited = result.docker.containers.filter((c) => /^Exited/.test(c.status));
@@ -555,6 +622,39 @@ export class AuditTool {
       });
     }
     return out;
+  }
+
+  /**
+   * Порты, на которых слушает сам sshd.
+   *
+   * Имя процесса стоит в хвосте строки и у `ss`, и у `netstat`; порт берётся
+   * после последнего двоеточия, иначе `[::]:4847` читается иначе, чем
+   * `0.0.0.0:4847`.
+   */
+  private static sshdListenerPorts(
+    listeners: NonNullable<BaselineResult['net']>['listeners']
+  ): string[] {
+    const ports = new Set<string>();
+    for (const listener of listeners) {
+      if (!/\bsshd\b/.test(listener.pid_program)) continue;
+      ports.add(listener.address.slice(listener.address.lastIndexOf(':') + 1));
+    }
+    return [...ports];
+  }
+
+  /**
+   * Порты, опубликованные контейнерами в таблице nat.
+   *
+   * Пустая цепочка отвечает одной строкой `-N DOCKER`, правила публикации
+   * приходят строками `-A DOCKER … --dport N -j DNAT`.
+   */
+  private static dockerPublishedPorts(natRules: string): string[] {
+    const ports: string[] = [];
+    for (const line of natRules.split('\n')) {
+      const port = (line.trim().match(/^-A\s+DOCKER\b.*--dport\s+(\d+)/) || [])[1];
+      if (port) ports.push(port);
+    }
+    return ports;
   }
 
   private static formatUfw(ufw: NonNullable<BaselineResult['firewall']>['ufw']): string {

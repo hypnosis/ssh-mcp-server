@@ -305,11 +305,43 @@ describe('ssh_audit_baseline: настройки sshd', () => {
   it('пароль на 22 порту — тревога', async () => {
     const flags = structure(await sshd(['port 22', 'passwordauthentication yes'])).red_flags;
 
-    expect(flags.critical).toContain('PasswordAuthentication yes on port 22');
+    expect(flags.critical).toContain('PasswordAuthentication yes');
   });
 
-  it('тот же пароль на нестандартном порту тревогой не считается', async () => {
+  it('тот же пароль на нестандартном порту — тоже тревога', async () => {
     const flags = structure(await sshd(['port 2222', 'passwordauthentication yes'])).red_flags;
+
+    expect(flags.critical).toContain('PasswordAuthentication yes');
+  });
+
+  it('пароль запрещён — флага нет ни на каком порту', async () => {
+    const flags = structure(await sshd(['port 22', 'passwordauthentication no'])).red_flags;
+
+    expect(flags.critical.join(' ')).not.toContain('PasswordAuthentication');
+  });
+
+  it('порт в текст флага не попадает: настройка и порт — разные источники', async () => {
+    const flags = structure(await sshd(['port 22', 'passwordauthentication yes'])).red_flags;
+
+    expect(flags.critical.join(' ')).not.toContain('on port');
+  });
+
+  /*
+   * Разрешением считается только точное `yes`. Значение, где `yes` стоит краем,
+   * не разрешение: иначе тревога зависит от того, каким концом слово легло.
+   */
+  it('значение, оканчивающееся на yes, разрешением не считается', async () => {
+    const flags = structure(
+      await sshd(['port 22', 'passwordauthentication noyes', 'permitrootlogin maybe-yes'])
+    ).red_flags;
+
+    expect(flags.critical).toEqual([]);
+  });
+
+  it('значение, начинающееся с yes, разрешением тоже не считается', async () => {
+    const flags = structure(
+      await sshd(['port 22', 'passwordauthentication yes-please', 'permitrootlogin yes-with-key'])
+    ).red_flags;
 
     expect(flags.critical).toEqual([]);
   });

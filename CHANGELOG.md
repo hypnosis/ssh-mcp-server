@@ -146,6 +146,32 @@ does not suit the machines you run on, stay on `1.x`.
   authentication and the neighbouring window keeps its channel. Profiles that share
   credentials still share one connection.
 
+### Fixed — the warning now matches the danger
+Found on a fresh production server: the audit stayed silent where the machine stood
+unprotected, and a warning fired where a file was being read. Both halves were harmful —
+silence reads as "checked, clean", and noise on routine work teaches you to skip warnings.
+- `ssh_audit_baseline`: `PasswordAuthentication yes` is critical on any port. The flag used
+  to require port 22 as well, so a server that allows password login on a non-standard port
+  — that is, one somebody had already configured by hand — got no critical flag at all.
+- `ssh_audit_baseline`: the port from `sshd -T` is compared with the sockets sshd actually
+  listens on, and a mismatch is its own warning. On Ubuntu 22.04+ the port is set by
+  `ssh.socket` and the config disagrees silently; the dangerous direction is a config with a
+  non-standard port while 22 is what is open. No listeners to compare with means the config
+  port is reported as unconfirmed rather than as fact.
+- `ssh_audit_baseline`: the firewall section takes part in the classification. It was
+  collected and printed but produced no flag whatsoever, so a machine with ufw off, an
+  `ACCEPT` policy and no rules got an empty findings list. Presence of filtering is judged by
+  the `INPUT` chain policy, not by the number of rule lines.
+- `ssh_audit_baseline`: ports published by docker are checked in the `nat` table. Those rules
+  run before the ufw rules, so `ufw status` could honestly say `deny (incoming)` while a
+  container port was open to the internet — and the report said the firewall was on.
+- `ssh_exec`: warnings read the command position instead of searching the text. `reboot` as
+  the command is a call; `reboot` inside a path, an argument or a quoted string is not — so
+  `test -f /var/run/reboot-required` no longer prints "reboot detected", a file that any
+  audit reads, this server's own included. SQL warnings fire only when a database client is
+  the command being run. Wrappers (`sudo`, `timeout 5`, `nice -n 10`, `env VAR=1`) are seen
+  through, and a separator inside quotes no longer starts a new command.
+
 ### Fixed — answers that no longer claim more than was checked
 Every tool below used to report a check it had not performed. The three outcomes —
 done, failed, nothing to check with — are now distinct in the answer itself.

@@ -27,6 +27,8 @@
 | TD-15 | В ответах видно внутреннюю кухню | ✅ закрыт | [archive/internal-names-in-answers_15.md](archive/internal-names-in-answers_15.md) |
 | TD-16 | Проглоченная ошибка читается как факт | ✅ закрыт | [archive/swallowed-errors_16.md](archive/swallowed-errors_16.md) |
 | TD-17 | Шаблон пути в журнальных инструментах обещан, но не работает | ✅ закрыт | [archive/glob-path-not-expanded_17.md](archive/glob-path-not-expanded_17.md) |
+| TD-18 | Красный флаг аудита называет порт, которого никто не слушает | ✅ закрыт | [archive/audit-port-mismatch_18.md](archive/audit-port-mismatch_18.md) |
+| TD-19 | Предупреждения ловят слово, а не команду | ✅ закрыт | [archive/pattern-warnings-match-substring_19.md](archive/pattern-warnings-match-substring_19.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.
 

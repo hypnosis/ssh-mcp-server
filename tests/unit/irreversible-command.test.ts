@@ -28,6 +28,8 @@ describe('остановка машины', () => {
     ['env DEBUG=1 poweroff'],
     ['uptime && reboot'],
     ['uptime; reboot'],
+    ['sudo -u deploy reboot'],
+    ['sudo --user deploy shutdown -h now'],
   ])('%s — обёртка и цепочка отказ не отменяют', (command) => {
     expect(blocked(command)).toBe(true);
   });

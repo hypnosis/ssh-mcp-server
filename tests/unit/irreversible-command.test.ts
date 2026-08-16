@@ -453,6 +453,11 @@ describe('чтение после уничтожения', () => {
     expect(blocked('mv /srv/app /srv/new && cp -r /srv/app /backup')).toBe(true);
   });
 
+  it('у переноса приёмник тоже бывает назван флагом', () => {
+    expect(blocked('mv -t /srv/new /srv/app && cp -r /srv/app /backup')).toBe(true);
+    expect(blocked('mv -t /srv/new /srv/app && cp -r /srv/new /backup')).toBe(false);
+  });
+
   it.each([
     ['rm -rf /srv/app && cp -rf /srv/app /backup', 'ключ f у копии — «не спрашивай», не архив'],
     ['rm -rf /srv/a /srv/b && cp -r /srv/b /backup', 'уничтожено несколько объектов'],
@@ -490,7 +495,10 @@ describe('чтение после уничтожения', () => {
     ['rm -rf /srv/app && stat /srv/app /srv/other'],
     ['rm -rf /srv/app && test -d /srv/app -a -d /srv/other'],
     ['rm -rf /srv/app && rm -rf /srv/app/logs /srv/app/tmp'],
-  ])('%s — осмотр чтением не считается, команда проходит', (command) => {
+    ['rm -rf /srv/app /srv/cache; mkdir -p /srv/app /srv/cache'],
+    ['rm -rf /srv/app /srv/cache && touch /srv/app /srv/cache'],
+    ['rm -rf /srv/app /srv/cache && mkfifo /srv/app /srv/cache'],
+  ])('%s — данных не читает, команда проходит', (command) => {
     expect(blocked(command)).toBe(false);
   });
 

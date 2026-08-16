@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
@@ -75,6 +74,9 @@ skills-lock.json
 
 # Архив замеров приёмки: логи вызовов, наборы кейсов, harness
 .acceptance/
+
+# Отчёты о приёмке: содержат подробности боевого сервера, в репозиторий не едут
+docs/acceptance/
 
 # SSH profiles (never commit!)
 *.profiles.json

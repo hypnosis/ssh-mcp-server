@@ -400,7 +400,7 @@ dropdb app && pg_dump app > a.sql    ← тот же случай, объект 
 факты названы явно.
 
 ```
-Работаем в /Users/hypnosis/projects/ssh-mcp-server/.claude/worktrees/core11,
+Работаем в <repo-root>,
 ветка feat/openssh-transport.
 
 Спринт: docs/sprints/planned/FIX_17_refusal_where_loss_is_final.md — прочитай его
@@ -432,11 +432,11 @@ dropdb app && pg_dump app > a.sql    ← тот же случай, объект 
 Живые замеры делай своей оснасткой: подключённый MCP-сервер крутит dist/ со старта
 сессии и твоих правок не видит. Скрипт-обёртка поднимает свежий dist через Client из
 SDK, держи его в scratchpad, в репозиторий не клади. Профили: лаборатория —
-~/.mcp-config/acceptance-profiles.json, боевые (включая finlab) —
+~/.mcp-config/acceptance-profiles.json, боевые (включая prod-host) —
 ~/.mcp-config/docker-profiles.json.
 
 Отказ выносится ДО отправки, поэтому проверяется на любом контейнере: docker, lvm и
-psql на нём не нужны. На finlab — только чтение и только проверка, что штатные
+psql на нём не нужны. На prod-host — только чтение и только проверка, что штатные
 команды не задеты.
 
 Требования к отчёту каждой задачи:

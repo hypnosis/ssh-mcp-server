@@ -276,11 +276,6 @@ describe('ssh_exec: ответ подписан текстовым типом', 
 describe('ssh_exec: предупреждение об опасной команде', () => {
   it.each([
     ['chmod 777 /srv/app', 'chmod 777 detected (security risk)'],
-    ['reboot', 'reboot detected'],
-    ['shutdown -h now', 'shutdown detected'],
-    ['halt', 'halt detected'],
-    ['poweroff', 'poweroff detected'],
-    ['docker system prune -a', 'docker system prune -a detected'],
     ['docker rm -f $(docker ps -aq)', 'docker rm all containers detected'],
     ['psql -c "DROP DATABASE app;"', 'DROP DATABASE detected'],
     ['psql -c "DROP TABLE users;"', 'DROP TABLE detected'],
@@ -294,22 +289,22 @@ describe('ssh_exec: предупреждение об опасной коман�
   });
 
   it('предупреждение не отменяет команду — она уходит и отвечает', async () => {
-    respondWith([[/^reboot/, { stdout: 'rebooting' }]]);
+    respondWith([[/^chmod/, { stdout: 'mode changed' }]]);
 
-    const text = await answer({ command: 'reboot' });
+    const text = await answer({ command: 'chmod 777 /srv/app' });
 
-    expect(text).toContain('rebooting');
+    expect(text).toContain('mode changed');
     expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
   it('в предупреждении видно, о какой именно команде речь', async () => {
-    const text = await answer({ command: 'sudo halt --force' });
+    const text = await answer({ command: 'sudo chmod 777 /srv/app' });
 
-    expect(text).toContain('Command: sudo halt --force');
+    expect(text).toContain('Command: sudo chmod 777 /srv/app');
   });
 
   it('длинная команда в предупреждении обрезается', async () => {
-    const command = `reboot # ${'x'.repeat(200)}`;
+    const command = `chmod 777 /srv/app # ${'x'.repeat(200)}`;
 
     const text = await answer({ command });
 
@@ -318,11 +313,11 @@ describe('ssh_exec: предупреждение об опасной коман�
   });
 
   it('в пачке предупреждения идут перед разбором и отделены от него чертой', async () => {
-    const text = await answer({ command: ['reboot', 'halt'] });
+    const text = await answer({ command: ['chmod 777 /a', 'chmod 777 /b'] });
 
     expect(text).toContain(
-      '⚠️  DANGEROUS COMMAND: reboot detected\nCommand: reboot\n\n' +
-        '⚠️  DANGEROUS COMMAND: halt detected\nCommand: halt\n\n' +
+      '⚠️  DANGEROUS COMMAND: chmod 777 detected (security risk)\nCommand: chmod 777 /a\n\n' +
+        '⚠️  DANGEROUS COMMAND: chmod 777 detected (security risk)\nCommand: chmod 777 /b\n\n' +
         '═'.repeat(60) +
         '\n\nExecuted 2 commands:'
     );

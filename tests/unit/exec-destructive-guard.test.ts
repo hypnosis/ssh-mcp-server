@@ -70,6 +70,23 @@ describe('ssh_exec: врезка защиты от разрушительног�
     expect(sentCommands()).toEqual([]);
   });
 
+  it('остановка машины останавливается до первой отправки', async () => {
+    const result = await new ExecTool().handleCall(call('reboot'));
+
+    expect(result.content[0].text).toContain('⛔ BLOCKED');
+    expect(result.isError).toBe(true);
+    expect(sentCommands()).toEqual([]);
+    // Целей удаления в команде нет, и паспорт ради неё не спрашивается
+    expect(passportMock).not.toHaveBeenCalled();
+  });
+
+  it('остановка машины в пачке отменяет весь вызов, а не свою команду', async () => {
+    const result = await new ExecTool().handleCall(call(['uptime', 'sudo reboot']));
+
+    expect(result.content[0].text).toContain('⛔ BLOCKED');
+    expect(sentCommands()).toEqual([]);
+  });
+
   it('дом из паспорта берётся и по нему решается отказ', async () => {
     const result = await new ExecTool().handleCall(call('rm -rf /home/deploy'));
 

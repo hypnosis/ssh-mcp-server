@@ -33,6 +33,7 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
 }));
 
 const { ExecTool } = await import('../../src/tools/exec-tool.js');
+const { CONFIRMATION_MARKER } = await import('../../src/utils/destructive-command.js');
 
 const answer = async (command: string): Promise<string> => {
   const request = { params: { name: 'ssh_exec', arguments: { command } } } as CallToolRequest;
@@ -42,6 +43,9 @@ const answer = async (command: string): Promise<string> => {
 
 const warned = async (command: string): Promise<boolean> =>
   (await answer(command)).includes('DANGEROUS COMMAND');
+
+const blocked = async (command: string): Promise<boolean> =>
+  (await answer(command)).includes('⛔ BLOCKED');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -57,8 +61,8 @@ describe('остановка машины: вызов против упомин�
     ['sudo reboot'],
     ['/sbin/reboot'],
     ['uptime; reboot'],
-  ])('%s — вызов, предупреждение обязано быть', async (command) => {
-    expect(await warned(command)).toBe(true);
+  ])('%s — вызов, отказ обязан быть', async (command) => {
+    expect(await blocked(command)).toBe(true);
   });
 
   it.each([
@@ -68,8 +72,11 @@ describe('остановка машины: вызов против упомин�
     ['ls -la /etc/init.d/halt'],
     ['cat /var/log/shutdown.log'],
     ['systemctl status poweroff.target'],
-  ])('%s — упоминание, предупреждения быть не должно', async (command) => {
-    expect(await warned(command)).toBe(false);
+  ])('%s — упоминание, ни отказа, ни предупреждения', async (command) => {
+    const text = await answer(command);
+
+    expect(text).not.toContain('⛔ BLOCKED');
+    expect(text).not.toContain('DANGEROUS COMMAND');
   });
 
   it.each([
@@ -77,13 +84,23 @@ describe('остановка машины: вызов против упомин�
     ['echo "maintenance; halt scheduled"'],
     ["psql -c 'SELECT 1; -- poweroff later'"],
   ])('%s — точка с запятой внутри кавычек команду не начинает', async (command) => {
-    expect(await warned(command)).toBe(false);
+    const text = await answer(command);
+
+    expect(text).not.toContain('⛔ BLOCKED');
+    expect(text).not.toContain('DANGEROUS COMMAND');
   });
 
   it('файл, который читает собственный аудит проекта, тревоги не поднимает', async () => {
     const text = await answer('(test -f /var/run/reboot-required && echo YES) || echo NO');
 
     expect(text).not.toContain('DANGEROUS COMMAND');
+  });
+
+  it('остановка машины с маркером доезжает до сервера', async () => {
+    const text = await answer(`reboot ${CONFIRMATION_MARKER}`);
+
+    expect(text).not.toContain('⛔ BLOCKED');
+    expect(executeMock).toHaveBeenCalled();
   });
 });
 
@@ -128,28 +145,34 @@ describe('запросы к базе: только там, где база вы�
 });
 
 describe('массовая уборка docker', () => {
-  it('docker system prune -a — предупреждение', async () => {
-    expect(await warned('docker system prune -a')).toBe(true);
+  it('docker system prune -a — отказ', async () => {
+    expect(await blocked('docker system prune -a')).toBe(true);
   });
 
-  it('слитный флаг чистит так же и тоже предупреждает', async () => {
-    expect(await warned('docker system prune -af')).toBe(true);
+  it('слитный флаг чистит так же и тоже отказывает', async () => {
+    expect(await blocked('docker system prune -af')).toBe(true);
   });
 
   it('слитный флаг в другом порядке ловится так же', async () => {
-    expect(await warned('docker system prune -fa')).toBe(true);
+    expect(await blocked('docker system prune -fa')).toBe(true);
   });
 
   it('длинная форма флага — то же самое', async () => {
-    expect(await warned('docker system prune --all')).toBe(true);
+    expect(await blocked('docker system prune --all')).toBe(true);
   });
 
-  it('уборка без -a трогает только висящее — предупреждения нет', async () => {
-    expect(await warned('docker system prune -f')).toBe(false);
+  it('уборка без -a трогает только висящее — тревоги нет', async () => {
+    const text = await answer('docker system prune -f');
+
+    expect(text).not.toContain('⛔ BLOCKED');
+    expect(text).not.toContain('DANGEROUS COMMAND');
   });
 
-  it('уборка образов машину не разбирает — предупреждения нет', async () => {
-    expect(await warned('docker image prune -a')).toBe(false);
+  it('уборка образов машину не разбирает — тревоги нет', async () => {
+    const text = await answer('docker image prune -a');
+
+    expect(text).not.toContain('⛔ BLOCKED');
+    expect(text).not.toContain('DANGEROUS COMMAND');
   });
 
   it('осмотр занятого места предупреждения не поднимает', async () => {
@@ -169,7 +192,21 @@ describe('массовая уборка docker', () => {
   });
 
   it('та же строка в тексте — тишина', async () => {
-    expect(await warned('echo "docker system prune -a" >> /root/notes.txt')).toBe(false);
+    const text = await answer('echo "docker system prune -a" >> /root/notes.txt');
+
+    expect(text).not.toContain('⛔ BLOCKED');
+    expect(text).not.toContain('DANGEROUS COMMAND');
+  });
+
+  it('тома уносятся молча только до врезки: down -v получает отказ', async () => {
+    expect(await blocked('docker compose down -v')).toBe(true);
+  });
+
+  it('перезапуск без флага томов не трогает — команда уходит', async () => {
+    const text = await answer('docker compose down');
+
+    expect(text).not.toContain('⛔ BLOCKED');
+    expect(executeMock).toHaveBeenCalled();
   });
 
   it('обычная работа с docker предупреждения не поднимает', async () => {
@@ -187,11 +224,14 @@ describe('обёртки не прячут команду', () => {
     ['nice -n 10 halt'],
     ['env DEBUG=1 poweroff'],
     ['nohup shutdown -h now'],
-  ])('%s — предупреждение обязано быть', async (command) => {
-    expect(await warned(command)).toBe(true);
+  ])('%s — отказ обязан быть', async (command) => {
+    expect(await blocked(command)).toBe(true);
   });
 
   it('обёртка над безобидной командой тревоги не поднимает', async () => {
-    expect(await warned('timeout 5 curl https://example.com/reboot')).toBe(false);
+    const text = await answer('timeout 5 curl https://example.com/reboot');
+
+    expect(text).not.toContain('⛔ BLOCKED');
+    expect(text).not.toContain('DANGEROUS COMMAND');
   });
 });

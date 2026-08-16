@@ -172,6 +172,30 @@ silence reads as "checked, clean", and noise on routine work teaches you to skip
   the command being run. Wrappers (`sudo`, `timeout 5`, `nice -n 10`, `env VAR=1`) are seen
   through, and a separator inside quotes no longer starts a new command.
 
+### Changed — refusal where the loss is final (**breaking**)
+A warning printed after the command has already gone stops nothing. Commands whose damage
+cannot be undone are now refused before anything is sent, on two checks: the whole
+container stops existing, or an object is read after the same call destroyed it. Content
+inside a surviving container still only warns — a table restores from a dump of the
+database, the database restores from nothing. Reasoning in
+`docs/decisions/007-refusal-threshold.md`.
+- Refused instead of warned: `reboot`, `shutdown`, `halt`, `poweroff`;
+  `docker compose down -v`, `docker volume rm`, `docker system prune --volumes`;
+  `DROP DATABASE`, `dropdb`, `FLUSHALL`/`FLUSHDB`; `crontab -r`; `mkfs`, `wipefs -a`,
+  `lvremove`/`vgremove`/`pvremove`, `zfs destroy`, `btrfs subvolume delete`; `dd of=`
+  aimed at a device. **Automation that calls any of these through MCP needs the marker
+  now.**
+- Broken order inside one call is refused too: `rm -rf A && cp -r A A.bak` reads what is
+  already gone. The correct order — copy, move, delete — keeps the destruction last and
+  passes untouched, as do `rm -rf A && ls A` and recreating a path or an archive.
+- `# CONFIRMED-DESTRUCTIVE` after the command sends it as written. Rebooting a router
+  guarded by the `router-no-reboot.sh` hook needs **two** markers in one command: that
+  hook has its own, `# CONFIRMED-REBOOT`, and they belong to different systems.
+- What the guard does not see is written down in the README rather than left implied:
+  destruction and reading split across two calls; a single argument taken for the
+  destination (`pg_restore dump.sql`); the long form of an archiver key (`tar --file X`);
+  a utility whose destination sits in the middle without a flag.
+
 ### Fixed — answers that no longer claim more than was checked
 Every tool below used to report a check it had not performed. The three outcomes —
 done, failed, nothing to check with — are now distinct in the answer itself.

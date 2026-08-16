@@ -42,7 +42,7 @@
 ### Key Features:
 
 - ✅ **REST approach** - arrays where logical
-- ✅ **Security** - warnings for dangerous commands, path validation, safe quoting
+- ✅ **Security** - warnings for dangerous commands, refusal where the loss is final, path validation, safe quoting
 - ✅ **Tilde expansion** - `~/file` automatically expands to `$HOME/file`
 - ✅ **Path security** - optional whitelist/blacklist per profile
 - ✅ **sudo support** - parameter in every command
@@ -832,30 +832,74 @@ export SSH_MCP_PROFILES_CACHE_TTL="60000"
 
 ## 🔒 Security
 
-### Dangerous Command Warnings
+### Two levels: warning and refusal
 
-The server warns about what a command is going to do. The check reads the command
-position, not the text: a name that starts a command is a call, the same word inside a
-path, an argument or a quoted string is not.
+The server reads what a command is going to do and answers on one of two levels. The
+check reads the command position, not the text: a name that starts a command is a call,
+the same word inside a path, an argument or a quoted string is not.
+
+| Level | What happens | When |
+|---|---|---|
+| ⚠️ Warning | the command **runs**, the warning goes with the answer | the damage can be undone or is limited to content |
+| ⛔ Refusal | nothing is sent to the server | the loss is final: the container itself is gone |
 
 ```typescript
 ssh_exec({ command: "reboot" })
-// ⚠️  DANGEROUS COMMAND: reboot detected
-// Command will execute but with warning
+// ⛔ BLOCKED: reboot restarts the machine, and the connection dies with it.
+// The command was NOT executed.
+// If this is intended, repeat it with the marker: reboot # CONFIRMED-DESTRUCTIVE
+
+ssh_exec({ command: "chmod 777 /srv/app" })
+// ⚠️  DANGEROUS COMMAND: chmod 777 detected — the command still runs
 
 ssh_exec({ command: "test -f /var/run/reboot-required && cat /var/run/reboot-required" })
 // no warning — nothing is being rebooted, a file is being read
 ```
 
-Warned about:
+**Refused** — the whole container stops existing, and what was inside cannot be read
+back:
+
 - `reboot`, `shutdown`, `halt`, `poweroff` — including behind `sudo`, `timeout`, `nice`, `env`
+- `docker compose down -v`, `docker volume rm`, `docker system prune --volumes`
+- `DROP DATABASE`, `dropdb`, `FLUSHALL`/`FLUSHDB` in `redis-cli`
+- `crontab -r` — the whole job list of a user at once
+- `mkfs`, `wipefs -a`, `lvremove`/`vgremove`/`pvremove`, `zfs destroy`, `btrfs subvolume delete`
+- `dd of=` pointing at a device
+- recursive deletion aimed at the root, a home or a system tree — see
+  [`ssh_exec`](#ssh_exec---execute-commands) above
+- reading an object after the same call destroyed it: `rm -rf A && cp -r A A.bak`
+
+**Warned about** — the container survives, the content changes:
+
 - `chmod 777`
 - `docker system prune -a`, `docker rm -f $(docker ps -aq)`
-- `DROP DATABASE`, `DROP TABLE`, `TRUNCATE`, `DELETE FROM` — only when a database client
+- `DROP TABLE`, `TRUNCATE`, `DELETE FROM` — only when a database client
   (`psql`, `mysql`, `sqlite3`, …) is the command being run
 
-Recursive deletion is not on this list: it is **refused**, not warned about — see
-[`ssh_exec`](#ssh_exec---execute-commands) above.
+A refusal is not a dead end: repeating the command with the `# CONFIRMED-DESTRUCTIVE`
+marker sends it as written. Rebooting a router guarded by the `router-no-reboot.sh` hook
+needs **two** markers in one command — that hook has its own, `# CONFIRMED-REBOOT`, and
+the two belong to different systems.
+
+### What the guard does not see
+
+The checks read the command text and nothing else. Four gaps are known and left open on
+purpose:
+
+- **Destruction and reading split across two calls.** `rm -rf A` in one call, `cp -r A
+  A.bak` in the next — by the time the second call arrives the data is already gone. The
+  server keeps no memory between calls: it would disagree with the server, where the path
+  may have been recreated without us.
+- **A single argument counts as the destination.** `rm -rf /srv/db && pg_restore
+  /srv/db/dump.sql` passes — the only path is read as the place being written to.
+- **The long form of an archiver key.** `tar czf` and `tar -czf` are understood,
+  `tar --file X` is not.
+- **A utility whose destination sits in the middle and is not named by a flag** is not
+  parsed at all. The destination is looked up in one position — last, or named by `-t`,
+  `of=`, the `f` key of `tar`, the first argument of `zip`.
+
+A command coming from a file the server never read is outside all of this: the guard
+reads what it is given.
 
 ### Recommendations
 

@@ -1,6 +1,6 @@
 {
   "name": "@hypnosis/ssh-mcp-server",
-  "version": "1.3.2",
+  "version": "2.0.0",
   "description": "SSH MCP Server - Universal tool for managing remote servers via AI assistants (Cursor, Claude Desktop). Supports command execution, file operations, log management and system health check.",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,20 +21,23 @@
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit/",
+    "test:live": "SSH_MCP_LIVE=1 vitest run tests/live/",
+    "lab:up": "bash scripts/lab-up.sh",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "mutate": "node scripts/mutate-changed.mjs",
     "prepublishOnly": "npm run build && npm run test:unit",
     "publish:dry": "npm pack --dry-run",
     "publish:check": "npm pack && tar -tzf *.tgz | head -20 && rm -f *.tgz",
     "publish:npm": "npm publish --access public"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.6.0",
-    "ssh2": "^1.15.0"
+    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^20.11.0",
-    "@types/ssh2": "^1.15.0",
     "@vitest/coverage-v8": "^4.0.16",
     "@vitest/ui": "^4.0.16",
     "tsx": "^4.7.0",

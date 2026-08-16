@@ -109,9 +109,13 @@ MCP tools require valid JSON syntax for arrays.
 **Возвращает:**
 ```typescript
 {
-  content: [{ type: 'text', text: string }]
+  content: [{ type: 'text', text: string }],
+  isError: true
 }
 ```
+
+Неверная форма аргумента — это отказ инструмента, поэтому ответ несёт признак провала:
+без него вызывающий отличал бы ошибку от результата только по тексту.
 
 ## Преимущества
 

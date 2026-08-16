@@ -24,7 +24,6 @@
     "test:live": "SSH_MCP_LIVE=1 vitest run tests/live/",
     "lab:up": "bash scripts/lab-up.sh",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
     "mutate": "node scripts/mutate-changed.mjs",
     "prepublishOnly": "npm run build && npm run test:unit",
     "publish:dry": "npm pack --dry-run",
@@ -38,11 +37,9 @@
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^20.11.0",
-    "@vitest/coverage-v8": "^4.0.16",
-    "@vitest/ui": "^4.0.16",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",
-    "vitest": "^4.0.16"
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "qs": "^6.15.3"

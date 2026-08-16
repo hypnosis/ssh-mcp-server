@@ -17,6 +17,7 @@ import {
   findRemovalTargets,
   inspectCommand,
 } from '../utils/destructive-command.js';
+import { inspectIrreversible } from '../utils/irreversible-command.js';
 import { parseInvocations, unquote } from '../utils/command-parse.js';
 import { resolveRemovalTargets } from '../managers/removal-guard.js';
 import { buildStartCommand, createJobId, jobPaths, parseJobStart } from '../utils/job-command.js';
@@ -31,9 +32,6 @@ import type { SSHConfig } from '../utils/ssh-config.js';
  * и настоящий снос корня в этом шуме теряется. Настоящую проверку делает
  * destructive-command.ts: она смотрит, куда путь ведёт, и не пускает команду.
  */
-
-/** Команды, останавливающие машину */
-const HALTING_COMMANDS = ['reboot', 'shutdown', 'halt', 'poweroff'];
 
 /** Клиенты БД: запрос виден только у них, в аргументе или на входе */
 const DB_CLIENTS = [
@@ -51,7 +49,7 @@ const SQL_PATTERNS = [
 /**
  * Предупреждение о том, что команда собирается сделать.
  *
- * Имя ищется в позиции команды: `reboot` первым словом — вызов, `reboot`
+ * Имя ищется в позиции команды: `chmod` первым словом — вызов, `chmod`
  * внутри пути или строки — упоминание, и о нём молчим.
  */
 function checkDangerousCommand(command: string): string | null {
@@ -59,19 +57,18 @@ function checkDangerousCommand(command: string): string | null {
   const invocations = parseInvocations(command);
 
   for (const { name, args } of invocations) {
-    if (HALTING_COMMANDS.includes(name)) return warning(`${name} detected`);
-
     if (name === 'chmod' && args.some((argument) => unquote(argument) === '777'))
       return warning('chmod 777 detected (security risk)');
 
-    if (name === 'docker') {
-      // `-a` приезжает и слитно с другими флагами: `prune -af` чистит так же
-      const takesAll = args.some((argument) => argument === '--all' || /^-[a-z]*a/.test(argument));
-      if (args[0] === 'system' && args[1] === 'prune' && takesAll)
-        return warning('docker system prune -a detected');
-      if (args[0] === 'rm' && args.includes('-f') && /\$\(docker\s+ps/.test(args.join(' ')))
-        return warning('docker rm all containers detected');
-    }
+    // Снос всех контейнеров разом: сами контейнеры пересоздаются, поэтому это
+    // предупреждение, а не отказ — тома с данными их переживают
+    if (
+      name === 'docker' &&
+      args[0] === 'rm' &&
+      args.includes('-f') &&
+      /\$\(docker\s+ps/.test(args.join(' '))
+    )
+      return warning('docker rm all containers detected');
   }
 
   // Запрос ищется по всей команде, но только если клиент БД в ней вызван: так
@@ -392,7 +389,7 @@ export class ExecTool {
   }
 
   /**
-   * Отказ, если хоть одна команда вызова сносит корень, дом или систему.
+   * Отказ, если хоть одна команда вызова уносит данные навсегда.
    *
    * Разбор строки решает почти всё сразу и без сети; на сервер уходит один
    * запрос и только за тем, чего в тексте не видно, — куда ведёт ссылка.
@@ -409,6 +406,13 @@ export class ExecTool {
     let home: string | null = null;
 
     for (const command of commands) {
+      // Разбор по тексту идёт первым: он не касается путей, поэтому ранняя
+      // ветка по целям удаления пропустила бы его мимо вместе с командой
+      const irreversible = inspectIrreversible(command);
+      if (irreversible.blocked) {
+        return blockedMessage(command, irreversible.reason!);
+      }
+
       if (findRemovalTargets(command).length === 0) continue;
       if (home === null) home = (await this.executor.passport(config)).home;
 

@@ -28,8 +28,40 @@ import {
   type TlsCheckResult,
 } from './audit-output.js';
 
+/** ssh_audit_baseline arguments, matching its inputSchema */
+interface BaselineArgs {
+  profile?: string;
+  include?: string[];
+  include_sudo_sections?: boolean;
+  compact?: boolean;
+}
+
+/** ssh_tls_check arguments, matching its inputSchema */
+interface TlsCheckArgs {
+  profile?: string;
+  domain?: unknown;
+  port?: number;
+  check_renew_hook?: boolean;
+  sudo?: boolean;
+}
+
+/** ssh_disk_breakdown arguments, matching its inputSchema */
+interface DiskBreakdownArgs {
+  profile?: string;
+  top_n?: unknown;
+  paths?: string[];
+}
+
+/** ssh_service_status arguments, matching its inputSchema */
+interface ServiceStatusArgs {
+  profile?: string;
+  unit?: unknown;
+  log_lines?: unknown;
+  since?: string;
+}
+
 export class AuditTool {
-  /** Имена разделов отчёта — они же список допустимых значений `include` */
+  /** Report section names — also the list of values `include` accepts */
   private static readonly BASELINE_SECTIONS = [
     'system', 'disk', 'mem', 'net', 'ssh', 'services', 'docker', 'firewall', 'updates',
   ];
@@ -155,11 +187,12 @@ export class AuditTool {
   // ---------------------------------------------------------------------------
 
   private async handleBaseline(request: CallToolRequest, signal?: AbortSignal) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as BaselineArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
-    // Настройки sshd спрашиваются всегда: под root они читаются и без sudo, а
-    // раньше раздела просто не было — полный аудит молчал о парольном входе.
-    // `include_sudo_sections` выбирает способ чтения, а не наличие раздела
+    // sshd settings are always requested: under root they can be read without
+    // sudo, and omitting the section would leave a full audit silent about
+    // password login. `include_sudo_sections` selects the reading method,
+    // not whether the section is present
     const include: string[] = args.include || [
       'system', 'disk', 'mem', 'net', 'ssh', 'services', 'docker', 'firewall', 'updates',
     ];
@@ -186,18 +219,19 @@ export class AuditTool {
       parts.push({ key: 'load', cmd: "cat /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg 2>/dev/null || echo unavailable" });
     }
     if (include.includes('disk')) {
-      // Без -x: BusyBox этих опций не знает и обрывается на первой же
-      // («df: unrecognized option: x»), а вывод уходит в /dev/null — раздел
-      // диска на всех BusyBox-машинах молча оставался пустым. Псевдофайловые
-      // системы отсеиваются при разборе, по колонке Type.
+      // No -x: BusyBox does not know that option and aborts on the first one
+      // ("df: unrecognized option: x"), with the output going to /dev/null —
+      // the disk section would come out silently empty on every BusyBox
+      // machine. Pseudo filesystems are filtered out during parsing, by the
+      // Type column.
       parts.push({ key: 'df', cmd: 'df -hT 2>/dev/null' });
     }
     if (include.includes('mem')) {
       parts.push({ key: 'free', cmd: 'free -h 2>/dev/null || vm_stat 2>/dev/null' });
     }
     if (include.includes('net')) {
-      // Маркер обязателен: без него сервер без ss и netstat отдаёт пустоту,
-      // неотличимую от «никто не слушает»
+      // A marker is required: without it a server with neither ss nor netstat
+      // returns emptiness indistinguishable from "nothing is listening"
       parts.push({
         key: 'listeners',
         cmd: 'ss -tulpenH 2>/dev/null || netstat -tulpn 2>/dev/null || echo NO_NET_TOOL',
@@ -209,8 +243,8 @@ export class AuditTool {
       parts.push({ key: 'sshd', cmd: 'sshd -T 2>/dev/null | grep -E "^(port|permitrootlogin|passwordauth|pubkeyauth|usedns)"' });
     }
     if (include.includes('services')) {
-      // Отказ systemd доезжает текстом, а не глушится: без него «служб ноль»
-      // печатается и там, где спросить было некого
+      // A systemd failure travels through as text instead of being silenced:
+      // without it "zero services" gets printed even where there was no one to ask
       parts.push({
         key: 'failed',
         cmd:
@@ -232,8 +266,9 @@ export class AuditTool {
       parts.push({ key: 'docker_df', cmd: 'docker system df 2>/dev/null || echo NO_DOCKER' });
     }
     if (include.includes('firewall')) {
-      // Маркеры обязательны: без них отсутствие ufw и отказ по правам дают тот
-      // же пустой вывод, что и выключенный экран, — и отчёт объявлял «выключен»
+      // Markers are required: without them ufw being absent and a permission
+      // refusal give the same empty output as a disabled firewall — and the
+      // report would call it "disabled"
       parts.push({
         key: 'ufw',
         cmd:
@@ -248,8 +283,8 @@ export class AuditTool {
           'iptables -nL 2>/dev/null | wc -l; ' +
           'else echo NO_IPTABLES; fi',
       });
-      // Порты контейнеров публикуются правилами в таблице nat, а она
-      // срабатывает раньше правил ufw: включённый экран их не закрывает
+      // Container ports are published by rules in the nat table, and it
+      // fires before the ufw rules: an enabled firewall does not close them
       parts.push({
         key: 'docker_nat',
         cmd:
@@ -257,8 +292,9 @@ export class AuditTool {
           'elif out=$(iptables -t nat -S DOCKER 2>/dev/null); then printf \'%s\\n\' "$out"; ' +
           'else echo NO_DOCKER_NAT_ACCESS; fi',
       });
-      // Число правил о защите не говорит: сотня строк бывает и у машины, где
-      // всё разрешено. Отвечает на это политика входящей цепочки
+      // The number of rules says nothing about protection: a hundred lines can
+      // exist on a machine where everything is allowed. The INPUT chain
+      // policy answers that instead
       parts.push({
         key: 'iptables_input',
         cmd:
@@ -366,8 +402,9 @@ export class AuditTool {
     }
 
     if (include.has('services')) {
-      // Раздела в ответе нет вовсе, когда его нечем выполнить: ноль в
-      // `running_count` — это утверждение о сервере, а не признание незнания
+      // The section is absent from the response entirely when there is
+      // nothing to run it with: zero in `running_count` is a statement about
+      // the server, not an admission of not knowing
       const failedText = (s.get('failed') || '').trim();
       const runningText = (s.get('running_count') || '').trim();
       const reason = AuditTool.servicesUnavailable(failedText, runningText);
@@ -386,10 +423,10 @@ export class AuditTool {
       }
     }
 
-    // Политика входящей цепочки в схему ответа не входит, но решает, есть ли
-    // на машине фильтрация вообще
+    // The INPUT chain policy is not part of the response schema, but it
+    // decides whether the machine filters traffic at all
     let inputPolicy = '';
-    /** Порты контейнеров, опубликованные мимо фильтра */
+    /** Container ports published past the filter */
     let publishedPorts: string[] = [];
 
     if (include.has('firewall')) {
@@ -421,8 +458,8 @@ export class AuditTool {
     if (include.has('ssh')) {
       const sshd = (s.get('sshd') || '').trim();
       if (!sshd) {
-        // Пустой `sshd -T` — это «не посмотрели», а проверка красных флагов по
-        // пустым полям объявляет небезопасную настройку безопасной
+        // An empty `sshd -T` means "not checked", and running the red-flags
+        // check on empty fields would declare an unsafe setup safe
         unavailable.push(
           useSudo
             ? 'sshd config (sshd -T gave no output)'
@@ -466,14 +503,15 @@ export class AuditTool {
     if (result.ssh) {
       if (/^yes$/i.test(result.ssh.permit_root_login))
         result.red_flags.critical.push('PermitRootLogin yes');
-      // Порт в условии не участвует: разрешённый пароль опасен на любом порту,
-      // а нестандартный порт лишь убирает мусорный перебор
+      // Port does not enter the condition: password auth is dangerous on any
+      // port, and a non-standard port only cuts down on junk brute-forcing
       if (/^yes$/i.test(result.ssh.password_auth))
         result.red_flags.critical.push('PasswordAuthentication yes');
     }
 
-    // Порт из конфигурации и порт слушателя — факты из разных источников: порт
-    // может задавать сокет, и тогда директива `Port` игнорируется демоном
+    // The configured port and the listening port are facts from different
+    // sources: a socket can set the port, and then the daemon ignores the
+    // `Port` directive
     if (result.ssh?.port && result.net && result.net.listeners.length > 0) {
       const listening = AuditTool.sshdListenerPorts(result.net.listeners);
       if (listening.length === 0)
@@ -486,15 +524,15 @@ export class AuditTool {
     if (result.firewall) {
       const { ufw, iptables } = result.firewall;
       const ufwActive = ufw.active === true;
-      // Политика встроенной цепочки бывает только ACCEPT или DROP: REJECT
-      // ядро в этой роли не принимает
+      // A built-in chain's policy is only ever ACCEPT or DROP: the kernel
+      // does not accept REJECT in that role
       const chainFilters = inputPolicy === 'DROP';
-      // Про экран, который не дали посмотреть, сказать нечего: он уже назван
-      // в списке непроверенного, и второй раз это не находка
+      // There is nothing to say about a firewall we were not allowed to see:
+      // it is already named in the unavailable list, and naming it twice adds nothing
       const chainKnown = iptables.status === 'not_installed' || inputPolicy !== '';
 
-      // Экран включён, а порты контейнеров всё равно снаружи: правило nat
-      // отрабатывает до фильтра, и отчёт «экран включён» вводит в заблуждение
+      // The firewall is on, and container ports are exposed anyway: the nat
+      // rule fires before the filter, so "firewall active" alone is misleading
       if ((ufwActive || chainFilters) && publishedPorts.length > 0)
         result.red_flags.warning.push(
           `docker publishes port(s) ${publishedPorts.join(', ')} past the firewall (nat/DOCKER runs before the filter rules)`
@@ -541,10 +579,10 @@ export class AuditTool {
   }
 
   /**
-   * Состояние межсетевого экрана по маркерам команды раздела.
+   * Firewall state from the section command's markers.
    *
-   * Пустой список правил `iptables` тоже значит «не посмотрели»: даже на машине
-   * без единого правила команда печатает три заголовка цепочек.
+   * An empty `iptables` rule list also means "not checked": even on a machine
+   * without a single rule, the command prints three chain headers.
    */
   private parseFirewall(ufwText: string, iptablesText: string): NonNullable<BaselineResult['firewall']> {
     const ufw = ufwText.trim();
@@ -567,19 +605,19 @@ export class AuditTool {
   }
 
   /**
-   * Показатели памяти по именам колонок заголовка.
+   * Memory figures by the header's column names.
    *
-   * У `free` из procps старше 2014 года колонки `available` нет вовсе, и
-   * последней идёт `cached`: взятая по позиции, она выдавала кэш за свободную
-   * память — вдвое больше, чем есть.
+   * `free` from procps older than 2014 has no `available` column at all, and
+   * `cached` comes last instead: taken by position, it would pass cache off
+   * as free memory — twice as much as there actually is.
    */
   private parseFree(text: string): BaselineResult['memory'] {
     const lines = text.split('\n');
     const names = (lines.find((l) => /^\s+total\b/.test(l)) || '').trim().split(/\s+/).filter(Boolean);
     const values = (lines.find((l) => /^Mem:/.test(l)) || '').trim().split(/\s+/).slice(1);
 
-    // Без заголовка остаётся только порядок колонок, общий для всех free;
-    // `available` в этом порядке места не имеет — его и печатают не все
+    // Without a header, only the column order common to every `free` is left;
+    // `available` has no place in that order — not every build prints it
     const column = (name: string, position?: number) => {
       if (names.length === 0) return (position === undefined ? '' : values[position]) || 'n/a';
       const at = names.indexOf(name);
@@ -595,14 +633,15 @@ export class AuditTool {
   }
 
   /**
-   * Разбор списка слушающих сокетов.
+   * Parsing the list of listening sockets.
    *
-   * Источников два, и колонки у них разные: у `ss` локальный адрес пятый,
-   * у `netstat` — четвёртый, а перед ним ещё две шапки текста. Поэтому
-   * ищем не номер колонки, а первый адрес вида `хост:порт` с числовым
-   * портом: у обеих команд это ровно тот сокет, который слушают. Заодно
-   * отсеиваются заголовки netstat — раньше они приезжали в отчёт записями
-   * вида `{ proto: "Proto", address: "Address" }`.
+   * There are two sources, and their columns differ: for `ss` the local
+   * address is fifth, for `netstat` — fourth, with two more header lines
+   * before it. So instead of a column number, we look for the first address
+   * shaped like `host:port` with a numeric port: for both commands that is
+   * exactly the socket being listened on. This also filters out netstat's
+   * headers — left unfiltered, they would show up in the report as entries
+   * like `{ proto: "Proto", address: "Address" }`.
    */
   private parseListeners(text: string): NonNullable<BaselineResult['net']>['listeners'] {
     const out: NonNullable<BaselineResult['net']>['listeners'] = [];
@@ -625,11 +664,11 @@ export class AuditTool {
   }
 
   /**
-   * Порты, на которых слушает сам sshd.
+   * Ports sshd itself listens on.
    *
-   * Имя процесса стоит в хвосте строки и у `ss`, и у `netstat`; порт берётся
-   * после последнего двоеточия, иначе `[::]:2222` читается иначе, чем
-   * `0.0.0.0:2222`.
+   * The process name sits at the tail of the line for both `ss` and
+   * `netstat`; the port is taken after the last colon, otherwise `[::]:2222`
+   * would read differently than `0.0.0.0:2222`.
    */
   private static sshdListenerPorts(
     listeners: NonNullable<BaselineResult['net']>['listeners']
@@ -643,10 +682,10 @@ export class AuditTool {
   }
 
   /**
-   * Порты, опубликованные контейнерами в таблице nat.
+   * Ports published by containers in the nat table.
    *
-   * Пустая цепочка отвечает одной строкой `-N DOCKER`, правила публикации
-   * приходят строками `-A DOCKER … --dport N -j DNAT`.
+   * An empty chain answers with a single `-N DOCKER` line; publish rules
+   * arrive as `-A DOCKER … --dport N -j DNAT` lines.
    */
   private static dockerPublishedPorts(natRules: string): string[] {
     const ports: string[] = [];
@@ -761,9 +800,9 @@ export class AuditTool {
   // ---------------------------------------------------------------------------
 
   private async handleTlsCheck(request: CallToolRequest, signal?: AbortSignal) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as TlsCheckArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
-    const domain: string = args.domain;
+    const domain = args.domain as string;
     const port: number = args.port || 443;
     const checkRenew: boolean = args.check_renew_hook !== false;
 
@@ -772,16 +811,17 @@ export class AuditTool {
     }
 
     const SEP = '__SSH_MCP_TLS_SEP__';
-    // stderr не глушим: без него причина отказа (openssl нет, соединение не
-    // встало, домен не отвечает) пропадала, и пустой сертификат превращался
-    // в утверждение «SAN не содержит домен» о сертификате, которого никто не
-    // видел. Разбору ниже лишние строки не мешают — он идёт по регулярным.
+    // stderr is not silenced: without it the reason for a failure (no
+    // openssl, the connection never opened, the domain does not answer)
+    // would disappear, and an empty certificate would turn into a claim that
+    // "SAN does not include the domain" about a certificate no one ever saw.
+    // The extra lines do not confuse the parsing below — it works by regex.
     const opensslCmd =
       `echo | openssl s_client -connect ${shellQuote(`${domain}:${port}`)} ` +
       `-servername ${shellQuote(domain)} -showcerts 2>&1 | ` +
       `openssl x509 -noout -dates -ext subjectAltName -issuer 2>&1`;
-    // Маркеры вместо погашенных ошибок: «каталога нет» и «каталог не читается»
-    // раньше давали одну и ту же пустоту, а отчёт объявлял её отсутствием хука
+    // Markers instead of swallowed errors: without them, "no directory" and
+    // "directory unreadable" give the same emptiness, and the report would call it an absent hook
     const renewCmd = checkRenew
       ? `if [ ! -d /etc/letsencrypt ]; then echo NO_LETSENCRYPT; ` +
         `elif [ ! -r /etc/letsencrypt/renewal ] && [ ! -r /etc/letsencrypt/renewal-hooks/deploy ]; then echo LE_UNREADABLE; ` +
@@ -809,8 +849,8 @@ export class AuditTool {
       ? Math.floor((new Date(notAfter).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
       : null;
 
-    // Сертификат считается прочитанным только с разобранной датой: без неё
-    // все остальные поля пусты не потому, что в сертификате их нет
+    // A certificate counts as read only with a parsed date: without it, every
+    // other field is empty not because the certificate lacks them
     const certRead = daysLeft !== null && !Number.isNaN(daysLeft);
 
     const sanLine = cert.match(/X509v3 Subject Alternative Name:\s*\n\s*(.+)/) ||
@@ -827,7 +867,7 @@ export class AuditTool {
     const issuerMatch = cert.match(/issuer=(.+)$/m);
     const issuer = issuerMatch ? issuerMatch[1].trim() : null;
 
-    // Четвёртый исход помимо «настроен» и «не настроен»: посмотреть не дали
+    // A fourth outcome besides "configured" and "not configured": we were not allowed to look
     const renewChecked = checkRenew && renew !== 'LE_UNREADABLE';
     const renewHookConfigured = renewChecked
       ? /renew_hook\s*=/.test(renew) || /reload-?nginx|systemctl/.test(renew)
@@ -879,16 +919,16 @@ export class AuditTool {
   // ---------------------------------------------------------------------------
 
   private async handleDiskBreakdown(request: CallToolRequest, signal?: AbortSignal) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as DiskBreakdownArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     const topN = shellCount(args.top_n ?? 20, 'top_n');
     const requestedPaths: string[] = args.paths && args.paths.length ? args.paths : ['/'];
     const paths = requestedPaths.map((p) => shellQuote(p));
 
     const SEP = '__SSH_MCP_DISK_SEP__';
-    // В разделителе секции стоит номер, а не путь: путь попадал внутрь двойных
-    // кавычек `echo`, где кавычки от `shellQuote` — обычные буквы, а `$( )`
-    // исполняется
+    // The section separator carries an index, not the path: a path would land
+    // inside the `echo` double quotes, where quotes from `shellQuote` are
+    // just letters and `$( )` executes
     const duCmds = paths
       .map(
         (p, index) =>
@@ -910,8 +950,8 @@ export class AuditTool {
       signal,
     });
 
-    // Разделитель — способ нарезать вывод, а не часть ответа: раньше он ехал
-    // человеку как есть, вместе с номером секции вместо имени каталога
+    // The separator is a way to slice the output, not part of the answer:
+    // left untouched, it would travel to the user as is, along with the section number instead of the directory name
     const sections = this.splitSections(r.stdout, SEP);
     const titles: Array<[string, string]> = [
       ['df', 'filesystems'],
@@ -943,9 +983,9 @@ export class AuditTool {
   // ---------------------------------------------------------------------------
 
   private async handleServiceStatus(request: CallToolRequest, signal?: AbortSignal) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as ServiceStatusArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
-    const unit: string = args.unit;
+    const unit = args.unit as string;
     const lines = shellCount(args.log_lines ?? 50, 'log_lines');
     const since: string | undefined = args.since;
 
@@ -958,8 +998,8 @@ export class AuditTool {
     const cmd =
       `echo "${SEP}status${SEP}"; systemctl status ${shellQuote(unit)} --no-pager 2>&1 | head -40; ` +
       `echo "${SEP}is_enabled${SEP}"; systemctl is-enabled ${shellQuote(unit)} 2>&1; ` +
-      // RestartUSec — то, что systemd действительно печатает: имени RestartSec
-      // в выводе `show` нет, и графа паузы навсегда оставалась вопросом
+      // RestartUSec — what systemd actually prints: the name RestartSec is
+      // absent from `show`'s output, and the delay column would stay a question mark forever
       `echo "${SEP}show${SEP}"; systemctl show ${shellQuote(unit)} --property=Restart,RestartUSec,LoadState,ActiveState,SubState 2>&1; ` +
       `echo "${SEP}log${SEP}"; journalctl -u ${shellQuote(unit)} -n ${lines} --no-pager${sinceArg} 2>&1`;
 
@@ -976,8 +1016,8 @@ export class AuditTool {
       status_head: (sections.get('status') || '').trim(),
       recent_log: (sections.get('log') || '').trim(),
     };
-    // Служба, о которой не спросили, и служба, которой нет, — разные ответы, а
-    // сырой текст systemctl в графе `enabled` не был ни тем, ни другим
+    // A service that was not asked about and a service that does not exist
+    // are different answers, and raw systemctl text in the `enabled` field is neither
     const noSystemd = AuditTool.NO_SYSTEMD.test(out.is_enabled) || AuditTool.NO_SYSTEMD.test(out.status_head);
     const unknownUnit = !noSystemd && AuditTool.NO_UNIT.test(out.is_enabled);
     const enabled = noSystemd
@@ -1007,11 +1047,12 @@ export class AuditTool {
   }
 
   /**
-   * Чем именно раздел служб выполнить нечем — или ничем, если он выполнился.
+   * What exactly the services section had nothing to run with — or nothing,
+   * if it ran fine.
    *
-   * Два разных «нет» не сливаются: двоичного файла нет вовсе и файл есть, но
-   * systemd не отвечает. Пустой ответ причиной не считается — это законный
-   * «ни одна служба не запущена».
+   * Two different "no"s do not merge: the binary is missing entirely, versus
+   * the binary is there but systemd does not answer. An empty answer does not
+   * count as a reason — it is the legitimate "no service is running".
    */
   private static servicesUnavailable(failed: string, running: string): string | undefined {
     if (failed === 'NO_SYSTEMCTL' || running === 'NO_SYSTEMCTL') {
@@ -1023,11 +1064,11 @@ export class AuditTool {
     return undefined;
   }
 
-  /** Ответы, которыми systemd сообщает, что его самого тут нет */
+  /** Answers by which systemd reports that it is not there at all */
   private static readonly NO_SYSTEMD =
     /not found|has not been booted|Failed to connect to bus|Access denied/i;
 
-  /** Ответ, которым systemd сообщает, что такой службы нет */
+  /** The answer by which systemd reports that no such service exists */
   private static readonly NO_UNIT = /No such file or directory|could not be found|not-found/i;
 
   private parseShowProps(text: string): Record<string, string> {

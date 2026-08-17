@@ -1,29 +1,30 @@
 /**
- * Значения, попадающие в строку команды на сервере.
+ * Values that end up in a command string on the server.
  *
- * Путь и любое другое значение, которое не обязано ничего раскрывать, идёт
- * через `shellQuote`: в одинарных кавычках shell не видит ни пробела, ни
- * `$(…)`, ни обратного слэша. Остальные четыре случая — те, где кавычек мало
- * или где они запрещены по смыслу:
+ * A path, and any other value that isn't meant to reveal anything, goes
+ * through `shellQuote`: inside single quotes the shell sees no space, no
+ * `$(…)`, no backslash. The remaining four cases are the ones where quoting
+ * is either too little or forbidden by meaning:
  *
- * - число (`lines`, `context`, `top_n`) — тип из схемы ничего не гарантирует:
- *   MCP проверяет конверт запроса, а `arguments` отдаёт как есть;
- * - права и владелец — уезжают в `chmod` и `install` отдельными словами;
- * - шаблон имени (`pattern`) — обязан раскрыться на сервере, поэтому закавычить
- *   его нельзя; спасает экранирование обратным слэшем.
+ * - a number (`lines`, `context`, `top_n`) — the schema type guarantees
+ *   nothing: MCP validates the request envelope, and `arguments` comes
+ *   through as-is;
+ * - permissions and owner — go into `chmod` and `install` as separate words;
+ * - a name pattern (`pattern`) — must expand on the server, so it can't be
+ *   quoted; backslash escaping is what protects it instead.
  *
- * Плохое значение — отказ с текстом, а не тихая правка: молча урезанные права
- * или шаблон человек не заметит.
+ * A bad value is a rejection with a message, not a silent fix: silently
+ * clipped permissions or a silently altered pattern would go unnoticed.
  */
 
-/** Что уцелеет в шаблоне: буквы и цифры любого языка, безобидная пунктуация, знаки шаблона */
+/** What survives in a pattern: letters and digits of any language, harmless punctuation, glob characters */
 const GLOB_KEEP = /[^\p{L}\p{N}._/*?[\]-]/gu;
 
 /**
- * Значение как одно слово для shell на сервере.
+ * A value as a single word for the shell on the server.
  *
- * Внутри одинарных кавычек особого смысла нет ни у чего, кроме самой кавычки:
- * её приходится закрывать, вставлять экранированную и открывать снова.
+ * Inside single quotes nothing is special except the quote itself: it has
+ * to be closed, an escaped quote inserted, and reopened.
  */
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -33,7 +34,7 @@ function reject(name: string, value: unknown, expected: string): never {
   throw new Error(`${name} must be ${expected}, got ${JSON.stringify(String(value))}`);
 }
 
-/** Целое неотрицательное число: количество строк, размер выборки */
+/** A whole non-negative number: a line count, a sample size */
 export function shellCount(value: unknown, name: string): number {
   const text =
     typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
@@ -44,11 +45,12 @@ export function shellCount(value: unknown, name: string): number {
 }
 
 /**
- * Права: восьмеричные (`644`, `0755`) или символьные (`u+x`, `go-w,a+r`).
+ * Permissions: octal (`644`, `0755`) or symbolic (`u+x`, `go-w,a+r`).
  *
- * Символьная запись пропускается наравне с восьмеричной: опасны не её буквы, а
- * то, что вокруг них может приехать. Отсекается всё, чего в записи прав быть
- * не может, — этого для защиты достаточно, а отнимать рабочую форму незачем.
+ * The symbolic form is accepted alongside octal: the danger isn't in its
+ * letters but in what might ride along with them. Everything a permission
+ * string can't legitimately contain is stripped — that's enough protection,
+ * and there's no reason to take away a working form.
  */
 export function shellMode(value: unknown, name: string): string {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -64,10 +66,10 @@ export function shellMode(value: unknown, name: string): string {
 }
 
 /**
- * Владелец: `user` или `user:group`.
+ * Owner: `user` or `user:group`.
  *
- * Ведущий дефис отклоняется отдельно: `install -o -rf` разобрал бы такое имя
- * как свой флаг, и кавычки от этого не защищают.
+ * A leading dash is rejected separately: `install -o -rf` would parse such
+ * a name as its own flag, and quoting doesn't protect against that.
  */
 export function shellOwner(value: unknown, name: string): string {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -80,13 +82,13 @@ export function shellOwner(value: unknown, name: string): string {
 }
 
 /**
- * Шаблон имени файла: `*`, `?`, `[…]` доезжают до сервера живыми, остальное
- * уходит за обратный слэш и становится обычной буквой.
+ * A file name pattern: `*`, `?`, `[…]` reach the server intact, everything
+ * else gets a backslash and becomes a plain character.
  *
- * Кавычки здесь запрещены: в них шаблон перестанет раскрываться, а раскрытие —
- * это и есть смысл параметра. Перевод строки и прочие управляющие символы
- * отклоняются — обратный слэш перед переводом строки означает продолжение
- * команды, то есть ровно то, от чего мы защищаемся.
+ * Quoting is forbidden here: inside quotes the pattern would stop
+ * expanding, and expansion is the whole point of the parameter. A newline
+ * and other control characters are rejected — a backslash before a newline
+ * means command continuation, exactly what we're guarding against.
  */
 export function shellGlob(value: unknown, name: string): string {
   const text = typeof value === 'string' ? value : '';

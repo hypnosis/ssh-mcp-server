@@ -1,10 +1,11 @@
 /**
- * Классификация сбоев ssh
+ * Classifying ssh failures
  *
- * Единственное место, где разбирается текст сообщений OpenSSH. Задача —
- * отличить сбой транспорта (можно повторить) от отказа аутентификации
- * (повторять вредно: каждая попытка засчитывается сервером как неудачный вход)
- * и от честного ненулевого кода удалённой команды (не сбой вовсе).
+ * The only place that parses OpenSSH's message text. The job is to tell a
+ * transport failure (safe to retry) apart from an authentication failure
+ * (retrying is harmful: every attempt counts against the server as a failed
+ * login) and from an honest non-zero exit code from the remote command
+ * (not a failure at all).
  */
 
 import {
@@ -17,18 +18,18 @@ import {
   SSHTransportError,
 } from './errors.js';
 
-/** Код возврата, которым ssh сообщает о собственном сбое */
+/** Return code by which ssh reports its own failure */
 export const SSH_FAILURE_EXIT_CODE = 255;
 
 /**
- * Наблюдаемый исход запуска ssh
+ * Observed outcome of running ssh
  */
 export interface SpawnOutcome {
-  /** Ошибка запуска процесса (ssh не найден и т.п.) */
+  /** Process spawn error (ssh not found, etc.) */
   spawnError?: NodeJS.ErrnoException;
   exitCode: number | null;
   stderr: string;
-  /** Нужен, чтобы отличить оборванный канал от команды, вернувшей 255 */
+  /** Needed to tell a broken channel apart from a command that itself returned 255 */
   stdout?: string;
 }
 
@@ -66,19 +67,19 @@ const MUX_LIMIT_PATTERNS = [
 ];
 
 /**
- * Служебная переписка клиента с собственным управляющим соединением.
+ * Housekeeping chatter between the client and its own control connection.
  *
- * Отказ в сессии клиент лечит сам — открывает отдельное соединение и
- * возвращает нулевой код (замерено на клиентах 9.2, 9.7 и 10.2). Но жалобу он
- * при этом печатает, и она попадает в stderr команды: тот, кто судит об успехе
- * по непустому stderr, увидит ошибку там, где её не было.
+ * The client handles a session refusal on its own — it opens a separate
+ * connection and returns exit code 0. But it still prints a complaint, and
+ * that lands in the command's stderr: anyone judging success by non-empty
+ * stderr will see an error where there wasn't one.
  */
 const MUX_NOTICE_PATTERNS = [
   /^mux_client_\w+: /,
   /^ControlSocket .+ already exists, disabling multiplexing$/,
 ];
 
-/** Убрать служебные строки мультиплексирования из вывода команды */
+/** Strip multiplexing housekeeping lines from the command output */
 export function stripMuxNotices(stderr: string): string {
   return stderr
     .split('\n')
@@ -87,9 +88,9 @@ export function stripMuxNotices(stderr: string): string {
 }
 
 /**
- * Признак того, что сервер разорвал уже установленное соединение.
- * Самая частая причина — защитный механизм вроде fail2ban, и без подсказки
- * такую ошибку легко принять за сетевую неполадку.
+ * A sign that the server dropped an already-established connection.
+ * The most common cause is a protective mechanism like fail2ban, and without
+ * a hint such an error is easily mistaken for a network glitch.
  */
 const SERVER_DROPPED_PATTERNS = [/connection closed by/i, /connection reset by peer/i];
 
@@ -98,17 +99,17 @@ function matchesAny(text: string, patterns: RegExp[]): boolean {
 }
 
 /**
- * Похож ли вывод на сообщение самого ssh, а не удалённой команды
+ * Whether the output looks like a message from ssh itself, not the remote command
  */
 function looksLikeSshDiagnostic(stderr: string): boolean {
   return /^(ssh|scp|ssh_|mux_|kex_|Warning: |Permission denied|Host key)/im.test(stderr);
 }
 
 /**
- * Разобрать исход запуска.
+ * Parse the outcome of a run.
  *
- * @returns Ошибка транспорта либо null, если сбоя транспорта не было
- *          и результат следует трактовать как обычный ExecResult.
+ * @returns A transport error, or null if there was no transport failure and
+ *          the result should be treated as a plain ExecResult.
  */
 export function classifySpawnOutcome(
   outcome: SpawnOutcome,
@@ -128,7 +129,7 @@ export function classifySpawnOutcome(
     return new SSHTransportError(`Failed to start ssh: ${spawnError.message}`);
   }
 
-  // Ненулевой код от удалённой команды сбоем транспорта не является
+  // A non-zero code from the remote command is not a transport failure
   if (exitCode !== SSH_FAILURE_EXIT_CODE) {
     return null;
   }
@@ -164,9 +165,9 @@ export function classifySpawnOutcome(
     );
   }
 
-  // Ниже транспортных проверок намеренно: до кода 255 дело доходит, только
-  // когда клиенту не удалось и отдельное соединение, а причина отказа там —
-  // не лимит сессий. Стой этот разбор выше, диагноз подменялся бы.
+  // Deliberately placed below the transport checks: code 255 is reached only
+  // when the separate connection also failed for the client, and the reason
+  // there isn't the session limit. Placed higher, this check would misdiagnose it.
   if (matchesAny(stderr, MUX_LIMIT_PATTERNS)) {
     return new SSHMuxLimitError(
       `Server refused an additional multiplexed session on ${target} ` +
@@ -175,8 +176,8 @@ export function classifySpawnOutcome(
     );
   }
 
-  // Код 255 без узнаваемого сообщения: либо ssh сообщил о чём-то новом,
-  // либо удалённая команда сама вернула 255. Различаем по виду вывода.
+  // Code 255 with no recognizable message: either ssh reported something new,
+  // or the remote command itself returned 255. Told apart by the shape of the output.
   if (looksLikeSshDiagnostic(stderr)) {
     return new SSHTransportError(
       `ssh failed for ${target}. Details: ${detail}`,
@@ -184,11 +185,11 @@ export function classifySpawnOutcome(
     );
   }
 
-  // Код 255 и ни знака вывода — оборванный канал: команда не успела ничего
-  // напечатать, потому что не запускалась. Так отвечает dropbear на залп
-  // коротких команд по общему соединению. Признак нестрогий, поэтому он читается
-  // только там, где повтор объявлен безопасным: команда, вернувшая 255 сама,
-  // остаётся обычным результатом для всех остальных вызовов.
+  // Code 255 with no output whatsoever — a broken channel: the command never
+  // got to print anything because it never ran. This is how dropbear responds
+  // to a burst of short commands over a shared connection. The signal isn't
+  // strict, so it's only trusted where a retry is declared safe: a command
+  // that itself returns 255 remains a plain result for every other call.
   if (context.idempotent && !stderr.trim() && !(outcome.stdout ?? '').trim()) {
     return new SSHChannelClosedError(
       `The channel to ${target} closed before the command produced output.`,

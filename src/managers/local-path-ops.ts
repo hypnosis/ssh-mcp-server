@@ -1,9 +1,10 @@
 /**
- * Файловые операции установщика на локальной машине
+ * The installer's file operations on the local machine.
  *
- * Нужны скачиванию: сегодня оно пишет прямо в конечный путь пользователя,
- * и оборванная загрузка оставляет вместо целого файла его начало. Протокол
- * установки одинаков для обеих сторон, различаются только эти операции.
+ * Needed by download: today it writes straight into the user's final path,
+ * and an interrupted download leaves the beginning of the file in place of
+ * the whole thing. The install protocol is the same on both sides; only
+ * these operations differ.
  */
 
 import { mkdir, readdir, rename, rm, lstat, stat } from 'fs/promises';
@@ -13,9 +14,9 @@ import { ARTIFACT_PREFIXES } from '../utils/tmp-name.js';
 
 export const localPathOps: PathOps = {
   /**
-   * Смотрим на сам путь, а не на то, куда он ведёт: подменить ссылку — значит
-   * либо переписать чужой файл в стороне, либо оставить пользователя без той
-   * связи, ради которой ссылка и создавалась.
+   * We look at the path itself, not at where it leads: replacing a link
+   * would mean either overwriting an unrelated file elsewhere, or leaving
+   * the user without the very connection the link was created for.
    */
   async inspect(path: string): Promise<PathKind> {
     try {
@@ -28,7 +29,7 @@ export const localPathOps: PathOps = {
     }
   },
 
-  /** Точка монтирования: сам путь и его родитель лежат на разных устройствах */
+  /** Mount point: the path itself and its parent sit on different devices */
   async isSeparateFilesystem(path: string): Promise<MountCheck> {
     try {
       const [own, parent] = await Promise.all([stat(path), stat(dirname(path))]);
@@ -39,8 +40,8 @@ export const localPathOps: PathOps = {
   },
 
   /**
-   * Наши временные пути, оставшиеся в каталоге от прошлых операций.
-   * Только чтение: убирать их нельзя — рядом может работать другой вызов.
+   * Our temporary paths left in the directory by past operations.
+   * Read-only: they cannot be removed here — another call may be running alongside.
    */
   async listArtifacts(directory: string): Promise<ArtifactScan> {
     const names = await readdir(directory);

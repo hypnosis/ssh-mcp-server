@@ -21,14 +21,26 @@ import { requireText, requireTextList } from '../utils/tool-args.js';
 import { resolveRemotePath } from '../managers/path-guard.js';
 import { posix as posixPath } from 'path';
 
-/** Знаки, из-за которых имя считается шаблоном, а не именем файла */
+/** Characters that make a name count as a pattern instead of a file name */
 const GLOB_CHARS = /[*?[]/;
 
-/** Сколько файлов шаблон раскрывает за раз */
+/** How many files a pattern expands to at once */
 const MAX_GLOB_MATCHES = 50;
 
-/** Маркер ответа: путь существует под своим именем, шаблон раскрывать нечего */
+/** Response marker: the path exists under its own name, there is nothing to expand */
 const GLOB_LITERAL = 'SSH_MCP_GLOB_LITERAL';
+
+/** ssh_log_tail / ssh_log_search arguments, matching their inputSchema */
+interface LogArgs {
+  profile?: string;
+  path?: unknown;
+  lines?: number;
+  sudo?: boolean;
+  query?: unknown;
+  context?: number;
+  caseSensitive?: boolean;
+  maxMatches?: number;
+}
 
 /**
  * Log Tools
@@ -152,7 +164,7 @@ export class LogTools {
    * Handle ssh_log_tail
    */
   private async handleLogTail(request: CallToolRequest, signal?: AbortSignal) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as LogArgs;
     
     // Validate array parameter format
     const validation = validateArrayParameter(args.path, 'path');
@@ -162,11 +174,11 @@ export class LogTools {
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
-    // Тип из схемы ничего не гарантирует: MCP отдаёт аргументы как есть
+    // The schema's type guarantees nothing: MCP hands over arguments as is
     const lines = shellCount(args.lines ?? 100, 'lines');
     const sudo = args.sudo || false;
 
-    // Правила профиля проверяет buildSafePath — уже на раскрытом пути
+    // Profile rules are checked by buildSafePath — already on the expanded path
     const { paths, notes } = await this.expandPatterns(sshConfig, requested, sudo);
 
     // Single log - simple result
@@ -192,7 +204,7 @@ export class LogTools {
       };
     }
 
-    // Множественные логи - структурированный результат
+    // Multiple logs - structured result
     const results: Array<{
       path: string;
       lines: string[];
@@ -227,8 +239,8 @@ export class LogTools {
           });
         }
       } catch (error: any) {
-        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
-        // возвращал бы список с пробелами вместо отказа
+        // A cancellation is not "this file failed to read": otherwise a
+        // cancelled call would return a list with gaps instead of a refusal
         if (signal?.aborted) throw error;
         results.push({
           path,
@@ -264,7 +276,7 @@ export class LogTools {
    * Handle ssh_log_search
    */
   private async handleLogSearch(request: CallToolRequest, signal?: AbortSignal) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as LogArgs;
     
     // Validate array parameter format
     const validation = validateArrayParameter(args.path, 'path');
@@ -280,7 +292,7 @@ export class LogTools {
     const maxMatches = shellCount(args.maxMatches ?? DEFAULT_MAX_MATCHES, 'maxMatches');
     const sudo = args.sudo || false;
 
-    // Правила профиля проверяет buildSafePath — уже на раскрытом пути
+    // Profile rules are checked by buildSafePath — already on the expanded path
     const { paths, notes } = await this.expandPatterns(sshConfig, requested, sudo);
 
     // Build grep flags
@@ -289,9 +301,9 @@ export class LogTools {
     if (!caseSensitive) grepFlags.push('-i'); // Case insensitive
     if (context > 0) grepFlags.push(`-C ${context}`); // Context lines
     grepFlags.push('-n'); // Line numbers
-    // Одно совпадение сверх предела — признак, что в журнале есть ещё.
-    // Предел ставит сама grep, а не хвостовой `head`: он вернул бы ноль и за
-    // отсутствующий файл, и «нечего искать» стало бы неотличимо от ошибки
+    // One match past the limit is the sign that the log has more. The limit
+    // is enforced by grep itself, not a trailing `head`: `head` would return
+    // zero for a missing file too, making "nothing to find" indistinguishable from an error
     grepFlags.push(`-m ${maxMatches + 1}`);
     
     // Single log - simple result
@@ -328,7 +340,7 @@ export class LogTools {
       };
     }
 
-    // Множественные логи - структурированный результат
+    // Multiple logs - structured result
     const results: Array<{
       path: string;
       matches: string;
@@ -367,8 +379,8 @@ export class LogTools {
           });
         }
       } catch (error: any) {
-        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
-        // возвращал бы список с пробелами вместо отказа
+        // A cancellation is not "this file failed to read": otherwise a
+        // cancelled call would return a list with gaps instead of a refusal
         if (signal?.aborted) throw error;
         results.push({
           path,
@@ -402,15 +414,16 @@ export class LogTools {
   }
   
   /**
-   * Файлы, которые назвал шаблон.
+   * Files named by a pattern.
    *
-   * Раскрывает его `find` по имени, а не оболочка сервера: путь уезжает в
-   * кавычках, иначе вместе со звёздочкой ожили бы пробел, `$(…)` и перевод
-   * строки в имени. Каталог проверяется правилами профиля здесь, каждое
-   * найденное имя — обычным путём в месте вызова.
+   * `find` expands it by name rather than the server's shell: the path
+   * travels in quotes, otherwise a space, `$(…)` and a newline in the name
+   * would come alive along with the asterisk. The directory is checked
+   * against profile rules here, each matched name through the normal path at
+   * its call site.
    *
-   * Путь, существующий под своим именем, шаблоном не считается: скобка в имени
-   * файла читалась и раньше.
+   * A path that exists under its own name does not count as a pattern: a
+   * bracket in a file name is a legal character, not a pattern marker.
    */
   private async expandPatterns(
     sshConfig: any,
@@ -456,7 +469,7 @@ export class LogTools {
         continue;
       }
 
-      // Скрытые файлы шаблон без точки не называет — как и оболочка
+      // A pattern without a leading dot does not name hidden files — same as the shell
       const matches = result.stdout
         .split('\0')
         .filter((name) => name.length > 0)
@@ -487,21 +500,21 @@ export class LogTools {
     return { paths: expanded, notes };
   }
 
-  /** Пометки о раскрытии шаблона идут под ответом, а не вместо него */
+  /** Notes about expanding a pattern go under the answer, not instead of it */
   private withGlobNotes(text: string, notes: string[]): string {
     return notes.length > 0 ? `${text}\n\n${notes.join('\n')}` : text;
   }
 
   /**
-   * Путь журнала для команды.
+   * Log path for the command.
    *
-   * `~` раскрывается у нас по домашнему каталогу из паспорта и уезжает в
-   * одинарных кавычках — тем же способом, что в записи и чтении файлов.
+   * `~` is expanded on our side from the passport's home directory and
+   * travels in single quotes — the same way as for writing and reading files.
    *
-   * Правила профиля проверяются здесь же, после раскрытия. Раньше они стояли
-   * выше по коду и смотрели на сырой путь: `~/secret` валидатор подменял
-   * выдуманным `/home/user/secret`, и под root запрет `/root` не срабатывал —
-   * замер на обоих контейнерах отдавал содержимое запрещённого файла.
+   * Profile rules are checked right here, after expansion. Checking a raw
+   * path instead would have the validator judge a made-up `/home/user/secret`
+   * for `~/secret`, and a rule forbidding `/root` would never fire for root —
+   * the forbidden file's content would come back regardless.
    */
   private async buildSafePath(
     sshConfig: any,

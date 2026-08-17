@@ -1,38 +1,38 @@
 /**
- * Запуск дочернего процесса с таймаутом, отменой и лимитом вывода
+ * Running a child process with a timeout, cancellation, and an output cap
  *
- * Команда и аргументы передаются массивом, shell не участвует — спецсимволы
- * в путях и именах интерпретироваться не могут.
+ * The command and arguments are passed as an array, with no shell involved —
+ * special characters in paths and names can't be interpreted.
  *
- * Главное отличие от прежнего подхода: таймаут здесь действительно
- * останавливает работу, а не просто перестаёт её ждать. Процесс получает
- * SIGTERM, а если не завершился — SIGKILL.
+ * The timeout actually stops the work rather than just giving up on waiting
+ * for it: the process gets SIGTERM, and SIGKILL if it hasn't exited.
  */
 
 import { spawn } from 'child_process';
 import { OUTPUT_LIMIT_BYTES } from '../utils/output-notes.js';
 
-/** Сколько ждать после SIGTERM, прежде чем послать SIGKILL */
+/** How long to wait after SIGTERM before sending SIGKILL */
 const DEFAULT_KILL_GRACE_MS = 5000;
 
 /**
- * Сколько ждать хвост вывода после того, как убитый процесс завершился.
+ * How long to wait for the output tail after a killed process has exited.
  *
- * Дальше ответ отдаётся без ожидания `close`: потоки убитого клиента ssh
- * держит открытыми общий master-процесс, унаследовавший те же дескрипторы, и
- * закрывает их только вместе с удалённой командой. Названный срок из-за этого
- * растягивался до срабатывания сторожа на сервере — 3 с превращались в 8.
+ * From this point on the result is returned without waiting for `close`: the
+ * streams of a killed ssh client are kept open by the shared master process
+ * that inherited the same descriptors, and it only closes them together with
+ * the remote command. Because of this, the stated deadline used to stretch
+ * out until the server-side guard fired — 3s turned into 8.
  */
 const OUTPUT_FLUSH_MS = 200;
 
 export interface ProcessRunOptions {
-  /** Исполняемый файл: ssh, scp */
+  /** Executable: ssh, scp */
   file: string;
   args: string[];
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Данные для stdin; без них stdin закрывается сразу */
+  /** Data for stdin; without it stdin is closed right away */
   stdin?: string | Buffer;
   maxOutputBytes?: number;
   killGraceMs?: number;
@@ -42,24 +42,24 @@ export interface ProcessRunOutcome {
   stdout: string;
   stderr: string;
   exitCode: number | null;
-  /** Сигнал, которым процесс был убит */
+  /** Signal the process was killed with */
   signalCode: NodeJS.Signals | null;
-  /** Процесс остановлен нами по истечении таймаута */
+  /** We stopped the process ourselves after the timeout expired */
   timedOut: boolean;
-  /** Процесс остановлен нами по сигналу отмены */
+  /** We stopped the process ourselves via the cancellation signal */
   aborted: boolean;
-  /** Вывод превысил лимит и был обрезан */
+  /** Output exceeded the limit and was truncated */
   truncated: boolean;
   durationMs: number;
-  /** Процесс не удалось запустить */
+  /** The process failed to start */
   spawnError?: NodeJS.ErrnoException;
 }
 
 /**
- * Накопитель вывода с ограничением объёма.
+ * Output accumulator with a size cap.
  *
- * Чтение из потока не прекращается после достижения лимита: если перестать
- * читать, процесс заблокируется на записи и никогда не завершится.
+ * Reading from the stream doesn't stop once the limit is reached: if reading
+ * stopped, the process would block on writing and never finish.
  */
 class OutputCollector {
   private chunks: Buffer[] = [];
@@ -89,17 +89,17 @@ class OutputCollector {
   }
 
   toString(): string {
-    // Склеиваем в буфер, а не в строку по частям: многобайтовый символ
-    // может оказаться разрезанным на границе чанков
+    // Joined as a buffer, not string-by-string: a multi-byte character
+    // could end up split across a chunk boundary
     return Buffer.concat(this.chunks).toString('utf8');
   }
 }
 
 /**
- * Запустить процесс и дождаться его завершения.
+ * Run a process and wait for it to finish.
  *
- * Не бросает исключений: любой исход, включая неудачный запуск,
- * возвращается в описании результата.
+ * Never throws: every outcome, including a failed spawn, is returned in the
+ * result descriptor.
  */
 export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcome> {
   const {
@@ -142,7 +142,7 @@ export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcom
 
     const child = spawn(file, args, { env, shell: false });
 
-    /** Остановить процесс: сначала вежливо, затем принудительно */
+    /** Stop the process: politely first, then forcibly */
     const terminate = (): void => {
       terminated = true;
       child.kill('SIGTERM');
@@ -210,9 +210,9 @@ export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcom
       });
     });
 
-    // Процесс, который остановили мы, ждать по `close` нельзя: его потоки
-    // держит открытыми чужой master-процесс. Своей смерти дожидаемся, хвост
-    // вывода добираем коротким сроком.
+    // A process we stopped ourselves can't be waited for via `close`: its
+    // streams are kept open by someone else's master process. We wait for
+    // its own exit and pick up the output tail with a short grace period.
     child.on('exit', (code, signalCode) => {
       if (!terminated || settled) return;
       flushTimer = setTimeout(() => {
@@ -229,13 +229,13 @@ export function runProcess(options: ProcessRunOptions): Promise<ProcessRunOutcom
     });
 
     if (child.stdin) {
-      // Ошибку записи глушим: процесс мог уже завершиться, и это
-      // не должно ронять весь запуск
+      // Write errors are swallowed: the process may have already exited,
+      // and that shouldn't bring down the whole run
       child.stdin.on('error', () => undefined);
       if (stdin !== undefined) {
         child.stdin.end(stdin);
       } else {
-        // Без закрытия stdin команда, читающая ввод, зависла бы до таймаута
+        // Without closing stdin, a command reading input would hang until the timeout
         child.stdin.end();
       }
     }

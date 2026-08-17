@@ -1,8 +1,8 @@
 /**
- * Проверка окружения: есть ли системный ssh и что он умеет
+ * Environment check: is the system ssh present and what does it support
  *
- * Результат вычисляется один раз за процесс: версия клиента не меняется
- * на ходу, а спавн процесса на каждую команду был бы лишним.
+ * The result is computed once per process: the client version doesn't
+ * change on the fly, and spawning a process for every command would be wasteful.
  */
 
 import { execFile } from 'child_process';
@@ -13,58 +13,59 @@ import { logger } from '../utils/logger.js';
 import { SSHUnsupportedConfigError } from './errors.js';
 import { needsAskpass, type RunnerConfig, type SshCapabilities } from './ssh-args.js';
 
-/** Разобранная версия OpenSSH */
+/** Parsed OpenSSH version */
 export interface SshVersion {
   major: number;
   minor: number;
-  /** Исходная строка, как её напечатал ssh -V */
+  /** Original string, as printed by ssh -V */
   raw: string;
 }
 
-/** Что умеет обнаруженный клиент */
+/** What the detected client supports */
 export interface SshRuntime {
-  /** Найден ли бинарник */
+  /** Whether the binary was found */
   available: boolean;
   version?: SshVersion;
-  /** Поддерживается ли мультиплексирование соединений */
+  /** Whether connection multiplexing is supported */
   multiplexing: boolean;
-  /** Почему мультиплексирование недоступно */
+  /** Why multiplexing is unavailable */
   multiplexingDisabledReason?: string;
-  /** Поддерживается ли SSH_ASKPASS_REQUIRE=force — без него нельзя подать пароль */
+  /** Whether SSH_ASKPASS_REQUIRE=force is supported — without it a password can't be supplied */
   askpassForce: boolean;
   /**
-   * Идёт ли передача файлов поверх SFTP, а не классическим протоколом scp.
-   * От этого зависит судьба удалённого пути: в классическом протоколе его
-   * разбирает shell сервера, в SFTP-режиме путь-приёмник берётся буквально.
+   * Whether file transfers run over SFTP rather than the classic scp protocol.
+   * This determines the fate of the remote path: in the classic protocol
+   * it's parsed by the server's shell, in SFTP mode the destination path is
+   * taken literally.
    */
   scpOverSftp: boolean;
-  /** Каталог для управляющих сокетов и askpass-скрипта */
+  /** Directory for control sockets and the askpass script */
   controlDir: string;
 }
 
-/** ControlPersist появился в OpenSSH 5.6 */
+/** ControlPersist first appeared in OpenSSH 5.6 */
 const MIN_MULTIPLEXING_VERSION = { major: 5, minor: 6 };
-/** SSH_ASKPASS_REQUIRE появился в OpenSSH 8.4 */
+/** SSH_ASKPASS_REQUIRE first appeared in OpenSSH 8.4 */
 const MIN_ASKPASS_FORCE_VERSION = { major: 8, minor: 4 };
-/** С OpenSSH 9.0 scp по умолчанию гоняет файлы поверх SFTP */
+/** Since OpenSSH 9.0 scp runs file transfers over SFTP by default */
 const MIN_SFTP_TRANSFER_VERSION = { major: 9, minor: 0 };
 
 /**
- * Кэшируется сам вызов, а не его результат: между проверкой кэша и запуском
- * `ssh -V` стоит ожидание, и волна параллельных команд успевает проскочить
- * проверку целиком — каждая со своим обнаружением.
+ * The call itself is cached, not its result: there's a wait between checking
+ * the cache and running `ssh -V`, and a wave of parallel commands could slip
+ * through the check entirely — each running its own detection.
  */
 let cachedRuntime: Promise<SshRuntime> | undefined;
 
 /**
- * Разобрать вывод `ssh -V`
+ * Parse the output of `ssh -V`
  *
- * Примеры: "OpenSSH_10.2p1, LibreSSL 3.3.6",
- *          "OpenSSH_8.9p1 Ubuntu-3ubuntu0.4, OpenSSL 3.0.2",
- *          "OpenSSH_for_Windows_8.6p1, LibreSSL 3.4.3"
+ * Examples: "OpenSSH_10.2p1, LibreSSL 3.3.6",
+ *           "OpenSSH_8.9p1 Ubuntu-3ubuntu0.4, OpenSSL 3.0.2",
+ *           "OpenSSH_for_Windows_8.6p1, LibreSSL 3.4.3"
  */
 export function parseSshVersion(output: string): SshVersion | undefined {
-  // Между OpenSSH_ и номером может стоять название сборки, как в Windows-порте
+  // A build name, as in the Windows port, can sit between OpenSSH_ and the number
   const match = /OpenSSH_(?:[A-Za-z][A-Za-z_]*_)?(\d+)\.(\d+)/.exec(output);
   if (!match) return undefined;
 
@@ -75,14 +76,14 @@ export function parseSshVersion(output: string): SshVersion | undefined {
   };
 }
 
-/** Не меньше ли версия указанного минимума */
+/** Whether the version is at least the given minimum */
 function isAtLeast(version: SshVersion, minimum: { major: number; minor: number }): boolean {
   if (version.major !== minimum.major) return version.major > minimum.major;
   return version.minor >= minimum.minor;
 }
 
 /**
- * Вычислить возможности по версии и платформе — чистая функция
+ * Compute capabilities from version and platform — a pure function
  */
 export function computeRuntime(input: {
   platform: NodeJS.Platform;
@@ -103,9 +104,9 @@ export function computeRuntime(input: {
   }
 
   if (platform === 'win32') {
-    // Мультиплексирование опирается на передачу дескрипторов через unix-сокеты,
-    // чего в Windows нет. Всё остальное работает, но каждая команда будет
-    // открывать своё соединение.
+    // Multiplexing relies on passing descriptors over unix sockets, which
+    // Windows doesn't have. Everything else works, but every command will
+    // open its own connection.
     return {
       available: true,
       version,
@@ -133,24 +134,25 @@ export function computeRuntime(input: {
 }
 
 /**
- * Каталог для управляющих сокетов.
+ * Directory for control sockets.
  *
- * Не во временном каталоге системы: предсказуемое имя в общедоступном месте —
- * это возможность подсунуть свой сокет. Права 0700 оставляют доступ владельцу.
+ * Not the system temp directory: a predictable name in a world-readable
+ * location is an opportunity to plant a socket of one's own. 0700
+ * permissions leave access to the owner only.
  */
 export function resolveControlDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SSH_MCP_CONTROL_DIR || join(homedir(), '.ssh', 'ssh-mcp');
 }
 
-/** Создать каталог с правами 0700, если его ещё нет */
+/** Create the directory with 0700 permissions if it doesn't exist yet */
 function ensureControlDir(controlDir: string): void {
   mkdirSync(controlDir, { recursive: true, mode: 0o700 });
 }
 
-/** Запустить `ssh -V` и вернуть его вывод */
+/** Run `ssh -V` and return its output */
 function readSshVersion(): Promise<string | undefined> {
   return new Promise((resolve) => {
-    // ssh -V печатает версию в stderr
+    // ssh -V prints the version to stderr
     execFile('ssh', ['-V'], { timeout: 5000 }, (error, stdout, stderr) => {
       if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
         resolve(undefined);
@@ -162,15 +164,15 @@ function readSshVersion(): Promise<string | undefined> {
 }
 
 /**
- * Обнаружить системный ssh и его возможности (результат кэшируется)
+ * Detect the system ssh and its capabilities (result is cached)
  */
 export async function detectRuntime(options: { force?: boolean } = {}): Promise<SshRuntime> {
   if (cachedRuntime && !options.force) {
     return cachedRuntime;
   }
 
-  // Запись до первого ожидания: конкуренты застают её на месте и ждут тот же
-  // вызов, вместо того чтобы завести каждый свой
+  // Written before the first await: concurrent callers find it already in
+  // place and wait on the same call instead of each starting their own
   const pending = readRuntime().catch((error: Error) => {
     cachedRuntime = undefined;
     throw error;
@@ -180,7 +182,7 @@ export async function detectRuntime(options: { force?: boolean } = {}): Promise<
   return pending;
 }
 
-/** Спросить систему о клиенте ssh и подготовить каталог сокетов */
+/** Ask the system about the ssh client and prepare the socket directory */
 async function readRuntime(): Promise<SshRuntime> {
   const controlDir = resolveControlDir();
   const output = await readSshVersion();
@@ -202,12 +204,12 @@ async function readRuntime(): Promise<SshRuntime> {
   return runtime;
 }
 
-/** Сбросить кэш — используется в тестах */
+/** Reset the cache — used in tests */
 export function resetRuntimeCache(): void {
   cachedRuntime = undefined;
 }
 
-/** Возможности в форме, которую ожидает построение аргументов */
+/** Capabilities in the shape expected by argument building */
 export function toCapabilities(runtime: SshRuntime): SshCapabilities {
   return {
     multiplexing: runtime.multiplexing,
@@ -217,10 +219,10 @@ export function toCapabilities(runtime: SshRuntime): SshCapabilities {
 }
 
 /**
- * Проверить, что окружение потянет этот профиль.
+ * Check that the environment can handle this profile.
  *
- * @throws SSHUnsupportedConfigError если профилю нужен ввод секрета,
- *         а клиент этого не умеет
+ * @throws SSHUnsupportedConfigError if the profile needs secret input
+ *         and the client can't do that
  */
 export function assertProfileSupported(config: RunnerConfig, runtime: SshRuntime): void {
   if (!needsAskpass(config)) return;

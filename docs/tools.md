@@ -26,7 +26,10 @@ For batch commands, use **double quotes** in JSON format:
 - ✅ Correct: `command: ["cmd1", "cmd2"]`
 - ❌ Incorrect: `command: ['cmd1', 'cmd2']`
 
-MCP tools require valid JSON syntax. Single quotes will cause errors.
+MCP tools require valid JSON syntax. Single quotes will cause errors. Same rule
+applies to `ssh_file_read`, `ssh_log_tail` and `ssh_log_search` — see
+[array-validator.md](array-validator.md) (Russian) for the full validation logic and
+error format.
 
 ```typescript
 // Single command

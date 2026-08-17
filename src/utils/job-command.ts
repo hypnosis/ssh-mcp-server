@@ -1,37 +1,36 @@
 /**
- * Протокол фоновой задачи: команды к серверу и разбор их ответов.
+ * Background job protocol: commands sent to the server and parsing their replies.
  *
- * Состояние задачи целиком лежит на удалённом диске, поэтому MCP-сервер ничего
- * не помнит между вызовами и переживает собственный перезапуск.
+ * A job's state lives entirely on the remote disk, so the MCP server
+ * remembers nothing between calls and survives its own restart.
  *
- * Формы команд взяты из замеров на BusyBox и coreutils, а не из общих правил:
- * `--` в `kill` на BusyBox отказ, `$!` называет обёртку вместо самой задачи, а
- * `ps -o` есть не везде. Сборка и разбор лежат рядом, потому что меняются вместе.
+ * The command forms follow real platform differences rather than general
+ * rules: BusyBox's `kill` rejects `--`, `$!` from a background launch names
+ * the wrapper rather than the job itself, and `ps -o` isn't available
+ * everywhere. Building and parsing live side by side because they change together.
  */
 
 import { randomBytes } from 'crypto';
 import { shellQuote } from './shell-arg.js';
 
-/** Каталог задач относительно дома пользователя */
+/** Jobs directory relative to the user's home */
 const JOBS_ROOT = '.ssh-mcp/jobs';
 
-/** Маркер, по которому ответ находится среди баннера и motd */
+/** Marker used to find the answer among the banner and the motd */
 const MARKER = 'SSH_MCP_JOB';
 const CMD_MARKER = 'SSH_MCP_JOB_CMD';
 const REMOVED_MARKER = 'SSH_MCP_JOB_REMOVED';
 
-/** Сколько живёт каталог завершённой задачи, секунды */
+/** How long a finished job's directory lives, in seconds */
 export const JOB_TTL_SEC = 7 * 24 * 60 * 60;
 
-/** Сколько запуск ждёт, пока задача запишет свой pid */
+/** How many attempts a launch waits for the job to write its pid */
 const PID_WAIT_ATTEMPTS = 20;
 
 /**
- * Чем кончилась задача.
- *
- * Три исхода не смешиваются: `lost` — это «проверить нечем», а не провал.
- * Снятая сигналом задача кода возврата не оставляет (замерено), и выдать её
- * за успешную или за упавшую было бы неправдой.
+ * The three outcomes are never conflated: `lost` means "nothing to check",
+ * not a failure. A job killed by a signal leaves no exit code, so reporting
+ * it as succeeded or failed would be dishonest.
  */
 export type JobState = 'running' | 'finished' | 'lost' | 'missing';
 
@@ -39,11 +38,11 @@ export interface JobStatus {
   state: JobState;
   pid?: number;
   exitCode?: number;
-  /** Время старта, секунды эпохи */
+  /** Start time, seconds since the epoch */
   startedAt?: number;
-  /** Размер накопленного вывода в байтах — он же курсор для чтения */
+  /** Size of the accumulated output in bytes — also the cursor for reading */
   outputSize?: number;
-  /** Команда, как её задали */
+  /** The command as it was given */
   command?: string;
 }
 
@@ -57,33 +56,34 @@ export interface JobSummary {
 
 export interface JobListing {
   jobs: JobSummary[];
-  /** Задачи, каталоги которых убраны по сроку */
+  /** Jobs whose directories were removed once their TTL expired */
   removed: string[];
 }
 
 export interface JobOutput {
-  /** Полный размер вывода на сервере: следующее чтение начинается отсюда */
+  /** Total output size on the server: the next read starts from here */
   size: number;
   text: string;
-  /** Каталога задачи нет: это не «вывод пуст», а «спрашивать не о чем» */
+  /** The job's directory doesn't exist: this is not "output is empty" but "nothing to ask" */
   missing: boolean;
 }
 
 /**
- * Идентификатор задачи: время старта и случайный хвост.
+ * Job id: start time plus a random tail.
  *
- * Время впереди делает список читаемым по порядку, случайный хвост исключает
- * совпадение двух задач, запущенных в одну миллисекунду.
+ * Time up front keeps the list readable in order, and the random tail rules
+ * out a collision between two jobs launched in the same millisecond.
  */
 export function createJobId(): string {
   return `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
 }
 
 /**
- * Идентификатор уезжает в путь на сервере, поэтому чужой проверяется до отправки.
+ * The id ends up in a path on the server, so a foreign one is checked before it's sent.
  *
- * Разрешены только буквы, цифры и дефис: этого хватает нашим же идентификаторам,
- * а `..`, разделитель пути, пробел и подстановка отсекаются одним правилом.
+ * Only letters, digits and dashes are allowed: that's enough for our own ids,
+ * and `..`, a path separator, whitespace and a substitution are all rejected
+ * by one rule.
  */
 export function assertJobId(id: unknown): string {
   const text = typeof id === 'string' ? id : '';
@@ -97,7 +97,7 @@ export function assertJobId(id: unknown): string {
   return text;
 }
 
-/** Корень задач на сервере. Пустой дом — отказ: угадывать путь записи нельзя. */
+/** The jobs root on the server. An empty home is a refusal: the write path cannot be guessed. */
 export function jobsRoot(home: string): string {
   if (!home.startsWith('/')) {
     throw new Error(
@@ -108,27 +108,27 @@ export function jobsRoot(home: string): string {
   return `${home.replace(/\/$/, '')}/${JOBS_ROOT}`;
 }
 
-/** Пути одной задачи: её каталог лежит в общем корне */
+/** Paths for one job: its directory sits inside the shared root */
 export function jobPaths(home: string, id: string): { root: string; dir: string } {
   const root = jobsRoot(home);
   return { root, dir: `${root}/${assertJobId(id)}` };
 }
 
 /**
- * Команда запуска фоновой задачи.
+ * The background part is wrapped in braces, otherwise `&` would apply to the
+ * whole preparation pipeline: dash leaves a subshell on it, which holds the
+ * ssh channel open until the job finishes, so the launch stops being
+ * instant. BusyBox does not behave that way — the defect only shows up on
+ * some servers.
  *
- * Каталог и команда уезжают параметрами `$0` и `$1`, а не подстановкой в текст:
- * так кавычки накладываются один раз, и команда с пробелом, апострофом или
- * `$(…)` доезжает целой.
+ * The directory and the command travel as the `$0` and `$1` parameters
+ * instead of being substituted into the text: that way quoting is applied
+ * once, and a command containing a space, an apostrophe or `$(…)` arrives whole.
  *
- * Pid пишет сама задача: `$!` в фоновом запуске называет обёртку, а не тот
- * процесс, который исполняет команду (замерено на обоих наборах утилит).
- * Она же становится лидером группы и сессии — это и позволяет снять её целиком.
- *
- * Фон ограничен фигурными скобками, иначе `&` относится ко всей цепочке
- * подготовки: dash оставляет на неё подоболочку, та держит канал ssh открытым
- * до конца задачи, и запуск перестаёт быть мгновенным. BusyBox так себя не
- * ведёт — дефект виден только на половине серверов (замерено: 15 с против 0).
+ * The job writes its own pid: `$!` from a background launch names the
+ * wrapper, not the process that actually runs the command. The job also
+ * becomes the leader of its own process group and session — that's what
+ * makes it possible to kill it as a whole.
  */
 export function buildStartCommand(dir: string, command: string, useSetsid: boolean): string {
   const dirQ = shellQuote(dir);
@@ -147,15 +147,15 @@ export function buildStartCommand(dir: string, command: string, useSetsid: boole
     `: > ${dirQ}/output.log && ` +
     `{ ${detach} sh -c ${shellQuote(body)} ${dirQ} ${commandQ} ` +
     `</dev/null >> ${dirQ}/output.log 2>&1 & } ; ` +
-    // Ждём, пока задача назовёт себя: без pid следующий же вызов состояния
-    // счёл бы её потерянной
+    // Wait for the job to announce itself: without a pid, the very next
+    // status call would consider it lost
     `i=0; while [ ! -s ${dirQ}/pid ] && [ $i -lt ${PID_WAIT_ATTEMPTS} ]; do ` +
     `i=$((i+1)); sleep 0.1 2>/dev/null || sleep 1; done; ` +
     `printf '${MARKER} pid=%s\\n' "$(cat ${dirQ}/pid 2>/dev/null)"`
   );
 }
 
-/** Команда состояния: поля одной строкой, команда задачи — хвостом после маркера */
+/** Status command: fields on one line, the job's command trailing after the marker */
 export function buildStatusCommand(dir: string): string {
   const dirQ = shellQuote(dir);
 
@@ -174,10 +174,10 @@ export function buildStatusCommand(dir: string): string {
 }
 
 /**
- * Команда чтения вывода с позиции.
+ * Command to read output from a position.
  *
- * `tail -c +N` считает от единицы, поэтому позиция сдвигается на один: ноль
- * читает файл целиком. Размер печатается первым — он же курсор следующего чтения.
+ * `tail -c +N` counts from one, so the position is shifted by one: zero reads
+ * the whole file. The size is printed first — it's also the cursor for the next read.
  */
 export function buildOutputCommand(dir: string, offset: number): string {
   const dirQ = shellQuote(dir);
@@ -193,12 +193,10 @@ export function buildOutputCommand(dir: string, offset: number): string {
 }
 
 /**
- * Команда снятия задачи.
- *
- * Минус перед номером означает группу процессов — снимается и сама задача, и её
- * потомки. `--` не пишем: BusyBox отвечает на него `invalid number` и не делает
- * ничего (замерено). Одиночный процесс остаётся запасным путём для задачи,
- * запущенной без отдельной сессии.
+ * A minus sign before the number targets the whole process group — it kills
+ * the job together with its children. `--` is never used: BusyBox responds
+ * to it with `invalid number` and does nothing. Killing the single process
+ * remains a fallback for a job launched without its own session.
  */
 export function buildKillCommand(dir: string, signal: 'TERM' | 'KILL' = 'TERM'): string {
   const dirQ = shellQuote(dir);
@@ -215,11 +213,12 @@ export function buildKillCommand(dir: string, signal: 'TERM' | 'KILL' = 'TERM'):
 }
 
 /**
- * Команда списка с попутной уборкой.
+ * Listing command with cleanup along the way.
  *
- * Возраст считается по записанному нами времени старта, а не `find -mtime`:
- * диалекты `find` расходятся, а число секунд одинаково везде. Убираются только
- * каталоги внутри нашего корня и только у задач, которые уже не работают.
+ * Age is computed from the start time we recorded, not `find -mtime`: `find`
+ * dialects differ, but a number of seconds is the same everywhere. Only
+ * directories inside our own root are removed, and only for jobs that are no
+ * longer running.
  */
 export function buildListCommand(root: string, ttlSec: number = JOB_TTL_SEC): string {
   const rootQ = shellQuote(root);
@@ -244,7 +243,7 @@ export function buildListCommand(root: string, ttlSec: number = JOB_TTL_SEC): st
   );
 }
 
-/** Поля вида `ключ=значение` из строки с маркером */
+/** Key-value fields from a line carrying the marker */
 function fieldsOf(line: string, marker: string): Map<string, string> {
   const body = line.slice(line.indexOf(marker) + marker.length).trim();
   const fields = new Map<string, string>();
@@ -257,24 +256,24 @@ function fieldsOf(line: string, marker: string): Map<string, string> {
   return fields;
 }
 
-/** Число или undefined: пустое поле означает «сервер об этом не сказал» */
+/** A number, or undefined: an empty field means "the server didn't say" */
 function numberOf(value: string | undefined): number | undefined {
   if (!value || !/^\d+$/.test(value)) return undefined;
   return Number(value);
 }
 
 /**
- * Исход задачи по тому, что вернул сервер.
+ * A job's outcome from what the server returned.
  *
- * Код возврата главнее живости: задача успевает завершиться между чтением
- * файла и проверкой процесса, и тогда «код есть» — это уже ответ.
+ * The exit code outranks aliveness: a job can finish between the file read
+ * and the process check, and by then "there's a code" is already the answer.
  */
 function stateOf(alive: boolean, exitCode: number | undefined): JobState {
   if (exitCode !== undefined) return 'finished';
   return alive ? 'running' : 'lost';
 }
 
-/** Разобрать ответ команды состояния */
+/** Parse the answer of the status command */
 export function parseJobStatus(stdout: string): JobStatus {
   const lines = stdout.split('\n');
   const head = lines.find((line) => line.includes(MARKER));
@@ -297,7 +296,7 @@ export function parseJobStatus(stdout: string): JobStatus {
   };
 }
 
-/** Разобрать ответ команды списка */
+/** Parse the answer of the list command */
 export function parseJobList(stdout: string): JobListing {
   const jobs: JobSummary[] = [];
   const removed: string[] = [];
@@ -329,10 +328,10 @@ export function parseJobList(stdout: string): JobListing {
 }
 
 /**
- * Разобрать ответ чтения вывода.
+ * Parse the answer of the output-read command.
  *
- * Размер приходит первой строкой и из текста вырезается: он служебный, а
- * выдать его за часть вывода задачи значит соврать о её выводе.
+ * The size arrives as the first line and is cut out of the text: it is
+ * bookkeeping, and passing it off as part of the job's output would misreport it.
  */
 export function parseJobOutput(stdout: string): JobOutput {
   const newline = stdout.indexOf('\n');
@@ -350,7 +349,7 @@ export function parseJobOutput(stdout: string): JobOutput {
   };
 }
 
-/** Разобрать ответ снятия: снята ли задача и почему нет */
+/** Parse the answer of the kill command: whether the job was killed and why not */
 export function parseJobKill(stdout: string): { killed: boolean; reason?: string } {
   const line = stdout.split('\n').find((candidate) => candidate.includes(MARKER));
   if (!line) return { killed: false, reason: 'no answer' };
@@ -359,7 +358,7 @@ export function parseJobKill(stdout: string): { killed: boolean; reason?: string
   return { killed: fields.get('killed') === '1', reason: fields.get('reason') };
 }
 
-/** Pid, названный запущенной задачей */
+/** The pid announced by the launched job */
 export function parseJobStart(stdout: string): number | undefined {
   const line = stdout.split('\n').find((candidate) => candidate.includes(MARKER));
   return line ? numberOf(fieldsOf(line, MARKER).get('pid')) : undefined;

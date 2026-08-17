@@ -1,8 +1,8 @@
 /**
- * Разбор таблицы `df -hT`.
+ * Parses the `df -hT` table.
  */
 
-/** Строка таблицы: том, его тип, размеры и точка монтирования. */
+/** One table row: a volume, its type, sizes and mount point. */
 export interface DfRow {
   filesystem: string;
   type: string;
@@ -13,25 +13,25 @@ export interface DfRow {
   mount: string;
 }
 
-/** Разобранные строки и те, что разобрать не вышло. */
+/** Parsed rows and the ones that could not be parsed. */
 export interface DfTable {
   rows: DfRow[];
   unparsed: string[];
 }
 
 /**
- * Ровно те системы, что раньше отсекались флагами `-x` у самой df.
- * Список не расширяем: overlay — это корень контейнера, и его исчезновение
- * из отчёта было бы новой потерей данных вместо исправленной.
+ * Filesystem types excluded from the report entirely.
+ * The list isn't extended to overlay: it's the container's root, and dropping
+ * it from the report would just trade one data blind spot for another.
  */
 const PSEUDO_FS = new Set(['tmpfs', 'devtmpfs', 'squashfs']);
 
 /**
- * Таблица `df -hT` в строки.
+ * The `df -hT` table into rows.
  *
- * Длинное имя тома (overlay-путь docker, адрес NFS) df переносит на вторую
- * строку, поэтому одинокое первое поле склеивается со следующей строкой.
- * Что не сложилось в семь колонок — уходит в `unparsed`, а не пропадает.
+ * df wraps a long volume name (a docker overlay path, an NFS address) onto a
+ * second line, so a lone first field is glued to the following line. Whatever
+ * doesn't add up to seven columns goes into `unparsed` instead of vanishing.
  */
 export function parseDfTable(text: string): DfTable {
   const rows: DfRow[] = [];
@@ -69,10 +69,10 @@ export function parseDfTable(text: string): DfTable {
 }
 
 /**
- * Один том — одна строка, с самой короткой точкой монтирования.
+ * One volume, one row, keeping the shortest mount point.
  *
- * Bind-монтирование показывает то же устройство ещё раз: в контейнере три
- * записи про `/etc/hosts` и `/etc/hostname` вытесняли из обзора корень.
+ * A bind mount shows the same device again: in a container three entries for
+ * `/etc/hosts` and `/etc/hostname` were crowding the root out of the overview.
  */
 export function dedupeByDevice(rows: DfRow[]): DfRow[] {
   const kept = new Map<string, DfRow>();

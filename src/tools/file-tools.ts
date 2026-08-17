@@ -30,27 +30,52 @@ import {
 } from '../utils/output-notes.js';
 
 /**
- * До какого размера содержимое едет прямо в канале команды.
+ * Up to what size content travels straight through the command channel.
  *
- * Выше этой границы файл отдаётся транспорту: держать мегабайты в памяти
- * процесса и гнать их одним куском незачем, а транспорт умеет их потоком.
+ * Above this bound the file goes to the transport instead: there is no
+ * reason to hold megabytes in process memory and push them as one chunk,
+ * and the transport can stream them.
  */
 const INLINE_WRITE_LIMIT = 256 * 1024;
 
 /**
- * Что стало со сверкой записанного: сверяли и сошлось, сверить было нечем,
- * сверки не просили. Три исхода не смешиваются.
+ * What became of verifying the written data: checked and it matched, there
+ * was nothing to check with, or verification was not requested. The three
+ * outcomes are not mixed together.
  */
 type VerificationOutcome =
   | { status: 'verified' }
   | { status: 'unavailable'; reason: string }
   | { status: 'skipped' };
 
-/** Пометка о сверке для ответа; у несверявшейся записи её нет */
+/** Verification note for the response; a write that wasn't verified has none */
 function verificationNote(outcome: VerificationOutcome): string {
   if (outcome.status === 'verified') return ' (sha256 verified)';
   if (outcome.status === 'unavailable') return ` (NOT verified: ${outcome.reason})`;
   return '';
+}
+
+/** ssh_file_read arguments, matching its inputSchema */
+interface FileReadArgs {
+  profile?: string;
+  path?: unknown;
+  encoding?: string;
+  binary?: boolean;
+  sudo?: boolean;
+}
+
+/** ssh_file_write arguments, matching its inputSchema */
+interface FileWriteArgs {
+  profile?: string;
+  files?: unknown;
+}
+
+/** ssh_file_list arguments, matching its inputSchema */
+interface FileListArgs {
+  profile?: string;
+  path?: unknown;
+  pattern?: unknown;
+  recursive?: boolean;
 }
 
 /**
@@ -236,7 +261,7 @@ export class FileTools {
    * Handle ssh_file_read
    */
   private async handleFileRead(request: CallToolRequest, signal?: AbortSignal) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as FileReadArgs;
     
     // Validate array parameter format
     const validation = validateArrayParameter(args.path, 'path');
@@ -250,9 +275,9 @@ export class FileTools {
     const encoding = binary ? 'base64' : (args.encoding || 'utf8');
     const sudo = args.sudo || false;
 
-    // Пути раскрываются и проверяются правилами до первой команды — весь
-    // список сразу, как и раньше: отказ на пятом файле не должен приходить
-    // после того, как первые четыре уже прочитаны
+    // Paths are expanded and checked against the rules before the first
+    // command — the whole list at once: a refusal on the fifth file must not
+    // arrive after the first four have already been read
     const paths: string[] = [];
     for (const path of requested) {
       const target = await resolveRemotePath(this.executor, sshConfig, path, { sudo });
@@ -278,7 +303,7 @@ export class FileTools {
         throw new Error(`Failed to read file: ${result.stderr || result.stdout}`);
       }
 
-      // Часть файла нельзя отдавать как файл: дальше её примут за содержимое
+      // A partial file cannot be handed out as a file: whoever reads it next would take it for the whole content
       if (result.truncated) {
         throw new Error(`Failed to read file: ${truncatedReadMessage(paths[0])}`);
       }
@@ -292,7 +317,7 @@ export class FileTools {
       };
     }
     
-    // Множественные файлы - структурированный результат
+    // Multiple files - structured result
     const results: Array<{
       path: string;
       content: string;
@@ -354,8 +379,8 @@ export class FileTools {
           });
         }
       } catch (error: any) {
-        // Отмена — не «этот файл не прочитался»: иначе отменённый вызов
-        // возвращал бы список с пробелами вместо отказа
+        // A cancellation is not "this file failed to read": otherwise a
+        // cancelled call would return a list with gaps instead of a refusal
         if (signal?.aborted) throw error;
         results.push({
           path,
@@ -388,18 +413,19 @@ export class FileTools {
    * Handle ssh_file_write
    */
   private async handleFileWrite(request: CallToolRequest) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as FileWriteArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    // Форма проверяется целиком до первой записи: без этого отсутствующий
-    // `files` падал внутренним `Cannot read properties of undefined`, а
-    // `files: []` отвечал бодрым «Write 0 files» на невыполненную работу.
+    // The shape is validated entirely before the first write: without this, a
+    // missing `files` fell through to an internal `Cannot read properties of
+    // undefined`, and `files: []` cheerfully answered "Write 0 files" for
+    // work that never ran.
     const requested = requireEntryList(args.files, 'files', ['path', 'content'],
       '{"path": "/etc/app.conf", "content": "..."}');
 
-    // Пути раскрываются и проверяются правилами до первой записи — весь список
-    // сразу: отказ на пятом файле не должен приходить после того, как первые
-    // четыре уже легли на сервер
+    // Paths are expanded and checked against the rules before the first
+    // write — the whole list at once: a refusal on the fifth file must not
+    // arrive after the first four have already landed on the server
     const files: Array<{ file: any; target: ExpandedPath }> = [];
     for (const file of requested) {
       files.push({
@@ -415,8 +441,8 @@ export class FileTools {
       const { file, target } = files[0];
       const written = await this.writeFileRouted(sshConfig, file, target);
 
-      // Печатается путь, по которому файл оказался на самом деле: при `~` он
-      // отличается от запрошенного, и человек должен видеть настоящий адрес
+      // The path printed is where the file actually ended up: with `~` it
+      // differs from what was requested, and the user needs to see the real address
       const notes = written.warnings.map((warning) => `\n⚠ ${warning}`).join('');
 
       return {
@@ -429,7 +455,7 @@ export class FileTools {
       };
     }
 
-    // Множественные файлы - структурированный результат
+    // Multiple files - structured result
     const results: Array<{
       path: string;
       success: boolean;
@@ -481,17 +507,17 @@ export class FileTools {
   }
   
   /**
-   * Записать файл на сервер.
+   * Write a file to the server.
    *
-   * Путь один на любое содержимое: данные попадают во временный путь рядом с
-   * целью и встают на место установщиком. Различается только способ наполнения
-   * временного пути — мелкое едет потоком в stdin команды `cat`, крупное и
-   * двоичное отдаётся транспорту.
+   * One path handles any content: data lands on a staging path next to the
+   * target and takes its place via the installer. Only how the staging path
+   * gets filled differs — small content streams into the `cat` command's
+   * stdin, large and binary content goes to the transport.
    *
-   * Содержимое не появляется в строке команды никогда. Прежний быстрый путь
-   * вклеивал его в heredoc, и на живых серверах это портило запись: апостроф
-   * превращался в пять символов, строка `SSHEOF` внутри текста обрывала файл,
-   * а его остаток исполнялся как команды.
+   * Content never appears inside the command string. A heredoc glues it into
+   * the command text, and on live servers that corrupts the write: an
+   * apostrophe turns into five characters, the string `SSHEOF` inside the
+   * text cuts the file short, and the remainder executes as commands.
    */
   private async writeFileRouted(
     sshConfig: any,
@@ -504,20 +530,21 @@ export class FileTools {
       atomic?: boolean;
       binary?: boolean;
     },
-    /** Раскрытый и уже проверенный правилами путь назначения */
+    /** Expanded destination path, already checked against the rules */
     target: ExpandedPath
   ): Promise<{ path: string; warnings: string[]; verification: VerificationOutcome }> {
     const buf = file.binary
       ? Buffer.from(file.content || '', 'base64')
       : Buffer.from(file.content || '', 'utf8');
 
-    // Права проверяются до первой команды: отказ на полпути оставил бы после
-    // себя временный путь и запись, которой не просили
+    // Mode is validated before the first command: a refusal halfway through
+    // would leave behind a staging path and a write nobody asked for
     const mode = file.mode ? shellMode(file.mode, 'mode') : undefined;
 
     const expectedHash = sha256OfBuffer(buf);
-    // Исход сверки уезжает в ответ: без него «сошлось» и «сверить было нечем»
-    // выглядят для клиента одинаково успешной записью
+    // The verification outcome travels into the response: without it,
+    // "matched" and "nothing to verify with" both look to the client like an
+    // equally successful write
     let verification: VerificationOutcome = { status: 'skipped' };
     const ops = remotePathOps({
       executor: this.executor,
@@ -546,9 +573,8 @@ export class FileTools {
           return `local=${expectedHash}, remote differs`;
         }
 
-        // «Проверить нечем» — не то же самое, что испорченная запись:
-        // отказывать здесь значило бы рушить исправную запись на сервере
-        // без sha256sum и openssl
+        // "Nothing to verify with" is not the same as a corrupted write:
+        // refusing here would tear down a sound write on a server that lacks sha256sum and openssl
         if (result.status === 'unavailable') {
           logger.warn(`[file-tools] verification skipped: ${result.reason}`);
           verification = { status: 'unavailable', reason: result.reason };
@@ -576,11 +602,11 @@ export class FileTools {
   }
 
   /**
-   * Наполнить временный путь потоком в stdin.
+   * Fill the staging path via a stdin stream.
    *
-   * Содержимое идёт байтами по каналу, а не текстом команды, поэтому shell его
-   * не разбирает: ни кавычки, ни границы строк, ни нулевой байт ничего не
-   * значат. Проверено вживую на BusyBox и dash, на обоих бэкендах.
+   * The content travels as bytes over the channel, not as command text, so
+   * the shell never parses it: quotes, line boundaries and the null byte all
+   * mean nothing to it. Holds on both BusyBox and dash, on both backends.
    */
   private async stageByStdin(
     sshConfig: any,
@@ -594,7 +620,7 @@ export class FileTools {
     });
   }
 
-  /** Наполнить временный путь через транспорт: для крупного и двоичного */
+  /** Fill the staging path via the transport: for large and binary content */
   private async stageByTransport(
     sshConfig: any,
     staging: string,
@@ -613,10 +639,10 @@ export class FileTools {
         return;
       }
 
-      // Под sudo передача идёт от имени пользователя в /tmp, а рядом с целью
-      // копия появляется уже с правами. `install` здесь не годится: он
-      // копирует поверх, то есть уничтожает старое содержимое до того, как
-      // записано новое, — ровно то, чего этот протокол не допускает
+      // Under sudo the transfer runs as the connecting user into /tmp, and the
+      // copy appears next to the target already privileged. `install` does
+      // not fit here: it copies over the target, destroying the old content
+      // before the new one is written — exactly what this protocol forbids
       const handoff = buildSudoStagingPath();
       await runner.upload(localFile, handoff);
       try {
@@ -636,8 +662,8 @@ export class FileTools {
   }
 
   /**
-   * Забрать файл целиком и вернуть base64.
-   * Нужно при binary=true: `cat` через PTY портит байты вне utf8.
+   * Fetch the whole file and return base64.
+   * Needed when binary=true: `cat` through a PTY corrupts bytes outside utf8.
    */
   private async readFileBinary(
     sshConfig: any,
@@ -660,7 +686,7 @@ export class FileTools {
    * Handle ssh_file_list
    */
   private async handleFileList(request: CallToolRequest, signal?: AbortSignal) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as FileListArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
     const path = requireText(args.path, 'path', '"/var/log"');
@@ -674,8 +700,8 @@ export class FileTools {
     }
     
     if (args.pattern) {
-      // Шаблон обязан раскрыться на сервере, поэтому в кавычки он не уходит:
-      // всё, кроме знаков шаблона, обезврежено обратным слэшем
+      // The pattern must expand on the server, so it does not go into quotes:
+      // everything except the pattern characters is neutralized with a backslash
       command += ` ${safePath}/${shellGlob(args.pattern, 'pattern')}`;
     } else {
       command += ` ${safePath}`;
@@ -696,10 +722,10 @@ export class FileTools {
   }
   
   /**
-   * Команда чтения файла.
+   * File read command.
    *
-   * Путь приходит сюда уже раскрытым и уезжает в одинарных кавычках — тем же
-   * способом, что и при записи.
+   * The path arrives here already expanded and travels in single quotes —
+   * the same way as for a write.
    */
   private buildReadCommand(path: string, encoding: string): string {
     return `${encoding === 'base64' ? 'base64' : 'cat'} ${shellQuote(path)}`;

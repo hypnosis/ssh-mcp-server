@@ -1,21 +1,21 @@
 /**
- * Единая точка установки файла или каталога на место
+ * Single install point for placing a file or directory at its destination.
  *
- * Через неё проходит любое появление данных на боевом пути — и на сервере,
- * и локально при скачивании. Смысл в одном инварианте:
+ * Every appearance of data on a live path goes through it — both on the
+ * server and locally on download. It rests on one invariant:
  *
- *   Целая копия существует в каждый момент времени. Ничего не удаляется,
- *   пока замена не удалась. Обработчик ошибки никогда не трогает последнюю
- *   оставшуюся копию.
+ *   A whole copy exists at every point in time. Nothing is deleted until
+ *   the replacement has succeeded. The error handler never touches the
+ *   last remaining copy.
  *
- * Отсюда порядок работы: данные всегда пишутся рядом с целью под временным
- * именем, проверяются там же и попадают на место одним переименованием.
- * Всё, что ломается до этого переименования, убирает за собой только
- * временный путь. Всё, что ломается после, — уже предупреждение, а не
- * провал: замена состоялась.
+ * Hence the order of work: data is always written next to the target under
+ * a temporary name, verified there, and moved into place with a single
+ * rename. Anything that fails before that rename cleans up only the
+ * temporary path. Anything that fails after it is already a warning, not
+ * a failure: the replacement has taken effect.
  *
- * Сам протокол не знает, где лежат данные. Файловые операции приходят
- * снаружи: на сервере это команды через транспорт, локально — обычный fs.
+ * The protocol itself does not know where the data lives. File operations
+ * come from outside: transport commands on the server, plain fs locally.
  */
 
 import { logger } from '../utils/logger.js';
@@ -24,73 +24,74 @@ import { buildBackupPath, buildTempPath, isArtifactOf } from '../utils/tmp-name.
 export type PathKind = 'file' | 'directory' | 'symlink' | 'missing';
 
 /**
- * Исход проверки на точку монтирования. `unknown` — сервер не ответил
- * номерами устройств: проверить было нечем, и это не то же самое, что
- * проверенное «не точка монтирования».
+ * Outcome of a mount-point check. `unknown` means the server did not answer
+ * with device numbers: there was nothing to check with, which is not the
+ * same as a checked "not a mount point".
  */
 export type MountCheck = 'separate' | 'same' | 'unknown';
 
-/** Файловые операции, из которых собран протокол */
+/** File operations the protocol is built from */
 export interface PathOps {
   /**
-   * Что лежит по пути прямо сейчас. Симлинк — отдельный вид: битая ссылка
-   * не видна ни через `test -e`, ни через `test -d`, и без этого различия
-   * замена упала бы с необъяснимым «путь не существует».
+   * What currently sits at the path. A symlink is a distinct kind: a broken
+   * link is invisible to both `test -e` and `test -d`, and without this
+   * distinction the replacement would fail with a baffling "path does not
+   * exist".
    */
   inspect(path: string): Promise<PathKind>;
-  /** Создать родительский каталог, если его нет */
+  /** Create the parent directory if it does not exist */
   ensureParent(path: string): Promise<void>;
   /**
-   * Переименовать. Обязано вести себя как `mv -T`: в занятую цель ничего
-   * не вкладывать, а отказывать. Обычный `mv` каталога поверх каталога
-   * кладёт его внутрь и возвращает успех — проверено на BusyBox и coreutils.
+   * Rename. Must behave like `mv -T`: never nest into an occupied target,
+   * refuse instead. Plain `mv` of a directory onto a directory nests it
+   * inside and reports success, on both BusyBox and coreutils.
    */
   rename(from: string, to: string): Promise<void>;
-  /** Удалить путь целиком */
+  /** Remove the path entirely */
   removeTree(path: string): Promise<void>;
-  /** Лежит ли путь на отдельной файловой системе (точка монтирования) */
+  /** Whether the path sits on a separate filesystem (a mount point) */
   isSeparateFilesystem?(path: string): Promise<MountCheck>;
   /**
-   * Пути в каталоге, похожие на наши временные имена.
+   * Paths in the directory that resemble our temporary names.
    *
-   * Нужны только чтобы назвать их человеку: убирать их самим нельзя — по
-   * имени не отличить брошенный след от временного пути соседнего вызова,
-   * который прямо сейчас доливает туда данные.
+   * Needed only to report them to a human: they cannot be cleaned up
+   * automatically, because the name alone cannot tell a stray leftover
+   * apart from another call's temporary path that is filling in right now.
    */
   listArtifacts?(directory: string): Promise<ArtifactScan>;
 }
 
-/** Что нашлось рядом с целью и можно ли считать этот список полным */
+/** What was found next to the target, and whether the list is complete */
 export interface ArtifactScan {
   paths: string[];
-  /** Ответ сервера обрезан по пределу: следов могло быть больше */
+  /** The server's response was cut off at the limit: there may be more leftovers */
   truncated?: boolean;
 }
 
 export interface InstallPlan {
-  /** Путь, который просил пользователь */
+  /** The path the caller asked for */
   finalPath: string;
   kind: 'file' | 'directory';
-  /** Положить данные во временный путь */
+  /** Write the data to a temporary path */
   stage: (stagingPath: string) => Promise<void>;
-  /** Проверить временный путь до замены: причина отказа или null */
+  /** Verify the temporary path before the replacement: a rejection reason, or null */
   verify?: (stagingPath: string) => Promise<string | null>;
-  /** Права и владелец после замены; сбой здесь операцию не отменяет */
+  /** Permissions and ownership after the replacement; a failure here does not undo it */
   finalize?: (finalPath: string) => Promise<void>;
 }
 
 export interface InstallOutcome {
   path: string;
-  /** Что пошло не так уже после состоявшейся замены */
+  /** What went wrong after the replacement had already taken effect */
   warnings: string[];
 }
 
 export class InstallError extends Error {
   /**
-   * То, что человек обязан прочитать вместе с отказом: где остались его
-   * данные. Без этого поля предупреждение «боевой путь пуст, копия лежит
-   * рядом по адресу X» терялось бы ровно в том случае, ради которого
-   * оно написано.
+   * What a human must read alongside the failure: where their data ended
+   * up. Without this field, a warning like "the live path is empty, the
+   * copy sits next to it at X" would be lost in exactly the case it was
+   * written for.
    */
   readonly warnings: string[];
 
@@ -102,20 +103,20 @@ export class InstallError extends Error {
 }
 
 /**
- * Поставить данные на место.
+ * Put data in place.
  *
- * Возвращает предупреждения, а не глотает их: «файл заменён, но права не
- * применились» — это другой ответ, чем «всё получилось», и другой, чем
- * «операция провалилась».
+ * Returns warnings instead of swallowing them: "the file was replaced but
+ * permissions did not apply" is a different answer than "everything
+ * succeeded", and different again from "the operation failed".
  */
 export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallOutcome> {
   const warnings: string[] = [];
 
-  // prepare: разведка цели. Всё, что здесь не так, — отказ до единого
-  // изменения на диске
+  // prepare: survey the target. Anything wrong here is a rejection before
+  // a single change hits disk
   const existing = await ops.inspect(plan.finalPath);
 
-  // Следы прошлых операций: называем их и оставляем как есть
+  // Leftovers from past operations: name them and leave them untouched
   const leftovers = await findLeftovers(ops, plan.finalPath);
   if (leftovers.paths.length > 0) {
     warnings.push(describeLeftovers(leftovers.paths, plan.finalPath, existing));
@@ -130,8 +131,8 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
     );
   }
 
-  // Тип цели обязан совпасть с тем, что ставим: иначе переименование молча
-  // вложит одно в другое и отчитается успехом
+  // The target's kind must match what we're installing: otherwise the
+  // rename would silently nest one inside the other and report success
   if (existing !== 'missing' && existing !== plan.kind) {
     throw new InstallError(
       `cannot install ${plan.kind} over an existing ${existing}: ${plan.finalPath}`,
@@ -139,8 +140,8 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
     );
   }
 
-  // Точка монтирования переименованием не заменяется: старый путь пришлось бы
-  // сначала вычистить, а это ровно тот `rm -rf`, от которого мы уходим
+  // A mount point cannot be replaced by rename: the old path would first
+  // have to be wiped, which is exactly the `rm -rf` we are avoiding
   if (existing !== 'missing' && ops.isSeparateFilesystem) {
     const mount = await ops.isSeparateFilesystem(plan.finalPath);
     if (mount === 'separate') {
@@ -156,9 +157,10 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
   await ops.ensureParent(plan.finalPath);
   const staging = buildTempPath(plan.finalPath.replace(/\/+$/, ''));
 
-  // stage, verify и права: всё, что здесь падает, уносит с собой только staging.
-  // Права ставятся до замены — иначе на боевом пути возникло бы окно, в котором
-  // данные уже живут, а доступ к ним ещё чужой
+  // stage, verify, and permissions: anything that fails here takes only
+  // staging down with it. Permissions are set before the replacement —
+  // otherwise the live path would have a window where the data already
+  // lives there but access to it is still wrong
   try {
     await plan.stage(staging);
 
@@ -175,11 +177,12 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
       : error;
   }
 
-  // commit: с первого удавшегося переименования операция состоялась
+  // commit: the operation has taken effect from the first successful rename onward
   const committed = await commit(ops, plan, existing, staging, warnings);
   if (!committed.ok) {
-    // Убирать staging можно только пока боевой путь цел. Если откат не удался,
-    // staging — вторая из двух оставшихся копий, и трогать его нельзя
+    // staging may be discarded only while the live path is still intact. If
+    // the rollback failed, staging is one of the two remaining copies and
+    // must not be touched
     if (committed.lastCopyAtRisk) {
       throw new InstallError(committed.error.message, warnings);
     }
@@ -195,16 +198,16 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
 
 type CommitResult =
   | { ok: true }
-  /** lastCopyAtRisk — откат не удался: боевой путь пуст, и уборка запрещена */
+  /** lastCopyAtRisk — the rollback failed: the live path is empty, cleanup is forbidden */
   | { ok: false; error: Error; lastCopyAtRisk?: boolean };
 
 /**
- * Поставить staging на место цели.
+ * Put staging in place of the target.
  *
- * Файл поверх файла и установка на пустое место — одно переименование, оно
- * атомарно. Каталог поверх каталога переименованием не заменяется, поэтому
- * старый сначала отводится в сторону под уникальным именем и удаляется
- * только после успешной замены.
+ * A file over a file, or an install onto an empty spot, is a single atomic
+ * rename. A directory over a directory cannot be replaced by rename, so the
+ * old one is first moved aside under a unique name and removed only after
+ * the replacement has succeeded.
  */
 async function commit(
   ops: PathOps,
@@ -230,8 +233,8 @@ async function commit(
     return { ok: false, error: await explainRace(ops, plan.finalPath, 'gone', error) };
   }
 
-  // Между этими двумя переименованиями боевой путь пуст — здесь не место
-  // ни отмене, ни проверкам: прерваться тут значит оставить пустоту
+  // The live path is empty between these two renames — there is no room
+  // here for cancellation or checks: stopping now would leave that emptiness in place
   try {
     await ops.rename(staging, plan.finalPath);
   } catch (error) {
@@ -243,7 +246,7 @@ async function commit(
     };
   }
 
-  // Точка невозврата пройдена: неубранная старая копия — это предупреждение
+  // Past the point of no return: an unremoved old copy is now a warning, not a failure
   try {
     await ops.removeTree(backup);
   } catch (error) {
@@ -254,11 +257,12 @@ async function commit(
 }
 
 /**
- * Назвать отказ замены словами вызывающего, а не выводом утилиты.
+ * Describe a failed replacement in the caller's own words, not the utility's output.
  *
- * Цель, исчезнувшая или занятая между разведкой и заменой, означает одно: в тот
- * же путь писал кто-то ещё. Спрашиваем сервер, а не разбираем текст ошибки:
- * набор утилит и язык сообщений на разных серверах разные.
+ * A target that vanished or got taken between the survey and the replacement
+ * means one thing: something else was writing to the same path. We ask the
+ * server rather than parse the error text: the toolset and message language
+ * differ across servers.
  */
 async function explainRace(
   ops: PathOps,
@@ -281,7 +285,7 @@ async function explainRace(
   );
 }
 
-/** Вернуть отведённую копию на место, если замена не удалась */
+/** Move the set-aside copy back into place if the replacement failed */
 async function restore(
   ops: PathOps,
   backup: string,
@@ -292,8 +296,9 @@ async function restore(
     await ops.rename(backup, finalPath);
     return true;
   } catch (error) {
-    // Худший исход: боевой путь пуст, а копия лежит рядом. Молчать нельзя —
-    // это единственное, что позволит человеку вернуть данные руками
+    // The worst outcome: the live path is empty and the copy sits next to
+    // it. Silence is not an option — this is the only thing that lets a
+    // human move the data back by hand
     warnings.push(
       `${finalPath} is empty; the previous copy is intact at ${backup} and must be moved back manually: ${message(error)}`
     );
@@ -301,7 +306,7 @@ async function restore(
   }
 }
 
-/** Проверить точку монтирования было нечем: непроверенное не выдаём за проверенное */
+/** There was nothing to check the mount point with: don't pass an unchecked result off as checked */
 function uncheckedMountNote(path: string): string {
   return (
     `whether ${path} is a mount point could not be checked: the server did not answer with ` +
@@ -309,16 +314,16 @@ function uncheckedMountNote(path: string): string {
   );
 }
 
-/** Список следов пришёл неполным: молчать об этом — выдать обрезок за всё, что есть */
+/** The leftover listing came back incomplete: staying silent about that would pass off a fragment as the whole */
 const TRUNCATED_SCAN_NOTE =
   'the directory listing was cut off at the output limit, so this search for leftovers ' +
   'is incomplete: there may be more of them next to the target.';
 
 /**
- * Найти рядом с целью наши временные пути от прошлых операций.
+ * Find our temporary paths from past operations next to the target.
  *
- * Только чтение. Листинг не удался — считаем, что ничего нет: справка о мусоре
- * не стоит того, чтобы из-за неё отказала сама установка.
+ * Read-only. If the listing fails, treat it as nothing found: a note about
+ * leftovers is not worth letting it fail the install itself.
  */
 async function findLeftovers(ops: PathOps, finalPath: string): Promise<ArtifactScan> {
   if (!ops.listArtifacts) return { paths: [] };
@@ -342,18 +347,20 @@ async function findLeftovers(ops: PathOps, finalPath: string): Promise<ArtifactS
 }
 
 /**
- * Сказать про находку так, чтобы человек мог решить сам.
+ * Report a find in a way that lets a human decide for themselves.
  *
- * Мы их не трогаем: по имени не отличить брошенный след от временного пути
- * чужого вызова, который прямо сейчас пишет туда данные. Поэтому в ответе —
- * адреса и готовая команда, а решение за человеком.
+ * We don't touch them: the name alone cannot tell a stray leftover apart
+ * from another call's temporary path that is writing data there right now.
+ * So the response carries the addresses and a ready-made command, and the
+ * decision stays with the human.
  */
 function describeLeftovers(leftovers: string[], finalPath: string, existing: PathKind): string {
   const paths = leftovers.map((path) => `'${path}'`).join(' ');
 
-  // Пустая цель рядом с отложенной копией — след процесса, убитого между двумя
-  // переименованиями. Тогда рядом лежат последние целые данные, и это другой
-  // разговор, чем «уберите мусор»
+  // An empty target next to a set-aside copy is the trace of a process
+  // killed between the two renames. In that case what's next to it is the
+  // last whole copy of the data, and that's a different conversation than
+  // "clean up your junk"
   if (existing === 'missing') {
     return (
       `${finalPath} did not exist before this install, but leftovers from an interrupted ` +
@@ -369,10 +376,10 @@ function describeLeftovers(leftovers: string[], finalPath: string, existing: Pat
 }
 
 /**
- * Убрать временный путь; неудача уборки операцию не меняет.
+ * Remove the temporary path; a failed cleanup does not change the operation's outcome.
  *
- * След в журнале всё же оставляем: раньше ошибка исчезала бесследно, и путь,
- * который мы объявили убранным, мог остаться на сервере.
+ * We still leave a trace in the log: without it the error would vanish
+ * silently, and a path we declared removed could remain on the server.
  */
 async function discard(ops: PathOps, staging: string): Promise<void> {
   await ops.removeTree(staging).catch((error: unknown) => {

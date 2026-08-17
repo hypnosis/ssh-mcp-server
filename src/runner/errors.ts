@@ -1,17 +1,17 @@
 /**
- * Ошибки SSH-транспорта
+ * SSH transport errors
  *
- * Бросаются только когда упал сам транспорт. Ненулевой код возврата
- * удалённой команды ошибкой не является — он приходит в ExecResult.
+ * Thrown only when the transport itself fails. A non-zero return code from
+ * the remote command is not an error — it arrives in ExecResult.
  */
 
 /**
- * Базовая ошибка транспорта
+ * Base transport error
  */
 export class SSHRunnerError extends Error {
-  /** Код возврата ssh, если процесс успел завершиться */
+  /** ssh's return code, if the process managed to exit */
   public readonly exitCode?: number;
-  /** Диагностический вывод ssh */
+  /** ssh's diagnostic output */
   public readonly stderr?: string;
 
   constructor(message: string, details: { exitCode?: number; stderr?: string } = {}) {
@@ -23,8 +23,8 @@ export class SSHRunnerError extends Error {
 }
 
 /**
- * Сетевая или транспортная ошибка — единственный класс, безопасный для повтора
- * (и то лишь для идемпотентных операций)
+ * Network or transport error — the only class that's safe to retry
+ * (and even then, only for idempotent operations)
  */
 export class SSHTransportError extends SSHRunnerError {
   constructor(message: string, details: { exitCode?: number; stderr?: string } = {}) {
@@ -34,8 +34,9 @@ export class SSHTransportError extends SSHRunnerError {
 }
 
 /**
- * Канал закрылся, не дав команде ничего напечатать. Соединение при этом живо,
- * поэтому повтор идёт сразу — паузу здесь ждать нечего и некого.
+ * The channel closed without letting the command print anything. The
+ * connection itself is still alive, so the retry happens right away —
+ * there's no one and nothing to wait for here.
  */
 export class SSHChannelClosedError extends SSHTransportError {
   constructor(message: string, details: { exitCode?: number; stderr?: string } = {}) {
@@ -45,8 +46,8 @@ export class SSHChannelClosedError extends SSHTransportError {
 }
 
 /**
- * Ошибка аутентификации — повторять бессмысленно и вредно:
- * каждая попытка засчитывается сервером как неудачный вход
+ * Authentication error — retrying is pointless and harmful:
+ * every attempt counts against the server as a failed login
  */
 export class SSHAuthError extends SSHRunnerError {
   constructor(message: string, details: { exitCode?: number; stderr?: string } = {}) {
@@ -56,7 +57,7 @@ export class SSHAuthError extends SSHRunnerError {
 }
 
 /**
- * Ключ хоста не совпал или неизвестен
+ * Host key mismatch or unknown host key
  */
 export class SSHHostKeyError extends SSHRunnerError {
   constructor(message: string, details: { exitCode?: number; stderr?: string } = {}) {
@@ -66,13 +67,13 @@ export class SSHHostKeyError extends SSHRunnerError {
 }
 
 /**
- * Операция прервана по таймауту.
+ * Operation aborted by timeout.
  *
- * Не повторяется никогда: команда уже стартовала на сервере, и повтор
- * может выполнить мутацию дважды.
+ * Never retried: the command already started on the server, and a retry
+ * could run the mutation twice.
  */
 export class SSHTimeoutError extends SSHRunnerError {
-  /** Частичный вывод, накопленный до срабатывания таймаута */
+  /** Partial output accumulated before the timeout fired */
   public readonly partialStdout: string;
   public readonly partialStderr: string;
 
@@ -88,10 +89,10 @@ export class SSHTimeoutError extends SSHRunnerError {
 }
 
 /**
- * Операция отменена вызывающей стороной.
+ * Operation cancelled by the caller.
  *
- * От таймаута отличается тем, что это ожидаемый исход, а не сбой:
- * агент передумал или пользователь прервал вызов.
+ * Differs from a timeout in that it's an expected outcome, not a failure:
+ * the agent changed its mind, or the user interrupted the call.
  */
 export class SSHCancelledError extends SSHRunnerError {
   public readonly partialStdout: string;
@@ -109,7 +110,7 @@ export class SSHCancelledError extends SSHRunnerError {
 }
 
 /**
- * Системный ssh не найден в PATH
+ * The system ssh was not found in PATH
  */
 export class SSHBinaryMissingError extends SSHRunnerError {
   constructor(message: string) {
@@ -119,8 +120,8 @@ export class SSHBinaryMissingError extends SSHRunnerError {
 }
 
 /**
- * Конфигурация профиля несовместима с окружением
- * (например, парольный профиль на OpenSSH старше 8.4)
+ * The profile configuration is incompatible with the environment
+ * (e.g. a password-based profile on OpenSSH older than 8.4)
  */
 export class SSHUnsupportedConfigError extends SSHRunnerError {
   constructor(message: string) {
@@ -130,9 +131,9 @@ export class SSHUnsupportedConfigError extends SSHRunnerError {
 }
 
 /**
- * Достигнут лимит одновременных сессий на сервере (MaxSessions), и открыть
- * отдельное соединение вместо сессии клиенту тоже не удалось: сам по себе
- * отказ в сессии он лечит без нашего участия.
+ * The server's concurrent session limit was reached (MaxSessions), and the
+ * client also failed to open a separate connection in place of a session:
+ * a plain session refusal it handles on its own, without our involvement.
  */
 export class SSHMuxLimitError extends SSHRunnerError {
   constructor(message: string, details: { exitCode?: number; stderr?: string } = {}) {
@@ -142,10 +143,10 @@ export class SSHMuxLimitError extends SSHRunnerError {
 }
 
 /**
- * Можно ли безопасно повторить операцию при этой ошибке.
+ * Whether it's safe to retry the operation for this error.
  *
- * Повторяем только транспортные сбои — и только если вызывающий явно
- * пометил операцию идемпотентной.
+ * Only transport failures are retried — and only when the caller explicitly
+ * marked the operation idempotent.
  */
 export function isRetryable(error: unknown, idempotent: boolean): boolean {
   if (!idempotent) return false;

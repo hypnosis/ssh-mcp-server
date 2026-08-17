@@ -68,8 +68,8 @@ For array of items, use DOUBLE QUOTES in JSON format:
 For single item, use string:
 ✅ Correct:   ${parameterName}: "item1"
 ${
-  // Подсказка про bash-тест уместна только там, где значение — команда:
-  // в ответе про `path` она сбивала с толку, советуя чинить чужой параметр.
+  // The bash-test hint only makes sense where the value is a command:
+  // in a `path` error it would confuse by suggesting to fix the wrong parameter.
   parameterName === 'command'
     ? '\nBash tests are not affected by this check:\n✅ Correct:   command: "[[ -f file.txt ]] && echo exists"\n'
     : ''

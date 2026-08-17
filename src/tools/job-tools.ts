@@ -1,9 +1,10 @@
 /**
- * Инструменты фоновой задачи: посмотреть, прочитать вывод, перечислить, снять.
+ * Background job tools: check status, read output, list, kill.
  *
- * Состояние задачи целиком лежит на сервере, поэтому здесь нет ни памяти между
- * вызовами, ни курсора чтения: позицию держит вызывающий и присылает её сам.
- * Так ответы не портятся ни перезапуском нашего процесса, ни вторым клиентом.
+ * A job's state lives entirely on the server, so there is no memory here
+ * between calls and no read cursor: the caller holds the position and sends
+ * it back itself. That way answers are corrupted by neither our process
+ * restarting nor a second client.
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -30,7 +31,15 @@ import {
 } from '../utils/job-command.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
-/** Что означает исход задачи. «Потеряна» — это «проверить нечем», а не провал */
+/** Arguments shared by all ssh_job_* tools, matching their inputSchema */
+interface JobArgs {
+  profile?: string;
+  id?: unknown;
+  offset?: unknown;
+  signal?: string;
+}
+
+/** What a job's outcome means. "Lost" means "nothing to check with", not a failure */
 const STATE_NOTE: Record<JobState, string> = {
   running: 'still running',
   finished: 'finished',
@@ -39,18 +48,19 @@ const STATE_NOTE: Record<JobState, string> = {
   missing: 'no such job on the server (it may have been cleaned up)',
 };
 
-/** Время старта человеку и машине сразу */
+/** Start time for a human and a machine at once */
 function startedLine(startedAt: number | undefined): string {
   if (startedAt === undefined) return 'Started: unknown';
   return `Started: ${new Date(startedAt * 1000).toISOString()} (unix ${startedAt})`;
 }
 
 /**
- * Ответ снятия задачи.
+ * The response to stopping a job.
  *
- * Нечего снимать — это ответ, а не отказ: задача могла закончиться сама между
- * вызовом состояния и снятием. Исходы не сливаются: задачи нет вовсе, задача
- * есть и уже кончилась, задача есть и не назвала pid.
+ * Nothing to stop is an answer, not a refusal: the job could have finished on
+ * its own between the status call and the kill. The outcomes are not merged:
+ * the job does not exist at all, the job exists and already finished, the job
+ * exists and never recorded a pid.
  */
 function describeKill(
   id: string,
@@ -176,10 +186,10 @@ export class JobTools {
   }
 
   /**
-   * Конфигурация профиля и каталог задачи по её идентификатору.
+   * Profile config and job directory from its id.
    *
-   * Формат идентификатора проверяет `jobPaths`: он уезжает в путь на сервере, и
-   * проверка стоит там, где путь собирается, а не в каждом инструменте.
+   * `jobPaths` validates the id's format: it travels into a path on the
+   * server, and the check lives where the path is built, not in every tool.
    */
   private async locate(args: any): Promise<{ config: SSHConfig; id: string; dir: string }> {
     const config = resolveSSHConfig({ profile: args.profile });
@@ -190,7 +200,7 @@ export class JobTools {
   }
 
   private async handleStatus(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as JobArgs;
     const { config, id, dir } = await this.locate(args);
 
     const result = await this.executor.execute(config, buildStatusCommand(dir), {
@@ -201,7 +211,7 @@ export class JobTools {
     return { content: [{ type: 'text', text: this.describeStatus(id, parseJobStatus(result.stdout)) }] };
   }
 
-  /** Ответ о состоянии: исход первой строкой, подробности под ним */
+  /** Status response: the outcome on the first line, details below it */
   private describeStatus(id: string, status: JobStatus): string {
     const lines = [`Job ${id}: ${STATE_NOTE[status.state]}`];
 
@@ -222,7 +232,7 @@ export class JobTools {
   }
 
   private async handleOutput(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as JobArgs;
     const { config, id, dir } = await this.locate(args);
     const offset = Math.max(0, Math.floor(Number(args.offset ?? 0) || 0));
 
@@ -233,16 +243,17 @@ export class JobTools {
 
     const output = parseJobOutput(result.stdout);
 
-    // Задачи нет — это ответ, а не пустой вывод: молчащая задача и выдуманный
-    // идентификатор иначе выглядят одинаково
+    // No such job is an answer, not empty output: otherwise a silent job and
+    // a made-up id would look the same
     if (output.missing) {
       return { content: [{ type: 'text', text: `Job ${id}: ${STATE_NOTE.missing}` }] };
     }
 
     const read = Buffer.byteLength(output.text, 'utf8');
 
-    // Курсор двигается на прочитанное, а не на размер файла: обрезанный буфером
-    // ответ иначе перескочил бы через середину вывода и потерял её молча
+    // The cursor advances by what was read, not by the file's size: a
+    // response cut off by the buffer would otherwise skip over the middle of
+    // the output and silently lose it
     const next = offset + read;
     const head =
       `Job ${id} output: ${output.size} bytes total, read ${read} from offset ${offset}.\n` +
@@ -262,7 +273,7 @@ export class JobTools {
   }
 
   private async handleList(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as JobArgs;
     const config = resolveSSHConfig({ profile: args.profile });
     const root = jobsRoot((await this.executor.passport(config)).home);
 
@@ -299,7 +310,7 @@ export class JobTools {
   }
 
   private async handleKill(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as JobArgs;
     const { config, id, dir } = await this.locate(args);
     const which = args.signal === 'KILL' ? 'KILL' : 'TERM';
 

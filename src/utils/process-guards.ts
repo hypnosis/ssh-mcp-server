@@ -1,24 +1,25 @@
 /**
- * Страховки процесса
+ * Process safety nets
  *
- * Сервер обслуживает много независимых операций подряд. Ошибка, всплывшая мимо
- * обработчика — из канала SFTP, из таймера, из промиса, за которым никто не
- * следит, — по умолчанию завершает процесс Node целиком: клиент теряет не один
- * вызов, а всю сессию со всеми профилями. Здесь такая ошибка становится записью
- * в журнале, а сервер продолжает отвечать.
+ * The server handles many independent operations in a row. An error that
+ * surfaces outside a handler — from an SFTP channel, a timer, a promise
+ * nobody's watching — terminates the whole Node process by default: the
+ * client loses not one call but the entire session with every profile.
+ * Here such an error becomes a log entry instead, and the server keeps
+ * responding.
  *
- * Единственное исключение — закрытый канал к клиенту: работать больше не для
- * кого, и оставаться в памяти незачем.
+ * The one exception is a closed channel to the client: there's no one left
+ * to work for, and no reason to stay in memory.
  */
 
 import { logger } from './logger.js';
 
-/** Канал к клиенту закрыт с той стороны */
+/** The channel to the client was closed from the other side */
 function isClientChannelClosed(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'EPIPE';
 }
 
-/** Текст для журнала: у ошибки берём стек, у чего угодно ещё — как есть */
+/** Text for the log: an Error contributes its stack, anything else goes through as-is */
 function describeFailure(reason: unknown): string {
   if (reason instanceof Error) return reason.stack ?? reason.message;
   return String(reason);

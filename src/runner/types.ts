@@ -1,89 +1,90 @@
 /**
- * Command Runner — граница между инструментами и SSH-транспортом
+ * Command Runner — the boundary between tools and the SSH transport
  *
- * Инструменты строят строку shell-команды и получают честный результат.
- * Как именно команда доставлена на сервер (системный ssh, библиотека) —
- * их не касается.
+ * Tools build a shell command string and get back an honest result. How the
+ * command actually reaches the server (system ssh, a library) is not their
+ * concern.
  */
 
 import type { ServerPassport } from './passport.js';
 
 /**
- * Опции выполнения команды
+ * Command execution options
  */
 export interface ExecOptions {
-  /** Таймаут операции в миллисекундах (по умолчанию — `DEFAULT_EXEC_TIMEOUT_MS`) */
+  /** Operation timeout in milliseconds (default — `DEFAULT_EXEC_TIMEOUT_MS`) */
   timeoutMs?: number;
-  /** Сигнал отмены — прерывает операцию немедленно */
+  /** Cancellation signal — aborts the operation immediately */
   signal?: AbortSignal;
   /**
-   * Безопасно ли повторять операцию при транспортной ошибке.
-   * По умолчанию false: повтор мутирующей команды опаснее её отказа.
+   * Whether it's safe to retry the operation on a transport error.
+   * Defaults to false: retrying a mutating command is riskier than letting it fail.
    */
   idempotent?: boolean;
-  /** Данные для stdin команды */
+  /** Data for the command's stdin */
   stdin?: string | Buffer;
-  /** Лимит буфера вывода в байтах (по умолчанию — `OUTPUT_LIMIT_BYTES`) */
+  /** Output buffer limit in bytes (default — `OUTPUT_LIMIT_BYTES`) */
   maxOutputBytes?: number;
   /**
-   * Оборачивать ли команду в удалённый `timeout` — чтобы процесс на сервере
-   * не пережил убийство локального ssh (по умолчанию true при заданном timeoutMs)
+   * Whether to wrap the command in a remote `timeout` — so the process on the
+   * server doesn't outlive the killed local ssh (defaults to true when timeoutMs is set)
    */
   remoteTimeout?: boolean;
 }
 
 /**
- * Результат выполнения команды.
+ * Command execution result.
  *
- * Ненулевой exitCode — это результат, а не ошибка: `grep` без совпадений
- * возвращает 1, и это нормальный ответ, а не сбой.
+ * A non-zero exitCode is a result, not an error: `grep` with no matches
+ * returns 1, and that's a normal answer, not a failure.
  */
 export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
-  /** Вывод обрезан по maxOutputBytes */
+  /** Output was truncated by maxOutputBytes */
   truncated: boolean;
   durationMs: number;
 }
 
 /**
- * Опции передачи файлов
+ * File transfer options
  */
 export interface TransferOptions {
   /**
-   * Таймаут передачи в миллисекундах. Без него потолка нет: передача идёт
-   * столько, сколько нужно, а зависший канал рвёт keepalive транспорта.
+   * Transfer timeout in milliseconds. Without it there is no cap: the transfer
+   * runs as long as it needs to, and a stalled channel is caught by the
+   * transport's keepalive.
    */
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Рекурсивная передача каталога */
+  /** Recursive directory transfer */
   recursive?: boolean;
 }
 
 /**
- * Результат проверки доступности сервера
+ * Server reachability check result
  */
 export interface PingResult {
   ok: boolean;
-  /** Было ли master-соединение живо до проверки */
+  /** Whether the master connection was already alive before the check */
   masterWasActive: boolean;
   latencyMs: number;
 }
 
 /**
- * Состояние транспорта для диагностики (ssh_monitor stats)
+ * Transport state for diagnostics (ssh_monitor stats)
  */
 export interface RunnerStats {
-  /** Способ доставки команд. Транспорт один, поле остаётся частью ответа ssh_monitor */
+  /** Command delivery method. There is one transport; the field stays part of the ssh_monitor response */
   backend: 'openssh';
-  /** Работает ли мультиплексирование соединений */
+  /** Whether connection multiplexing is working */
   multiplexing: boolean;
-  /** Причина, по которой мультиплексирование выключено */
+  /** Why multiplexing is disabled */
   multiplexingDisabledReason?: string;
-  /** Версия системного ssh, если применимо */
+  /** Version of the system ssh, if applicable */
   sshVersion?: string;
-  /** Живо ли master-соединение прямо сейчас */
+  /** Whether the master connection is alive right now */
   masterActive: boolean;
   masterPid?: number;
   controlPath?: string;
@@ -93,40 +94,42 @@ export interface RunnerStats {
 }
 
 /**
- * Чем кончилась попытка закрыть общее соединение.
+ * How an attempt to close the shared connection ended.
  *
- * `nothing-to-close` — не отказ: соединение уже ушло по сроку простоя.
- * `multiplexing-off` — закрывать нечего в принципе, соединение не переживает команду.
+ * `nothing-to-close` isn't a failure: the connection already timed out from
+ * idling. `multiplexing-off` means there's nothing to close in principle —
+ * the connection doesn't outlive a single command.
  */
 export type MasterCloseOutcome = 'closed' | 'nothing-to-close' | 'multiplexing-off';
 
 /**
- * Транспорт для выполнения команд и передачи файлов на одном профиле
+ * Transport for running commands and transferring files on a single profile
  */
 export interface CommandRunner {
-  /** Выполнить команду. Не бросает исключение при ненулевом exitCode. */
+  /** Run a command. Does not throw on a non-zero exitCode. */
   exec(command: string, options?: ExecOptions): Promise<ExecResult>;
 
   /**
-   * Паспорт сервера: что на нём есть из утилит.
+   * Server passport: what utilities are available on it.
    *
-   * Спрашивается только здесь. Проба обязана идти мимо шлюза первой команды:
-   * команды шлюза сами ждут паспорт, и проба через `exec` замкнула бы круг.
+   * Only asked for here. The probe must bypass the first-command gate: gated
+   * commands themselves wait for the passport, and a probe going through
+   * `exec` would close the loop on itself.
    */
   passport(): Promise<ServerPassport>;
 
-  /** Загрузить файл или каталог на сервер */
+  /** Upload a file or directory to the server */
   upload(localPath: string, remotePath: string, options?: TransferOptions): Promise<void>;
 
-  /** Скачать файл или каталог с сервера */
+  /** Download a file or directory from the server */
   download(remotePath: string, localPath: string, options?: TransferOptions): Promise<void>;
 
-  /** Проверить доступность сервера */
+  /** Check server reachability */
   ping(options?: { timeoutMs?: number }): Promise<PingResult>;
 
-  /** Состояние транспорта для диагностики */
+  /** Transport state for diagnostics */
   stats(): Promise<RunnerStats>;
 
-  /** Закрыть переиспользуемое соединение */
+  /** Close the reusable connection */
   closeMaster(): Promise<MasterCloseOutcome>;
 }

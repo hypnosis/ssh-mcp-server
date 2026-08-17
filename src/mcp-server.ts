@@ -1,7 +1,7 @@
 /**
- * Сборка MCP-сервера: объявленный список инструментов и маршрут вызова
- * строятся из одного источника, поэтому объявить инструмент и не подключить
- * его нельзя.
+ * Assembly of the MCP server: the declared tool list and the call routing
+ * are built from the same source, so it is impossible to declare a tool
+ * without wiring it up.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -22,13 +22,13 @@ import { MonitoringTool } from './tools/monitoring-tool.js';
 import { TransferTool } from './tools/transfer-tool.js';
 import { AuditTool } from './tools/audit-tool.js';
 
-/** Класс инструментов и его обработчик вызова */
+/** A class of tools and its call handler */
 interface ToolProvider {
   tools: Tool[];
   call: (request: CallToolRequest, signal?: AbortSignal) => Promise<ToolResult>;
 }
 
-/** Сервер и список инструментов, который он объявляет */
+/** The server and the list of tools it declares */
 export interface McpServerBundle {
   server: Server;
   tools: Tool[];
@@ -80,10 +80,10 @@ export function createMcpServer(version: string): McpServerBundle {
     return { tools };
   });
 
-  // Отмену вызова получают инструменты, которые только выполняют команды.
-  // Передача файлов её не берёт: у замены есть окно, где цель уже отведена в
-  // сторону, а новая копия ещё не встала на место, — прерваться там значит
-  // оставить пустоту
+  // Cancellation is delivered only to tools that just execute commands.
+  // File transfer does not take it: the replacement has a window where the
+  // target has already been moved aside but the new copy hasn't landed yet
+  // — aborting there would leave that emptiness in place
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const toolName = request.params.name;
     logger.debug('CallTool request:', toolName);

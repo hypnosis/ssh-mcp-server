@@ -62,7 +62,7 @@ Command: test -f /var/run/reboot-required && cat /var/run/reboot-required
 
 ## Как закрыто
 
-Спринт [FIX_16](../sprints/planned/FIX_16_audit_speaks_to_the_point.md), задача 5.
+Спринт [FIX_16](../../sprints/planned/FIX_16_audit_speaks_to_the_point.md), задача 5.
 
 Разбор команды вынесен в `src/utils/command-parse.ts` — тот самый, что был написан для
 сторожа удаления; второй не заводился. Проверяется имя в позиции команды, а запросы к БД

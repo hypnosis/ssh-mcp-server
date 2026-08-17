@@ -1,14 +1,16 @@
 /**
- * Сверка переданных файлов по хэшам
+ * Verify transferred files by hash.
  *
- * Один способ на все случаи: имена файлов идут аргументами, сервер печатает
- * хэши, сравнение происходит у нас. Так работает и coreutils, и BusyBox —
- * длинные опции (`--quiet`) и приём манифеста на stdin (`sha256sum -c -`)
- * нужны не везде, а на встраиваемых системах их нет вовсе.
+ * One approach for every case: file names go in as arguments, the server
+ * prints hashes, the comparison happens on our side. This works on both
+ * coreutils and BusyBox — long options (`--quiet`) and taking a manifest on
+ * stdin (`sha256sum -c -`) aren't available everywhere, and embedded systems
+ * have neither at all.
  *
- * Исходов ровно три, и они не смешиваются: сошлось, не сошлось, проверить
- * нечем. Раньше «нечем» приходило кодом 127 и текстом в stderr, а искали его
- * в stdout — и передача на сервер без sha256sum выглядела как испорченная.
+ * There are exactly three outcomes, and they never mix: matched, mismatched,
+ * nothing to verify with. "Nothing to verify with" arrives as exit code 127
+ * with text on stderr, not on stdout — mistaking that for a mismatch would
+ * make a transfer to a server without sha256sum look corrupted.
  */
 
 import { invalidatePassport, passportKey, type Sha256Tool } from '../runner/passport.js';
@@ -17,34 +19,35 @@ import type { SSHConfig } from '../utils/ssh-config.js';
 import { shellQuote } from '../utils/shell-arg.js';
 import type { SSHExecuteResult, SSHExecutor } from './ssh-executor.js';
 
-/** Сколько имён отдаём одной команде */
+/** How many names go into a single command */
 const MAX_PATHS_PER_COMMAND = 100;
 /**
- * Предел длины команды в байтах — считается то, что уедет на сервер, а не
- * длина пути в знаках. Ядро Linux не принимает строку длиннее 128 KiB
- * (замерено на обоих серверах лаборатории), встраиваемые системы обрывают
- * раньше, поэтому берём вчетверо меньше потолка.
+ * Command length limit in bytes — this counts what actually goes over the
+ * wire to the server, not the path length in characters. The Linux kernel
+ * rejects a line longer than 128 KiB, embedded systems cut off sooner, so
+ * we stay at a quarter of the ceiling.
  */
 const MAX_COMMAND_LENGTH = 32 * 1024;
-/** Обвязка `sudo <shell> -c '…'`, в которую исполнитель заворачивает команду */
+/** The `sudo <shell> -c '…'` wrapper the executor wraps the command in */
 const SUDO_WRAPPER_BYTES = 15;
-/** Код возврата shell, когда программы нет на месте */
+/** Shell exit code when the program is not found */
 const COMMAND_NOT_FOUND = 127;
 /**
- * Команду убил сторож времени, и ответ неполный.
+ * The timeout guard killed the command, and the answer is incomplete.
  *
- * Замерено: coreutils возвращает 124, BusyBox — 143 (это 128 + SIGTERM), и
- * работу убивают оба. Без этой проверки недосчитанные хэши читались как
- * расхождение, а по расхождению установщик сносит уже уехавшее дерево.
+ * coreutils returns 124, BusyBox returns 143 (that's 128 + SIGTERM), and
+ * both mean the job was actually killed. Without this check, hashes that
+ * never came back read as a mismatch, and a mismatch makes the installer
+ * tear down a tree that already made it to the server.
  */
 const GUARD_KILLED_EXIT_CODES = [124, 143];
 /**
- * Имена, которые разбор по строкам не восстановит.
+ * Names that line-based parsing cannot recover.
  *
- * BusyBox печатает имя как есть, поэтому перевод строки внутри имени разрывает
- * строку вывода пополам и путь теряется (замерено на обоих серверах: дерево с
- * таким файлом объявлялось испорченным и сносилось). Такие файлы спрашиваем по
- * одному — тогда имя разбирать не нужно, оно известно нам заранее.
+ * BusyBox prints the name verbatim, so a newline inside a name splits the
+ * output line in two and the path is lost — a tree containing such a file
+ * would be declared corrupted and torn down. Such files are asked about one
+ * at a time — then there's no need to parse the name, we already know it.
  */
 const NAME_BREAKS_LINES = /[\n\r]/;
 
@@ -56,10 +59,10 @@ export interface VerifyEntry {
 export interface VerifyOptions {
   sudo?: boolean;
   /**
-   * Потолок на хеширование, миллисекунды. Ноль — потолка нет, и это здесь
-   * значение по умолчанию: время сверки задаёт объём данных, а не сеть.
-   * Общие для команд 30 секунд обрывали бы дерево на несколько гигабайт —
-   * причём уже после успешной передачи.
+   * Ceiling on hashing, in milliseconds. Zero means no ceiling, and that's
+   * the default here: verification time is set by the data volume, not the
+   * network. A blanket 30 seconds for commands would cut off a tree of
+   * several gigabytes — after the transfer had already succeeded.
    */
   timeoutMs?: number;
 }
@@ -70,10 +73,11 @@ export type VerifyOutcome =
   | { status: 'unavailable'; reason: string };
 
 /**
- * Ответ, по которому судить нельзя: часть хэшей не получена.
+ * An answer that cannot be judged: part of the hashes were never received.
  *
- * Все три исхода означают «проверить нечем» и никогда — «не сошлось»:
- * по расхождению установщик сносит уже уехавшее дерево.
+ * All three outcomes mean "nothing to verify with" and never "mismatched":
+ * a mismatch makes the installer tear down a tree that already made it to
+ * the server.
  */
 type IncompleteAnswer = 'truncated' | 'guard-killed' | 'deadline';
 
@@ -82,12 +86,13 @@ function isIncomplete(answer: unknown): answer is IncompleteAnswer {
 }
 
 /**
- * Сколько времени остаётся у всей сверки.
+ * How much time is left for the whole verification.
  *
- * Срок принадлежит операции целиком: тот же потолок на каждой команде означал
- * бы, что обещанный срок множится на число команд, а их число задаёт длина
- * списка. Ноль на входе — «потолка нет», и тогда часов не заводим вовсе: так
- * зовут сверку деревьев на гигабайты.
+ * The deadline belongs to the operation as a whole: the same ceiling on
+ * every command would mean the promised deadline gets multiplied by the
+ * number of commands, and that number is set by the list length. Zero on
+ * input means "no ceiling", and then we don't start a clock at all — that's
+ * how verification of multi-gigabyte trees is invoked.
  */
 function startDeadline(timeoutMs: number | undefined): (() => number) | null {
   if (!timeoutMs) return null;
@@ -96,11 +101,11 @@ function startDeadline(timeoutMs: number | undefined): (() => number) | null {
 }
 
 /**
- * Сверить файлы на сервере с локально посчитанными хэшами.
+ * Verify files on the server against locally computed hashes.
  *
- * Не бросает на неудачной проверке: несовпадение — это ответ, по которому
- * вызывающий решает сам (одному нужно откатить установку, другому — только
- * предупредить).
+ * Does not throw on a failed check: a mismatch is an answer the caller
+ * decides what to do with (one caller needs to roll back the install,
+ * another just needs a warning).
  */
 export async function verifyRemoteFiles(
   executor: SSHExecutor,
@@ -109,12 +114,12 @@ export async function verifyRemoteFiles(
   options: VerifyOptions
 ): Promise<VerifyOutcome> {
   if (entries.length === 0) {
-    // Пустой список — это не «всё сошлось»: скорее всего файлы не нашлись
+    // An empty list is not "everything matched": the files most likely weren't found
     return { status: 'unavailable', reason: 'there were no files to verify' };
   }
 
-  // Часы пускаются до пробы паспорта: она тоже идёт на сервер и тоже занимает
-  // обещанное пользователю время
+  // The clock starts before the passport probe: it also goes to the server
+  // and also eats into the time promised to the user
   const remaining = startDeadline(options.timeoutMs);
 
   const passport = await executor.passport(config);
@@ -141,8 +146,8 @@ export async function verifyRemoteFiles(
   }
 
   if (remoteHashes === 'tool-missing') {
-    // Паспорт обещал утилиту, а её нет: сервер изменился под нами.
-    // Забываем запись и спрашиваем заново — вдруг остался openssl.
+    // The passport promised a tool that isn't there: the server changed
+    // under us. Forget the cached entry and ask again — openssl may still be there.
     invalidatePassport(passportKey(config));
     const refreshed = await executor.passport(config);
 
@@ -171,10 +176,11 @@ export async function verifyRemoteFiles(
 }
 
 /**
- * Почему ответ сервера неполон.
+ * Why the server's answer is incomplete.
  *
- * Неполный ответ обязан читаться как «проверить нечем»: иначе недостающие
- * хэши выглядят как испорченные файлы, и установщик сносит целые данные.
+ * An incomplete answer must read as "nothing to verify with": otherwise
+ * missing hashes look like corrupted files, and the installer tears down
+ * data that is intact.
  */
 function incompleteReason(outcome: IncompleteAnswer): string {
   if (outcome === 'truncated') return 'the hashing output did not fit the transport buffer';
@@ -182,7 +188,7 @@ function incompleteReason(outcome: IncompleteAnswer): string {
   return 'the time allowed for verification ran out before all hashes were read';
 }
 
-/** Спросить у сервера хэши всех файлов, разбив список на посильные команды */
+/** Ask the server for the hashes of all files, splitting the list into commands it can handle */
 async function collectRemoteHashes(
   executor: SSHExecutor,
   config: SSHConfig,
@@ -202,9 +208,9 @@ async function collectRemoteHashes(
     });
 
   /**
-   * Сколько времени вправе занять очередная команда. `null` — срок вышел,
-   * спрашивать больше нечего; ноль означает «потолка нет» и уезжает в
-   * исполнитель как есть.
+   * How much time the next command is allowed to take. `null` means the
+   * deadline has passed and there's nothing left to ask; zero means "no
+   * ceiling" and is passed to the executor as is.
    */
   const budget = (): number | null => {
     if (!remaining) return 0;
@@ -213,12 +219,14 @@ async function collectRemoteHashes(
   };
 
   /**
-   * Спросить хэши, не выходя за общий срок.
+   * Ask for hashes without exceeding the overall deadline.
    *
-   * `'deadline'` возвращается в двух случаях: времени не осталось ещё до
-   * команды и команду убил наш же сторож — на исходе срока ей достаются
-   * последние миллисекунды. Оба — «проверить нечем»: ошибка наверх означала бы
-   * провал передачи, по которому установщик сносит уже уехавшее дерево.
+   * `'deadline'` is returned in two cases: no time was left even before the
+   * command ran, and the command was killed by our own guard — near the end
+   * of the deadline it gets only the last few milliseconds. Both mean
+   * "nothing to verify with": propagating the error would read as a failed
+   * transfer, and a failed transfer makes the installer tear down a tree
+   * that already made it to the server.
    */
   const askWithin = async (chunk: string[]): Promise<SSHExecuteResult | 'deadline'> => {
     const left = budget();
@@ -232,7 +240,7 @@ async function collectRemoteHashes(
     }
   };
 
-  /** Ненулевой код — норма: нечитаемый файл не отменяет остальные хэши */
+  /** A non-zero exit code is normal: an unreadable file doesn't cancel the rest of the hashes */
   const note = (exitCode: number, stderr: string) => {
     if (exitCode !== 0) logger.debug(`[Verify] hashing reported exit ${exitCode}: ${stderr.trim()}`);
   };
@@ -249,8 +257,9 @@ async function collectRemoteHashes(
 
     if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';
     if (GUARD_KILLED_EXIT_CODES.includes(result.exitCode)) return 'guard-killed';
-    // Буфер транспорта режет хвост вывода: недостающие хэши выглядели бы как
-    // расхождение, а по расхождению установщик сносит уже уехавшее дерево
+    // The transport buffer cuts off the tail of the output: missing hashes
+    // would look like a mismatch, and a mismatch makes the installer tear
+    // down a tree that already made it to the server
     if (result.truncated) return 'truncated';
     note(result.exitCode, result.stderr);
 
@@ -274,26 +283,25 @@ async function collectRemoteHashes(
 }
 
 /**
- * Начало команды до первого имени.
+ * The start of the command, up to the first name.
  *
- * `--` защищает от имени, начинающегося с дефиса; openssl такого разделителя
- * не знает.
+ * `--` guards against a name starting with a dash; openssl has no such separator.
  */
 function commandPrefix(tool: Exclude<Sha256Tool, 'none'>): string {
   return tool === 'sha256sum' ? 'sha256sum -- ' : 'openssl dgst -sha256 ';
 }
 
-/** Команда, печатающая хэши списка файлов */
+/** The command that prints the hashes of a list of files */
 function buildHashCommand(tool: Exclude<Sha256Tool, 'none'>, paths: string[]): string {
   return commandPrefix(tool) + paths.map(shellQuote).join(' ');
 }
 
 /**
- * Разобрать вывод любого из двух инструментов.
+ * Parse the output of either of the two tools.
  *
- * sha256sum печатает `<hex>␣␣<путь>`, openssl — `SHA2-256(<путь>)= <hex>`
- * (в версиях до третьей — `SHA256(...)`). Строки, не похожие ни на одну из
- * форм, игнорируются: там может быть баннер или жалоба на нечитаемый файл.
+ * sha256sum prints `<hex>␣␣<path>`, openssl prints `SHA2-256(<path>)= <hex>`
+ * (before version 3, `SHA256(...)`). Lines that match neither form are
+ * ignored: they may be a banner or a complaint about an unreadable file.
  */
 function parseHashOutput(stdout: string): Map<string, string> {
   const hashes = new Map<string, string>();
@@ -313,32 +321,34 @@ function parseHashOutput(stdout: string): Map<string, string> {
 }
 
 /**
- * Вернуть имени исходный вид.
+ * Restore a name to its original form.
  *
- * coreutils, встретив в имени обратный слэш, перевод строки или возврат
- * каретки, ставит перед хэшем `\` и экранирует внутри ровно эти три символа
- * (замерено: остальные — кавычка, апостроф, табуляция, звёздочка — идут как
- * есть). Без обратного разбора файл `a\b.txt` не находился в ответе сервера,
- * сверка объявляла расхождение и установщик сносил уже уехавшее дерево.
+ * When coreutils meets a backslash, newline, or carriage return in a name,
+ * it puts `\` before the hash and escapes exactly those three characters
+ * inside the name (the rest — quote, apostrophe, tab, asterisk — pass
+ * through as is). Without reversing this, a file like `a\b.txt` would not
+ * be found in the server's answer, verification would report a mismatch,
+ * and the installer would tear down a tree that already made it to the server.
  *
- * Здесь встречается только обратный слэш: имена с переводом строки и возвратом
- * каретки до общего разбора не доходят — их спрашивают по одному.
+ * Only the backslash shows up here: names with a newline or carriage return
+ * never reach the common parsing path — they're asked about one at a time.
  */
 function unescapeName(name: string): string {
   return name.replace(/\\\\/g, '\\');
 }
 
 /**
- * Хэш из ответа на команду про один-единственный файл.
+ * The hash from the answer to a command about a single file.
  *
- * Имя здесь не разбирается вовсе — оно известно вызывающему, а в выводе может
- * быть разорвано переводом строки. Зато важно, чем считали: имя файла способно
- * повторять форму чужой утилиты. Проверено — при разборе «сначала sha256sum,
- * потом openssl» файл с именем `x⏎<64 знака>␣␣y.txt` на сервере с одним openssl
- * объявлялся сошедшимся по хэшу, взятому из собственного имени.
+ * The name isn't parsed here at all — the caller already knows it, and in
+ * the output it may be split by a newline. What matters instead is which
+ * tool produced the output: a file name can imitate the other tool's
+ * format. Parsing "try sha256sum, then openssl" against a file named
+ * `x⏎<64 chars>␣␣y.txt` on a server with only openssl would report a match
+ * using a hash taken from the file's own name.
  *
- * У sha256sum хэш открывает вывод, у openssl — закрывает строку, поэтому берём
- * первое и последнее вхождение соответственно.
+ * For sha256sum the hash opens the output, for openssl it closes the line,
+ * so we take the first and last occurrence respectively.
  */
 function hashOfSingleOutput(stdout: string, tool: Exclude<Sha256Tool, 'none'>): string | null {
   if (tool === 'openssl') {
@@ -346,13 +356,14 @@ function hashOfSingleOutput(stdout: string, tool: Exclude<Sha256Tool, 'none'>): 
     return openssl ? openssl[1].toLowerCase() : null;
   }
 
-  // Файл ровно один, значит хэш открывает вывод. Без якоря ответом сошла бы
-  // любая похожая строка ниже — например, кусок имени самого файла
+  // There's exactly one file, so the hash opens the output. Without the
+  // anchor, any similar-looking line further down would pass as a match —
+  // for instance a fragment of the file's own name
   const sum = /^\\?([0-9a-fA-F]{64})[ \t][ *]/.exec(stdout);
   return sum ? sum[1].toLowerCase() : null;
 }
 
-/** Сверить ожидаемое с полученным; молчание сервера о файле — тоже несовпадение */
+/** Compare expected against received; the server staying silent about a file also counts as a mismatch */
 function compare(entries: VerifyEntry[], remote: Map<string, string>): VerifyOutcome {
   const mismatched = entries
     .filter((entry) => remote.get(entry.path) !== entry.hash.toLowerCase())
@@ -362,9 +373,10 @@ function compare(entries: VerifyEntry[], remote: Map<string, string>): VerifyOut
 }
 
 /**
- * Во что имя обходится в строке команды: кавычки, экранирование внутри них и
- * пробел до соседа. Под sudo вся команда уезжает внутрь `sudo sh -c '…'`, то
- * есть каждое имя закавычивается второй раз, и апострофы в нём растут вчетверо.
+ * What a name costs in the command line: quoting, escaping inside it, and
+ * the space before the next one. Under sudo the whole command goes inside
+ * `sudo sh -c '…'`, so every name gets quoted a second time and its
+ * apostrophes quadruple.
  */
 function pathCost(path: string, sudo: boolean): number {
   const quoted = shellQuote(path);
@@ -372,11 +384,12 @@ function pathCost(path: string, sudo: boolean): number {
 }
 
 /**
- * Разбить список путей так, чтобы каждая команда влезла в предел.
+ * Split the path list so that each command stays within the limit.
  *
- * Считаются байты отправляемой строки: русское имя в UTF-8 весит вдвое больше
- * своей длины в знаках, имя из апострофов — вчетверо, а под sudo к этому
- * добавляется второй круг кавычек.
+ * What's counted are the bytes of the transmitted string: a non-ASCII name
+ * in UTF-8 weighs twice its length in characters, a name full of
+ * apostrophes weighs four times as much, and under sudo a second round of
+ * quoting adds on top of that.
  */
 function splitIntoCommands(
   paths: string[],

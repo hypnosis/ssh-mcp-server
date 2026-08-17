@@ -1,14 +1,14 @@
 /**
- * Куда ведёт удаление на самом деле
+ * Where a removal actually leads.
  *
- * По тексту команды видно имя, а не цель: `rm -rf /var/www/data/`, где
- * `data` — ссылка на `/`, читается как уборка каталога приложения, а на
- * coreutils опустошает корень. Единственный способ узнать правду — спросить
- * сервер, поэтому здесь один запрос: резолв путей через `readlink -f`.
+ * The command text shows a name, not a target: `rm -rf /var/www/data/`,
+ * where `data` is a link to `/`, reads as cleaning up an app directory, but
+ * on coreutils it wipes the root. The only way to know the truth is to ask
+ * the server, so there is one request here: resolving paths via `readlink -f`.
  *
- * Запрос делается только для целей со слэшем или `/*` на конце: замер на
- * лаборатории показал, что `rm -rf ссылка` без слэша удаляет саму ссылку и
- * ничего больше — проверять там нечего.
+ * The request is made only for targets ending in a slash or `/*`: `rm -rf
+ * link` without a trailing slash removes the link itself and nothing more
+ * — there's nothing to check there.
  */
 
 import type { SSHExecutor } from './ssh-executor.js';
@@ -16,7 +16,7 @@ import type { SSHConfig } from '../utils/ssh-config.js';
 import { shellQuote } from '../utils/shell-arg.js';
 import { classifyTarget, type RemovalTarget } from '../utils/destructive-command.js';
 
-/** Ответ сервера, у которого нет чем резолвить путь */
+/** Answer from a server that has nothing to resolve a path with */
 const NO_READLINK = 'SSH_MCP_NO_READLINK';
 
 export interface ResolutionVerdict {
@@ -25,11 +25,11 @@ export interface ResolutionVerdict {
 }
 
 /**
- * Проверить, куда ведут цели удаления.
+ * Check where removal targets actually lead.
  *
- * Три исхода не смешиваются: цель безопасна, цель ведёт в корень или
- * системное дерево, проверить нечем. Последнее — тоже отказ: незнание не
- * повод сносить, а повод спросить хозяина.
+ * Three outcomes, never mixed: the target is safe, the target leads into
+ * the root or a system tree, there is nothing to check with. The last one
+ * is also a block: not knowing is not a reason to proceed with removal, it's a reason to ask the owner.
  */
 export async function resolveRemovalTargets(
   executor: SSHExecutor,
@@ -41,7 +41,7 @@ export async function resolveRemovalTargets(
 
   const passport = await executor.passport(config);
 
-  // Пути идут по одному на строку, порядок сохраняется — по нему и сверяем
+  // Paths go one per line, and the order is preserved — that's what we match against
   const probes = targets
     .map((target) => `readlink -f -- ${shellQuote(target.path)} 2>/dev/null || echo`)
     .join('; ');

@@ -1,7 +1,7 @@
 /**
- * Logger для MCP Server
- * Выводит в stderr (stdout занят MCP протоколом)
- * 
+ * Logger for the MCP server
+ * Writes to stderr (stdout is taken by the MCP protocol)
+ *
  * ENV variables:
  * - SSH_MCP_LOG_LEVEL: debug, info, warn, error (default: info)
  * - SSH_MCP_LOG_TIMESTAMP: true, false (default: true)
@@ -22,21 +22,22 @@ interface ContextLogger {
 }
 
 /**
- * Секреты профилей, которым нельзя попадать в лог.
+ * Profile secrets that must never reach the log.
  *
- * Лог уходит в stderr, то есть прямо в вывод MCP-клиента. Сегодня код пишет
- * туда `hasPassword: true`, а не сам пароль, но это держится на внимательности:
- * одна строка `logger.debug('config:', config)` — и секрет в логе навсегда.
- * Сторож закрывает это в одной точке, независимо от длины секрета.
+ * The log goes to stderr, i.e. straight into the MCP client's output. Today
+ * the code writes `hasPassword: true` there, not the password itself, but
+ * that holds only as long as everyone stays careful: one line like
+ * `logger.debug('config:', config)` and the secret is in the log for good.
+ * The guard closes that off in a single place, regardless of the secret's length.
  */
 const loggedSecrets = new Set<string>();
 
 /**
- * Запомнить секрет, который логгер обязан вычищать из своего вывода.
+ * Remember a secret the logger must scrub from its output.
  *
- * Вместе с самим секретом запоминаем его печатную форму: `inspect` экранирует
- * обратный слэш и перевод строки, поэтому пароль `a\b` попадает в лог как
- * `a\\b` и поиск сырой подстроки его не находит (замерено).
+ * Along with the secret itself, its printed form is remembered too: `inspect`
+ * escapes backslashes and newlines, so a password `a\b` ends up in the log as
+ * `a\\b`, and searching for the raw substring would miss it.
  */
 export function hideFromLogs(secret: string | undefined): void {
   if (!secret) return;
@@ -46,7 +47,7 @@ export function hideFromLogs(secret: string | undefined): void {
   if (printed !== secret) loggedSecrets.add(printed);
 }
 
-/** Забыть все секреты — нужно тестам, чтобы прогоны не влияли друг на друга */
+/** Forget all secrets — needed by tests so runs don't affect each other */
 export function forgetLoggedSecrets(): void {
   loggedSecrets.clear();
 }
@@ -60,14 +61,14 @@ function maskSecrets(text: string): string {
 }
 
 /**
- * Очистить то, что печатается: строку — напрямую, объект — только если секрет
- * в нём действительно есть (иначе объект теряет читаемый вид на ровном месте).
+ * Clean up what's printed: a string directly, an object only if it actually
+ * contains a secret (otherwise the object would lose its readable shape for nothing).
  *
- * Смотрим на объект через `inspect`, а не через `JSON.stringify`: замер показал,
- * что сериализация в JSON пропускает секрет мимо сторожа сразу тремя путями —
- * `Error` превращается в `{}` (а текст с паролем живёт в message и stack),
- * циклическая ссылка бросает исключение, `Map` сериализуется в пустой объект.
- * `inspect` печатает ровно то же, что увидит человек в логе.
+ * Objects are viewed through `inspect` rather than `JSON.stringify`: JSON
+ * serialization lets a secret slip past the guard three separate ways — an
+ * `Error` turns into `{}` while the password text still lives in its message
+ * and stack, a circular reference throws, and a `Map` serializes to an empty
+ * object. `inspect` prints exactly what a human would see in the log.
  */
 function scrub(value: unknown): unknown {
   if (loggedSecrets.size === 0) return value;
@@ -84,8 +85,8 @@ class Logger {
 
   constructor() {
     // Read from environment variables
-    this.level = (process.env.SSH_MCP_LOG_LEVEL as LogLevel) || 
-                 (process.env.LOG_LEVEL as LogLevel) || 
+    this.level = (process.env.SSH_MCP_LOG_LEVEL as LogLevel) ||
+                 (process.env.LOG_LEVEL as LogLevel) ||
                  'info';
     this.enableTimestamp = process.env.SSH_MCP_LOG_TIMESTAMP !== 'false';
   }
@@ -99,17 +100,17 @@ class Logger {
     if (!this.shouldLog(level)) return;
 
     let prefix = '';
-    
+
     // Timestamp
     if (this.enableTimestamp) {
       const timestamp = new Date().toISOString();
       prefix += `[${timestamp}] `;
     }
-    
+
     // Level
     prefix += `[${level.toUpperCase()}]`;
-    
-    // MCP: stdout для протокола, stderr для логов
+
+    // MCP: stdout for the protocol, stderr for logs
     console.error(prefix, maskSecrets(message), ...args.map(scrub));
   }
 
@@ -128,12 +129,12 @@ class Logger {
   error(message: string, ...args: any[]): void {
     this.log('error', message, ...args);
   }
-  
+
   /**
    * Create context logger (scoped logger)
    * @param context - Context name (e.g. "ConnectionPool", "SSHExecutor")
    * @returns Context logger
-   * 
+   *
    * @example
    * const poolLogger = logger.context('ConnectionPool');
    * poolLogger.debug('Creating connection...');
@@ -147,12 +148,12 @@ class Logger {
       error: (msg: string, ...args: any[]) => this.error(`[${context}] ${msg}`, ...args)
     };
   }
-  
+
   /**
    * Performance timer
    * @param label - Timer label
    * @returns Function to end timer
-   * 
+   *
    * @example
    * const endTimer = logger.time('SSH Connect');
    * // ... connect logic
@@ -160,7 +161,7 @@ class Logger {
    */
   time(label: string): () => void {
     const start = Date.now();
-    
+
     return () => {
       const duration = Date.now() - start;
       this.debug(`[⏱️ ${label}] ${duration}ms`);

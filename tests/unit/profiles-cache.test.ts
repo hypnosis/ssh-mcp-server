@@ -10,6 +10,28 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
+/** Подменный домашний каталог: пустая строка означает настоящий */
+const fakeHome = vi.hoisted(() => ({ path: '' }));
+
+/** Пути, за которыми резолвер попросил следить */
+const watched = vi.hoisted(() => ({ paths: [] as string[] }));
+
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: () => fakeHome.path || actual.homedir() };
+});
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    watch: (path: string) => {
+      watched.paths.push(path);
+      return { close: () => {}, on: () => {} };
+    },
+  };
+});
+
 const ENV_VARS = [
   'SSH_PROFILES_FILE',
   'SSH_MCP_PROFILES_CACHE_TTL',
@@ -186,5 +208,63 @@ describe('тильда в пути к ключу раскрывается тол
     const { resolveSSHConfig } = await freshResolver({ SSH_PROFILES_FILE: path });
 
     expect(resolveSSHConfig({}).privateKeyPath).toBeUndefined();
+  });
+});
+
+describe('тильда в пути к самому файлу профилей', () => {
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = Object.fromEntries(ENV_VARS.map((name) => [name, process.env[name]]));
+    watched.paths.length = 0;
+  });
+
+  afterEach(() => {
+    for (const [name, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    fakeHome.path = '';
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    vi.resetModules();
+  });
+
+  /** Домашний каталог, в котором лежит файл профилей, доступный как `~/profiles.json` */
+  function homeWithProfiles(host: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'ssh-mcp-home-'));
+    tempDirs.push(dir);
+    fakeHome.path = dir;
+    rewrite(join(dir, 'profiles.json'), host);
+    return dir;
+  }
+
+  it('наблюдатель следит за раскрытым путём, а не за строкой с тильдой', async () => {
+    const home = homeWithProfiles('first.example.com');
+
+    await freshResolver({
+      SSH_PROFILES_FILE: '~/profiles.json',
+      SSH_MCP_PROFILES_WATCH: 'true',
+    });
+
+    expect(watched.paths).toEqual([join(home, 'profiles.json')]);
+  });
+
+  it('профили с пути под тильдой читаются', async () => {
+    homeWithProfiles('first.example.com');
+
+    const { resolveSSHConfig } = await freshResolver({ SSH_PROFILES_FILE: '~/profiles.json' });
+
+    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+  });
+
+  it('кэш узнаёт путь под тильдой и не перечитывает файл', async () => {
+    const home = homeWithProfiles('first.example.com');
+
+    const { resolveSSHConfig } = await freshResolver({ SSH_PROFILES_FILE: '~/profiles.json' });
+    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+
+    rewrite(join(home, 'profiles.json'), 'second.example.com');
+
+    expect(resolveSSHConfig({}).host).toBe('first.example.com');
   });
 });

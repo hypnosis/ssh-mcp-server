@@ -1,0 +1,29 @@
+version: 2
+
+updates:
+  # The runtime tree is one package deep — @modelcontextprotocol/sdk and what it
+  # pulls in. Everything else here is a build or test tool, so its updates are
+  # grouped into one pull request instead of arriving as a dozen.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
+  # The workflows pin actions by major version; this keeps those pins current
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore(ci)"

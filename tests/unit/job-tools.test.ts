@@ -28,7 +28,6 @@ vi.mock('../../src/managers/ssh-executor.js', async (importOriginal) => {
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: () => ({ host: 'example.com', username: 'deploy', port: 22 }),
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { JobTools } = await import('../../src/tools/job-tools.js');

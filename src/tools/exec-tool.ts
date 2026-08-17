@@ -143,7 +143,7 @@ export class ExecTool {
         properties: {
           profile: {
             type: 'string',
-            description: 'SSH profile name from SSH_PROFILES_FILE. If not specified, uses default profile.',
+            description: 'SSH profile name from SSH_PROFILES_FILE. Required: every profile is a different server, so none is assumed.',
           },
           command: {
             oneOf: [

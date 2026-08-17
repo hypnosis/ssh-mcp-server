@@ -89,10 +89,10 @@ describe('кэш профилей', () => {
       SSH_MCP_PROFILES_CACHE_TTL: '60000',
     });
 
-    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('first.example.com');
     rewrite(path, 'second.example.com');
 
-    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('first.example.com');
   });
 
   it('по истечении срока файл перечитывается', async () => {
@@ -102,10 +102,10 @@ describe('кэш профилей', () => {
       SSH_MCP_PROFILES_CACHE_TTL: '0',
     });
 
-    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('first.example.com');
     rewrite(path, 'second.example.com');
 
-    expect(resolveSSHConfig({}).host).toBe('second.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('second.example.com');
   });
 
   it('другой файл в окружении читается сразу, не дожидаясь срока', async () => {
@@ -116,10 +116,10 @@ describe('кэш профилей', () => {
       SSH_MCP_PROFILES_CACHE_TTL: '60000',
     });
 
-    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('first.example.com');
     process.env.SSH_PROFILES_FILE = second;
 
-    expect(resolveSSHConfig({}).host).toBe('second.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('second.example.com');
   });
 
   it('ручное перечитывание забывает кэш до срока', async () => {
@@ -129,11 +129,11 @@ describe('кэш профилей', () => {
       SSH_MCP_PROFILES_CACHE_TTL: '60000',
     });
 
-    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('first.example.com');
     rewrite(path, 'second.example.com');
     reloadProfiles();
 
-    expect(resolveSSHConfig({}).host).toBe('second.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('second.example.com');
   });
 
   it('без переменной окружения отказ называет её', async () => {
@@ -171,7 +171,7 @@ describe('тильда в пути к ключу раскрывается тол
     );
 
     const { resolveSSHConfig } = await freshResolver({ SSH_PROFILES_FILE: path });
-    return resolveSSHConfig({}).privateKeyPath;
+    return resolveSSHConfig({ profile: 'prod' }).privateKeyPath;
   }
 
   it('ведущая тильда становится домашним каталогом', async () => {
@@ -207,7 +207,7 @@ describe('тильда в пути к ключу раскрывается тол
 
     const { resolveSSHConfig } = await freshResolver({ SSH_PROFILES_FILE: path });
 
-    expect(resolveSSHConfig({}).privateKeyPath).toBeUndefined();
+    expect(resolveSSHConfig({ profile: 'prod' }).privateKeyPath).toBeUndefined();
   });
 });
 
@@ -254,17 +254,17 @@ describe('тильда в пути к самому файлу профилей',
 
     const { resolveSSHConfig } = await freshResolver({ SSH_PROFILES_FILE: '~/profiles.json' });
 
-    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('first.example.com');
   });
 
   it('кэш узнаёт путь под тильдой и не перечитывает файл', async () => {
     const home = homeWithProfiles('first.example.com');
 
     const { resolveSSHConfig } = await freshResolver({ SSH_PROFILES_FILE: '~/profiles.json' });
-    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('first.example.com');
 
     rewrite(join(home, 'profiles.json'), 'second.example.com');
 
-    expect(resolveSSHConfig({}).host).toBe('first.example.com');
+    expect(resolveSSHConfig({ profile: 'prod' }).host).toBe('first.example.com');
   });
 });

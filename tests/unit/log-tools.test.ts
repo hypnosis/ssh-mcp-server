@@ -39,7 +39,6 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
     return profile.config;
   },
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { LogTools } = await import('../../src/tools/log-tools.js');

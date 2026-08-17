@@ -37,7 +37,6 @@ vi.mock('../../src/runner/get-runner.js', () => ({
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: () => ({ host: 'example.com', username: 'deploy', port: 22 }),
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { SnapshotTool } = await import('../../src/tools/snapshot-tool.js');

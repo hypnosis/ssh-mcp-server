@@ -18,7 +18,6 @@ const {
   getRunnerMock,
   resolveConfigMock,
   getAvailableProfilesMock,
-  getDefaultProfileMock,
   getBrokenProfilesMock,
   reloadProfilesMock,
 } = vi.hoisted(() => ({
@@ -28,7 +27,6 @@ const {
   getRunnerMock: vi.fn(),
   resolveConfigMock: vi.fn(),
   getAvailableProfilesMock: vi.fn(),
-  getDefaultProfileMock: vi.fn(),
   getBrokenProfilesMock: vi.fn(),
   reloadProfilesMock: vi.fn(),
 }));
@@ -43,7 +41,6 @@ vi.mock('../../src/runner/control-sockets.js', () => ({
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: resolveConfigMock,
   getAvailableProfiles: getAvailableProfilesMock,
-  getDefaultProfile: getDefaultProfileMock,
   getBrokenProfiles: getBrokenProfilesMock,
   reloadProfiles: reloadProfilesMock,
 }));
@@ -82,11 +79,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   resolveConfigMock.mockReturnValue({ host: 'example.com', username: 'deploy', port: 2222 });
   statsMock.mockResolvedValue(stats());
-  pingMock.mockResolvedValue({ ok: true, masterWasActive: true, latencyMs: 42 });
+  pingMock.mockResolvedValue({ state: 'ready', masterWasActive: true, latencyMs: 42 });
   closeMasterMock.mockResolvedValue('closed');
   getRunnerMock.mockResolvedValue({ stats: statsMock, ping: pingMock, closeMaster: closeMasterMock });
   getAvailableProfilesMock.mockReturnValue(['production', 'staging']);
-  getDefaultProfileMock.mockReturnValue('production');
   getBrokenProfilesMock.mockReturnValue([]);
   reloadProfilesMock.mockReturnValue(undefined);
 });
@@ -108,11 +104,12 @@ describe('ssh_monitor reload', () => {
     expect(text).toContain('Loaded 3 profiles (was 1)');
   });
 
-  it('перечисляет профили и помечает тот, что по умолчанию', async () => {
+  it('перечисляет профили, никого не выделяя', async () => {
     const text = await textOf({ action: 'reload' });
 
-    expect(text).toContain('• production (default)');
+    expect(text).toContain('• production\n');
     expect(text).toContain('• staging\n');
+    expect(text).not.toMatch(/default/i);
   });
 
   it('несостоявшееся перечитывание подаётся ошибкой, а не пустым списком', async () => {
@@ -137,11 +134,12 @@ describe('ssh_monitor: действие, которого нет', () => {
 });
 
 describe('ssh_monitor list', () => {
-  it('помечает профиль по умолчанию, а остальные оставляет как есть', async () => {
+  it('перечисляет профили, никого не выделяя', async () => {
     const text = await textOf({ action: 'list' });
 
-    expect(text).toContain('• production ⭐ (default)');
+    expect(text).toContain('• production\n');
     expect(text).toContain('• staging\n');
+    expect(text).not.toMatch(/default/i);
   });
 
   it('итог называет число профилей', async () => {
@@ -166,12 +164,33 @@ describe('ssh_monitor list', () => {
   });
 });
 
+describe('действие без имени профиля не выбирает сервер само', () => {
+  it.each(['stats', 'test', 'close'])('%s отказывает и называет, из чего выбирать', async (action) => {
+    const response = await run({ action });
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toContain('production, staging');
+    expect(getRunnerMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['stats', 'test', 'close'])('%s не может прочитать профили — отказ называет причину', async (action) => {
+    getAvailableProfilesMock.mockImplementation(() => {
+      throw new Error('SSH profiles file not found: /etc/ssh-profiles.json');
+    });
+
+    const response = await run({ action });
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toContain('/etc/ssh-profiles.json');
+  });
+});
+
 describe('адрес сервера в отчётах', () => {
   it.each([
     ['stats', 'stats'],
     ['test', 'test'],
   ])('%s печатает порт профиля', async (_name, action) => {
-    expect(await textOf({ action })).toContain('example.com:2222');
+    expect(await textOf({ action, profile: 'production' })).toContain('example.com:2222');
   });
 
   it.each([
@@ -180,10 +199,100 @@ describe('адрес сервера в отчётах', () => {
   ])('%s печатает порт по умолчанию, когда в профиле его нет', async (_name, action) => {
     resolveConfigMock.mockReturnValue({ host: 'example.com', username: 'deploy' });
 
-    expect(await textOf({ action })).toContain('example.com:22');
+    expect(await textOf({ action, profile: 'production' })).toContain('example.com:22');
   });
 
   it('проверка связи называет пользователя, под которым входили', async () => {
-    expect(await textOf({ action: 'test' })).toContain('Username: deploy');
+    expect(await textOf({ action: 'test', profile: 'production' })).toContain('Username: deploy');
+  });
+});
+
+describe('ssh_monitor test называет состояние первым словом', () => {
+  const PING = {
+    ready: { state: 'ready', masterWasActive: true, latencyMs: 42 },
+    limited: {
+      state: 'limited',
+      masterWasActive: true,
+      latencyMs: 114,
+      exitCode: 127,
+      detail: 'Command::Base error[7405600]: no such command: true.',
+    },
+    'no-route': {
+      state: 'no-route',
+      masterWasActive: false,
+      latencyMs: 1316,
+      detail: 'Cannot reach example.com:2222. Connection refused',
+    },
+    rejected: {
+      state: 'rejected',
+      masterWasActive: false,
+      latencyMs: 900,
+      detail: 'Authentication failed for example.com:2222',
+    },
+  } as const;
+
+  it.each([
+    ['ready', '✅ ready'],
+    ['limited', '⚠️ limited'],
+    ['no-route', '❌ no-route'],
+    ['rejected', '❌ rejected'],
+  ] as const)('%s стоит в первой строке', async (state, headline) => {
+    pingMock.mockResolvedValue(PING[state]);
+
+    const text = await textOf({ action: 'test', profile: 'production' });
+
+    expect(text.split('\n')[0]).toContain(headline);
+  });
+
+  it('рабочее соединение с чужой оболочкой не названо молчанием', async () => {
+    pingMock.mockResolvedValue(PING.limited);
+
+    const text = await textOf({ action: 'test', profile: 'production' });
+
+    expect(text).not.toContain('not reached');
+    expect(text).toContain('exit code 127');
+    expect(text).toContain('no such command: true');
+    // Совет объясняет, чем такой сервер отличается: оболочка не POSIX,
+    // файловые инструменты не годятся, а ssh_exec с командами вендора — годится
+    expect(text).toContain('not POSIX');
+    expect(text).toContain('ssh_audit_baseline');
+    expect(text).toContain('ssh_exec');
+  });
+
+  it.each([
+    ['no-route', true],
+    ['rejected', true],
+    ['limited', false],
+    ['ready', false],
+  ] as const)('%s помечается ошибкой вызова: %s', async (state, expected) => {
+    pingMock.mockResolvedValue(PING[state]);
+
+    expect((await run({ action: 'test', profile: 'production' })).isError ?? false).toBe(expected);
+  });
+
+  it('отказ доступа не отправляет чинить сеть', async () => {
+    pingMock.mockResolvedValue(PING.rejected);
+
+    const text = await textOf({ action: 'test', profile: 'production' });
+
+    expect(text).toContain('the network is fine');
+  });
+
+  it('недостижимый сервер не отправляет чинить доступ', async () => {
+    pingMock.mockResolvedValue(PING['no-route']);
+
+    const text = await textOf({ action: 'test', profile: 'production' });
+
+    expect(text).toContain('credentials are not the problem');
+  });
+
+  it('исправному соединению советов не даётся', async () => {
+    pingMock.mockResolvedValue(PING.ready);
+
+    const text = await textOf({ action: 'test', profile: 'production' });
+
+    // Отчёт заканчивается строкой о соединении: пустой совет не печатается вовсе
+    expect(text.trimEnd().split('\n').at(-1)).toMatch(/connection$/);
+    expect(text).not.toContain('Check the');
   });
 });

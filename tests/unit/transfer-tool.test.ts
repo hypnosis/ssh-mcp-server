@@ -52,7 +52,6 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
     return profile.config;
   },
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { TransferTool } = await import('../../src/tools/transfer-tool.js');

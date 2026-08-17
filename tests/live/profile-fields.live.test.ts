@@ -116,7 +116,6 @@ const badPassphraseName = (server: LabServer) => `${server.name}-pass-bad`;
 await writeFile(
   profilesPath,
   JSON.stringify({
-    default: LAB_SERVERS[0].name,
     profiles: Object.fromEntries(
       LAB_SERVERS.flatMap((server) => {
         const base = {

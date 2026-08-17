@@ -15,18 +15,68 @@ import { getRunner } from '../runner/get-runner.js';
 import {
   getAvailableProfiles,
   getBrokenProfiles,
-  getDefaultProfile,
   reloadProfiles,
   resolveSSHConfig,
 } from '../utils/profile-resolver.js';
 import { describeBrokenProfile } from '../utils/profiles-file.js';
 import { logger } from '../utils/logger.js';
+import type { PingResult, PingState } from '../runner/types.js';
 import type { ToolResult } from '../utils/tool-result.js';
 
 /** ssh_monitor arguments, matching its inputSchema */
 interface MonitorArgs {
   action?: string;
   profile?: string;
+}
+
+/**
+ * The profile an action works on.
+ *
+ * Nothing is chosen on the caller's behalf: profiles are separate machines, and a guess
+ * would point the answer at a server nobody asked about.
+ */
+function requireProfile(profileName?: string): string {
+  if (profileName) {
+    return profileName;
+  }
+  // Listing the names is the whole point of the refusal: the caller has to pick one,
+  // and a file with no usable profile never loads in the first place.
+  const available = getAvailableProfiles();
+  throw new Error(`This action needs a profile. Name one explicitly: ${available.join(', ')}`);
+}
+
+/**
+ * What to do next, per state. Read before the details, so the state alone is enough to act on.
+ */
+const ADVICE: Record<PingState, string> = {
+  ready: '',
+  limited:
+    'Commands run, but the shell is not POSIX — the probe command "true" is unknown there. ' +
+    'Tools that assume POSIX utilities (file tools, ssh_audit_baseline) do not apply; plain ' +
+    'ssh_exec with the vendor\'s own commands does.',
+  'no-route':
+    'The server was never reached. Check the network, the host and the port — credentials are not the problem here.',
+  rejected:
+    'The server was reached and refused the login. Check the username, the key or password and known hosts — the network is fine.',
+};
+
+/**
+ * The first line of a connection report: the state, named, before any detail.
+ *
+ * A reader in a hurry must be able to act on this line alone — the old wording buried the
+ * outcome and once reported a working connection as "did not answer".
+ */
+function headlineFor(profile: string, result: PingResult): string {
+  switch (result.state) {
+    case 'ready':
+      return `✅ ready — ${profile} answered in ${result.latencyMs}ms`;
+    case 'limited':
+      return `⚠️ limited — ${profile} answered in ${result.latencyMs}ms, probe exit code ${result.exitCode}`;
+    case 'no-route':
+      return `❌ no-route — ${profile} was not reached in ${result.latencyMs}ms`;
+    case 'rejected':
+      return `❌ rejected — ${profile} refused the login in ${result.latencyMs}ms`;
+  }
 }
 
 export class MonitoringTool {
@@ -44,7 +94,7 @@ export class MonitoringTool {
           },
           profile: {
             type: 'string',
-            description: 'Profile name (for test and close actions)'
+            description: 'Profile name. Required for stats, test and close: each profile is a different server, so none is assumed.'
           }
         },
         required: ['action']
@@ -56,7 +106,7 @@ export class MonitoringTool {
     const args = (request.params.arguments ?? {}) as MonitorArgs;
     const action = args.action;
     
-    logger.debug(`[Monitoring Tool] Action: ${action}, profile: ${args.profile || 'default'}`);
+    logger.debug(`[Monitoring Tool] Action: ${action}, profile: ${args.profile || 'none given'}`);
     
     try {
       // Awaiting here is mandatory: without it a rejection would slip past the catch below
@@ -100,7 +150,7 @@ export class MonitoringTool {
    * our own counters to measure it with.
    */
   private async getStats(profileName?: string) {
-    const profile = profileName || getDefaultProfile();
+    const profile = requireProfile(profileName);
     const sshConfig = resolveSSHConfig({ profile });
     const runner = await getRunner(sshConfig);
     const stats = await runner.stats();
@@ -149,15 +199,13 @@ export class MonitoringTool {
       
       const afterCount = getAvailableProfiles().length;
       const profiles = getAvailableProfiles();
-      const defaultProfile = getDefaultProfile();
-      
+
       let output = '🔄 SSH Profiles Reloaded\n\n';
       output += `✅ Loaded ${afterCount} profiles (was ${beforeCount})\n\n`;
       output += `📋 Available Profiles:\n`;
-      
+
       for (const profile of profiles) {
-        const isDefault = profile === defaultProfile ? ' (default)' : '';
-        output += `  • ${profile}${isDefault}\n`;
+        output += `  • ${profile}\n`;
       }
       
       return {
@@ -176,24 +224,14 @@ export class MonitoringTool {
    * Test connection to profile
    */
   private async testConnection(profileName?: string) {
-    const profile = profileName || getDefaultProfile();
+    const profile = requireProfile(profileName);
 
     try {
       const sshConfig = resolveSSHConfig({ profile });
       const runner = await getRunner(sshConfig);
       const result = await runner.ping();
 
-      if (!result.ok) {
-        return {
-          content: [{
-            type: 'text',
-            text: `❌ Connection test failed: ${profile} did not answer in ${result.latencyMs}ms`
-          }],
-          isError: true
-        };
-      }
-
-      let output = `✅ Connection Test: ${profile}\n\n`;
+      let output = `${headlineFor(profile, result)}\n\n`;
       output += `Host: ${sshConfig.host}:${sshConfig.port || 22}\n`;
       output += `Username: ${sshConfig.username}\n`;
       output += `Latency: ${result.latencyMs}ms\n`;
@@ -203,8 +241,19 @@ export class MonitoringTool {
         ? `Reused an existing connection\n`
         : `Opened a new connection\n`;
 
+      const advice = ADVICE[result.state];
+      if (advice) {
+        output += `\n${advice}\n`;
+      }
+      if (result.detail) {
+        output += `\n${result.detail}\n`;
+      }
+
       return {
-        content: [{ type: 'text', text: output }]
+        content: [{ type: 'text', text: output }],
+        // Only a state the caller has to act on is an error. `limited` is a usable
+        // connection, and calling it a failure sends the reader fixing nothing.
+        isError: result.state === 'no-route' || result.state === 'rejected',
       };
 
     } catch (error: any) {
@@ -223,7 +272,7 @@ export class MonitoringTool {
    * deleting the file does not tear down the connection.
    */
   private async closeConnection(profileName?: string) {
-    const profile = profileName || getDefaultProfile();
+    const profile = requireProfile(profileName);
     const sshConfig = resolveSSHConfig({ profile });
     const destination = `${sshConfig.host}:${sshConfig.port || 22}`;
     const runner = await getRunner(sshConfig);
@@ -274,14 +323,12 @@ export class MonitoringTool {
    */
   private async listProfiles() {
     const profiles = getAvailableProfiles();
-    const defaultProfile = getDefaultProfile();
     const broken = getBrokenProfiles();
 
     let output = '📋 Available SSH Profiles\n\n';
 
     for (const profile of profiles) {
-      const isDefault = profile === defaultProfile ? ' ⭐ (default)' : '';
-      output += `• ${profile}${isDefault}\n`;
+      output += `• ${profile}\n`;
     }
 
     // Broken entries get their own list: they cannot be mistaken for working
@@ -289,8 +336,7 @@ export class MonitoringTool {
     if (broken.length > 0) {
       output += `\n⚠️ Broken (fix in SSH_PROFILES_FILE):\n`;
       for (const entry of broken) {
-        const isDefault = entry.name === defaultProfile ? ' (default)' : '';
-        output += `• ${entry.name}${isDefault} — ${describeBrokenProfile(entry)}\n`;
+        output += `• ${entry.name} — ${describeBrokenProfile(entry)}\n`;
       }
     }
 

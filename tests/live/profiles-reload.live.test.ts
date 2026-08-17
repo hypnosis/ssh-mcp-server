@@ -40,7 +40,6 @@ process.env.SSH_MCP_PROFILES_WATCH = 'false';
 
 function writeProfile(server: LabServer): void {
   writeFileSync(profilesFile, JSON.stringify({
-    default: 'lab',
     profiles: {
       lab: {
         host: '127.0.0.1',

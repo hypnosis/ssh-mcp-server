@@ -144,26 +144,23 @@ describe('записи, непригодные для SSH, отсеиваютс�
   });
 });
 
-describe('профиль по умолчанию', () => {
-  it('без указания берётся первый пригодный', () => {
+describe('загрузчик никого не выбирает за вызывающего', () => {
+  it('в конфигурации нет профиля по умолчанию', () => {
     const path = writeProfiles({ profiles: { first: VALID, second: VALID } });
 
-    expect(loadProfilesFile(path).config!.default).toBe('first');
+    const config = loadProfilesFile(path).config! as unknown as Record<string, unknown>;
+
+    expect(config.default).toBeUndefined();
   });
 
-  it('указание на непригодную запись переезжает к пригодной', () => {
-    const path = writeProfiles({
-      default: 'docker',
-      profiles: { docker: { ...VALID, mode: 'local' }, prod: VALID },
-    });
-
-    expect(loadProfilesFile(path).config!.default).toBe('prod');
-  });
-
-  it('указание на пригодную запись остаётся на ней', () => {
+  it('поле default в файле остаётся чужим полем и загрузку не меняет', () => {
     const path = writeProfiles({ default: 'second', profiles: { first: VALID, second: VALID } });
 
-    expect(loadProfilesFile(path).config!.default).toBe('second');
+    const result = loadProfilesFile(path);
+
+    expect(result.errors).toEqual([]);
+    expect(Object.keys(result.config!.profiles)).toEqual(['first', 'second']);
+    expect((result.config! as unknown as Record<string, unknown>).default).toBeUndefined();
   });
 });
 

@@ -74,7 +74,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetPassportCache();
   execMock.mockResolvedValue(result());
-  pingMock.mockResolvedValue({ ok: true, masterWasActive: false, latencyMs: 3 });
+  pingMock.mockResolvedValue({ state: 'ready', masterWasActive: false, latencyMs: 3 });
   passportMock.mockResolvedValue(UNKNOWN_PASSPORT);
   getRunnerMock.mockResolvedValue({ exec: execMock, ping: pingMock, passport: passportMock });
 });
@@ -301,7 +301,7 @@ describe('SSHExecutor: ошибки и проверка связи', () => {
   });
 
   it('недоступный сервер даёт false, а не исключение', async () => {
-    pingMock.mockResolvedValue({ ok: false, masterWasActive: false, latencyMs: 10 });
+    pingMock.mockResolvedValue({ state: 'no-route', masterWasActive: false, latencyMs: 10 });
 
     await expect(new SSHExecutor().testConnection(CONFIG)).resolves.toBe(false);
   });

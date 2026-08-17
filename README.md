@@ -49,7 +49,7 @@ The everyday jobs it was built for:
 - **Node.js 18+**
 - **A system `ssh` client on `PATH`** — nothing is bundled. Any OpenSSH will run; see the version table above for what each floor unlocks.
 
-`ssh_monitor({ action: "stats" })` reports the client version it found and whether multiplexing is active.
+`ssh_monitor({ action: "stats", profile: "production" })` reports the client version it found and whether multiplexing is active.
 
 ## Installation
 
@@ -78,7 +78,6 @@ Put it wherever you like. The examples below use `~/.claude/ssh-profiles.json` f
 
 ```json
 {
-  "default": "production",
   "profiles": {
     "production": {
       "host": "server.example.com",
@@ -96,9 +95,55 @@ Put it wherever you like. The examples below use `~/.claude/ssh-profiles.json` f
 }
 ```
 
-You can reuse the same file as the Docker MCP Server: profiles with `mode: "local"` are skipped, profiles with `host` and `username` are picked up.
+**Every call names its profile.** There is no profile the server falls back to: each one is a different machine, and a command sent to the wrong machine is not something an error message can undo afterwards. Ask without a name and the answer lists the names to choose from:
+
+```
+ssh_exec({ command: "uptime" })
+→ No profile specified. Name one explicitly: production, staging
+```
+
+A profile the server cannot use for SSH — no `host`, no `username`, or `mode: "local"` — is skipped without complaint, and fields it does not recognise are left alone, so the file can be shared with other tools. A profile with a **broken** field is a different case: it is named along with the field and the value, and its healthy neighbours keep working.
 
 Each profile optionally takes a `pathSecurity` block that whitelists or blacklists the paths file tools may touch — see [docs/security.md](docs/security.md#path-security).
+
+### Keep passwords out of the profiles file
+
+Prefer keys. Where a password — or an encrypted key — is unavoidable, the secret does not belong in the profiles file: that file gets copied, pasted into issues and committed by accident. Point at a secrets file instead, with `secretsFile` at the top level, per profile, or both:
+
+```json
+{
+  "secretsFile": "~/.config/ssh-mcp/secrets.json",
+  "profiles": {
+    "production": {
+      "host": "server.example.com",
+      "username": "admin"
+    },
+    "appliance": {
+      "host": "10.0.0.2",
+      "port": 2222,
+      "username": "operator",
+      "secretsFile": "./appliance-secret.json"
+    }
+  }
+}
+```
+
+The secrets file is keyed by profile name — see [secrets.json.example](secrets.json.example):
+
+```json
+{
+  "production": { "password": "..." },
+  "staging": { "passphrase": "..." }
+}
+```
+
+- **`chmod 600` is required.** The server refuses to read a secrets file that anyone but you can read, the same way `ssh` refuses a private key — and says which file and what to run.
+- A relative path is resolved **from the profiles file**, not from the working directory the client happened to start the server in.
+- A profile whose secrets file is missing, malformed or too permissive is reported as broken instead of quietly logging in without a password.
+- A profile named in `secretsFile` but absent from the file is fine — key-based profiles need no entry.
+- `password` and `passphrase` written directly in a profile still work, so existing setups keep running, but the secrets file wins and a warning is logged.
+
+The password never travels in `argv` — it reaches `ssh` through an askpass helper reading one environment variable, so `ps` does not show it — and it is masked in the logs. Details in [docs/security.md](docs/security.md#credentials-keep-the-secret-out-of-the-profiles-file).
 
 ### 2. Point your MCP client at it
 
@@ -149,7 +194,7 @@ Any other MCP client works too — it needs a command to run and one environment
 
 ### 3. Restart the client
 
-Done — the assistant can now reach your servers. Ask it to run `ssh_monitor({ action: "stats" })`: it reports the ssh client it found and whether multiplexing is active.
+Done — the assistant can now reach your servers. Ask it to run `ssh_monitor({ action: "list" })` to see the profile names it loaded, then `ssh_monitor({ action: "stats", profile: "production" })`: it reports the ssh client it found and whether multiplexing is active.
 
 ## Tools
 

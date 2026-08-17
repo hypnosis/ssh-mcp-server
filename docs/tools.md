@@ -4,6 +4,11 @@ Full usage reference for all 18 tools. The README gives a one-line-per-tool
 overview and the two most important warnings (binary transfer, destructive
 commands) — this file has the parameter tables and worked examples.
 
+**`profile` is required on every tool that touches a server.** Profiles are separate
+machines and none is assumed for you; a call without one is refused and the refusal lists
+the names to choose from. Where the profiles and their secrets live, and what makes a
+profile broken, is in [security.md](security.md#profiles-the-machine-is-always-named).
+
 ## Contents
 
 - [`ssh_exec`](#ssh_exec---execute-commands)
@@ -382,10 +387,15 @@ ssh_snapshot({
 
 ### `ssh_monitor` - Monitoring & Diagnostics
 
+Every action except `list` and `reload` names its profile: profiles are different
+machines, and none is assumed on your behalf. Ask without a name and the answer lists
+the names to choose from.
+
 ```typescript
 // Get transport statistics
 ssh_monitor({
-  action: "stats"
+  action: "stats",
+  profile: "production"
 })
 // Returns: backend, whether multiplexing works, ssh version, whether the master
 // connection is alive, and how many commands and transfers this session ran
@@ -401,13 +411,13 @@ ssh_monitor({
   action: "test",
   profile: "production"
 })
-// Tests connection and shows connect/command timings
+// Names the state first, then the timings
 
 // List available profiles
 ssh_monitor({
   action: "list"
 })
-// Shows all available profiles with default marked
+// Shows every loaded profile, plus the broken ones with the reason
 
 // Close the shared connection now, without waiting for it to idle out
 ssh_monitor({
@@ -418,6 +428,20 @@ ssh_monitor({
 // this machine — connections of other profiles outlive both this call and
 // the server itself
 ```
+
+**What `test` answers.** The first word is the state, so the line alone is enough to act
+on:
+
+| State | What it means | What to do |
+|---|---|---|
+| `✅ ready` | Logged in, POSIX commands run | Nothing |
+| `⚠️ limited` | Logged in, but the shell is the device's own CLI — the probe `true` is unknown there | Use `ssh_exec` with the vendor's commands; file tools and `ssh_audit_baseline` do not apply |
+| `❌ no-route` | The server was never reached | Check network, host and port — credentials are not the problem |
+| `❌ rejected` | Reached and refused the login | Check user, key or password and known hosts — the network is fine |
+
+Only `no-route` and `rejected` are reported as errors. `limited` is a working connection:
+routers and appliances answer that way, and calling it a failure would send you fixing
+nothing.
 
 ---
 

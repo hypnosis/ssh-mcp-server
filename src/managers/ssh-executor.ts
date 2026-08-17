@@ -164,13 +164,16 @@ export class SSHExecutor {
   }
 
   /**
-   * Test connection to server
+   * Whether commands can be sent through this config right now.
+   *
+   * A server whose shell is a vendor CLI counts as usable: it runs commands, it simply has
+   * no POSIX utilities for the probe to use.
    */
   async testConnection(config: SSHConfig): Promise<boolean> {
     try {
       const runner = await getRunner(config);
-      const result = await runner.ping();
-      return result.ok;
+      const { state } = await runner.ping();
+      return state === 'ready' || state === 'limited';
     } catch {
       return false;
     }

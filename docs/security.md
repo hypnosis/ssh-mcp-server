@@ -78,12 +78,86 @@ prepare the place again. So `rm -rf A B && mkdir -p A B` passes.
 A command coming from a file the server never read is outside all of this: the guard
 reads what it is given.
 
+## Profiles: the machine is always named
+
+A profile is a machine. There is no profile the server falls back to, and none is chosen
+on your behalf — every call names the profile it talks to. A call without a name is
+refused, and the refusal lists the names available to choose from.
+
+This is deliberate. When a default existed, the machine a command reached depended on the
+order of entries in the profiles file: adding an entry at the top silently moved every
+unnamed call to a different server. A command that ran on the wrong machine cannot be
+taken back afterwards, so guessing is not worth the keystrokes it saves.
+
+Two consequences worth knowing:
+
+- A profile the server cannot use for SSH — no `host`, no `username`, or `mode: "local"` —
+  is skipped without an error, and asking for it by name says "not found". Fields the
+  server does not recognise are left alone. A profiles file shared with other tools keeps
+  working.
+- A profile with a **broken** field (a port outside 1–65535, an unknown host-key policy, a
+  malformed `pathSecurity` or `secretsFile`) is a different case: it is reported by name,
+  field and value, and asking for it repeats that reason instead of quietly connecting
+  with a default. Its healthy neighbours in the same file keep working.
+
+## Credentials: keep the secret out of the profiles file
+
+Prefer keys. Where a password or an encrypted key is unavoidable, the secret does not
+belong in the profiles file — that file gets copied, pasted into issues and committed by
+accident. Point at a separate file instead, with `secretsFile` at the top level, per
+profile, or both:
+
+```json
+{
+  "secretsFile": "~/.config/ssh-mcp/secrets.json",
+  "profiles": {
+    "production": { "host": "server.example.com", "username": "admin" },
+    "appliance": {
+      "host": "10.0.0.2",
+      "port": 2222,
+      "username": "operator",
+      "secretsFile": "./appliance-secret.json"
+    }
+  }
+}
+```
+
+The secrets file is a flat JSON keyed by profile name:
+
+```json
+{
+  "production": { "password": "..." },
+  "staging": { "passphrase": "..." }
+}
+```
+
+What the server guarantees about it:
+
+- **`chmod 600` or it is not read.** A secrets file others can read is refused the way
+  `ssh` refuses a private key, and the refusal says which file and what to run.
+- **A relative path is resolved from the profiles file**, not from whatever directory the
+  MCP client happened to start the server in.
+- **An unreadable secret breaks the profile, loudly.** Missing file, malformed JSON, wrong
+  permissions — the profile is reported as broken rather than quietly connecting without a
+  password, which would fail later as a confusing authentication error.
+- **A profile with no entry in a shared secrets file is fine** — key-based profiles need
+  none.
+- **Inline `password` and `passphrase` still work**, so existing setups keep running, but
+  the secrets file wins and a warning is logged.
+
+**Where the secret travels.** Never in `argv`: the password is handed to `ssh` through an
+askpass helper that reads it from the environment of that one child process, so `ps` on
+the machine does not show it. It is not written to disk, and it is masked in this server's
+logs. With multiplexing on, it is asked for once per connection window rather than once
+per command. All of this is checked by the live suite, not only by unit tests.
+
 ## Recommendations
 
-1. **Use SSH keys** instead of passwords
+1. **Use SSH keys** instead of passwords; keep the passphrase in a secrets file
 2. **Limit user permissions** (use non-root user with sudo)
 3. **Regularly rotate keys**
-4. **Check MCP server logs**
+4. **Keep the profiles and secrets files outside any repository**
+5. **Check MCP server logs**
 
 ## Path handling & quoting
 

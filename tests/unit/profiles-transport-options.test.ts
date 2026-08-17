@@ -19,11 +19,11 @@ import type { SSHConfig } from '../../src/utils/ssh-config.js';
 const tempDirs: string[] = [];
 
 /** Записать файл профилей и вернуть путь к нему */
-function writeProfiles(profiles: Record<string, unknown>, defaultProfile = 'production'): string {
+function writeProfiles(profiles: Record<string, unknown>): string {
   const dir = mkdtempSync(join(tmpdir(), 'ssh-mcp-profiles-'));
   tempDirs.push(dir);
   const path = join(dir, 'profiles.json');
-  writeFileSync(path, JSON.stringify({ default: defaultProfile, profiles }), 'utf8');
+  writeFileSync(path, JSON.stringify({ profiles }), 'utf8');
   return path;
 }
 
@@ -347,8 +347,8 @@ describe('profiles file: поля входа доезжают до трансп�
  * Испорченный профиль рядом с исправным.
  *
  * Пока в файле остаётся хоть один пригодный профиль, ошибка соседнего не должна
- * теряться: иначе испорченный исчезает молча, а `default` съезжает на другой
- * сервер — и следующая команда без явного профиля уходит не туда.
+ * теряться: иначе испорченный исчезает из списка молча, и его отсутствие
+ * обнаружит только тот, кто позовёт его по имени.
  */
 describe('profiles file: испорченный профиль рядом с исправным', () => {
   /** Поле, порча которого признаётся ошибкой профиля, и след этой ошибки */
@@ -358,14 +358,11 @@ describe('profiles file: испорченный профиль рядом с и�
     ['ограничения на пути', { pathSecurity: { deniedPaths: '/root' } }, /pathSecurity/],
   ];
 
-  it.each(brokenFields)('ошибка видна, когда испорчен default (%s)', (_name, broken, trace) => {
-    const path = writeProfiles(
-      {
-        production: { host: 'example.com', username: 'deploy', ...broken },
-        staging: { host: 'staging.example.com', username: 'deploy' },
-      },
-      'production'
-    );
+  it.each(brokenFields)('ошибка видна, когда испорчен первый профиль (%s)', (_name, broken, trace) => {
+    const path = writeProfiles({
+      production: { host: 'example.com', username: 'deploy', ...broken },
+      staging: { host: 'staging.example.com', username: 'deploy' },
+    });
 
     const { config, errors } = loadProfilesFile(path);
 
@@ -374,14 +371,11 @@ describe('profiles file: испорченный профиль рядом с и�
     expect(config?.profiles.production).toBeUndefined();
   });
 
-  it.each(brokenFields)('ошибка видна, когда испорчен не default (%s)', (_name, broken, trace) => {
-    const path = writeProfiles(
-      {
-        production: { host: 'example.com', username: 'deploy' },
-        staging: { host: 'staging.example.com', username: 'deploy', ...broken },
-      },
-      'production'
-    );
+  it.each(brokenFields)('ошибка видна, когда испорчен второй профиль (%s)', (_name, broken, trace) => {
+    const path = writeProfiles({
+      production: { host: 'example.com', username: 'deploy' },
+      staging: { host: 'staging.example.com', username: 'deploy', ...broken },
+    });
 
     const { config, errors } = loadProfilesFile(path);
 
@@ -391,13 +385,10 @@ describe('profiles file: испорченный профиль рядом с и�
   });
 
   it('исправный профиль остаётся пригодным, а не исчезает вместе с ошибкой', () => {
-    const path = writeProfiles(
-      {
-        production: { host: 'example.com', username: 'deploy', port: 70000 },
-        staging: { host: 'staging.example.com', username: 'deploy', port: 2222 },
-      },
-      'production'
-    );
+    const path = writeProfiles({
+      production: { host: 'example.com', username: 'deploy', port: 70000 },
+      staging: { host: 'staging.example.com', username: 'deploy', port: 2222 },
+    });
 
     const { config, errors } = loadProfilesFile(path);
 

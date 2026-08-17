@@ -65,11 +65,31 @@ export interface TransferOptions {
 /**
  * Server reachability check result
  */
+/**
+ * What a profile can be used for right now.
+ *
+ * Named states rather than a boolean, because each one calls for a different next move and
+ * a boolean forced three different worlds into two values — which is how "answered with a
+ * non-zero code" came to be reported as "did not answer".
+ *
+ * - `ready`     logged in, commands run — work
+ * - `limited`   logged in, commands run, but the shell is not POSIX — work, and expect no
+ *               POSIX utilities (tools built on them do not apply)
+ * - `no-route`  never got there: port, network, timeout — fix connectivity, do not send commands
+ * - `rejected`  got there, was not let in: credentials or a server-side limit — fix access,
+ *               connectivity is fine
+ */
+export type PingState = 'ready' | 'limited' | 'no-route' | 'rejected';
+
 export interface PingResult {
-  ok: boolean;
+  state: PingState;
   /** Whether the master connection was already alive before the check */
   masterWasActive: boolean;
   latencyMs: number;
+  /** What the server or the client said. Absent when there was nothing to say */
+  detail?: string;
+  /** Exit code of the probe command — carried only by `limited` */
+  exitCode?: number;
 }
 
 /**

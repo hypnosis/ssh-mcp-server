@@ -34,10 +34,10 @@ async handleCall(request: CallToolRequest) {
 
 ### Инструменты с валидацией
 
-1. **ssh_exec** - параметр `command`
-2. **ssh_file_read** - параметр `path`
-3. **ssh_log_tail** - параметр `path`
-4. **ssh_log_search** - параметр `path`
+1. `ssh_exec` - параметр `command`
+2. `ssh_file_read` - параметр `path`
+3. `ssh_log_tail` - параметр `path`
+4. `ssh_log_search` - параметр `path`
 
 ## Что проверяет
 
@@ -155,6 +155,6 @@ mcp_ssh_ssh_exec({
 ## Файлы
 
 - `src/utils/array-validator.ts` - утилита валидации
-- `src/tools/exec-tool.ts` - использование в ssh_exec
-- `src/tools/file-tools.ts` - использование в ssh_file_read
-- `src/tools/log-tools.ts` - использование в ssh_log_tail и ssh_log_search
+- `src/tools/exec-tool.ts` - использование в `ssh_exec`
+- `src/tools/file-tools.ts` - использование в `ssh_file_read`
+- `src/tools/log-tools.ts` - использование в `ssh_log_tail` и `ssh_log_search`

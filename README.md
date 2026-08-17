@@ -1,6 +1,6 @@
 # SSH MCP Server
 
-An MCP server that lets AI assistants — Claude Desktop, Cursor, and anything else that speaks MCP — run commands, move files, and audit live servers over SSH, using the OpenSSH client, keys, and config already on your machine.
+An MCP server that lets an AI assistant — Claude Code, Codex, or anything else that speaks MCP — run commands, move files, and audit live servers over SSH, using the OpenSSH client, keys, and config already on your machine.
 
 [![npm version](https://img.shields.io/npm/v/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server)
 [![npm downloads](https://img.shields.io/npm/dm/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=CB3837&label=downloads)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server)
@@ -13,6 +13,20 @@ An MCP server that lets AI assistants — Claude Desktop, Cursor, and anything e
 **[Install](#installation) · [Quick start](#quick-start) · [Tools](#tools) · [Security](#security) · [Docs](docs/) · [Changelog](CHANGELOG.md)**
 
 ---
+
+## What it's for
+
+You already ask an assistant about your servers. Without this, it hands you a command to paste, waits for you to paste the output back, and repeats — you become the transport. With it, the assistant reaches the machine itself and gets structured answers back.
+
+The everyday jobs it was built for:
+
+- **Find out why something broke.** One `ssh_snapshot` call returns services, resources, docker, network and recent errors together, instead of a dozen commands typed one at a time.
+- **Audit a machine you inherited.** Disks, listening ports, firewall, pending updates, certificate expiry — batched into one round trip, read-only, with the findings already sorted into critical, warning and fine.
+- **Work through logs.** Tail or search several journals at once, with context lines and a cap that keeps the answer readable.
+- **Ship files.** A file or a whole directory, binary-safe, verified by sha256, put in place by atomic rename — never a half-written file where the old one used to be.
+- **Start work that outlives the conversation.** A migration or a backup keeps running after the call returns; job state lives on the remote disk, so it survives a restart of this server too.
+
+**Why not just give the assistant a shell?** Because a shell has no brakes and no memory of what it just did. Here every destructive command is checked before it leaves your machine, every transfer says plainly whether it could verify itself, and a broken pipe is reported as "could not check" instead of being passed off as success.
 
 ## Why this one
 
@@ -51,7 +65,7 @@ npx @hypnosis/ssh-mcp-server
 
 ### 1. Create a profile file
 
-`~/.cursor/ssh-profiles.json`:
+Put it wherever you like. The examples below use `~/.claude/ssh-profiles.json` for Claude Code and `~/.codex/ssh-profiles.json` for Codex:
 
 ```json
 {
@@ -79,7 +93,15 @@ Each profile optionally takes a `pathSecurity` block that whitelists or blacklis
 
 ### 2. Point your MCP client at it
 
-Any MCP client works. Cursor, in `~/.cursor/mcp.json`:
+**Claude Code** — one command, `-s user` makes the server available in every project:
+
+```bash
+claude mcp add ssh -s user \
+  -e SSH_PROFILES_FILE="$HOME/.claude/ssh-profiles.json" \
+  -- npx -y @hypnosis/ssh-mcp-server
+```
+
+Or write it into `~/.claude.json` by hand:
 
 ```json
 {
@@ -88,16 +110,37 @@ Any MCP client works. Cursor, in `~/.cursor/mcp.json`:
       "command": "npx",
       "args": ["-y", "@hypnosis/ssh-mcp-server"],
       "env": {
-        "SSH_PROFILES_FILE": "~/.cursor/ssh-profiles.json"
+        "SSH_PROFILES_FILE": "~/.claude/ssh-profiles.json"
       }
     }
   }
 }
 ```
 
+**Codex CLI** — same shape, TOML instead of JSON:
+
+```bash
+codex mcp add ssh \
+  --env SSH_PROFILES_FILE="$HOME/.codex/ssh-profiles.json" \
+  -- npx -y @hypnosis/ssh-mcp-server
+```
+
+Or write it into `~/.codex/config.toml` by hand:
+
+```toml
+[mcp_servers.ssh]
+command = "npx"
+args = ["-y", "@hypnosis/ssh-mcp-server"]
+
+[mcp_servers.ssh.env]
+SSH_PROFILES_FILE = "~/.codex/ssh-profiles.json"
+```
+
+Any other MCP client works too — it needs a command to run and one environment variable.
+
 ### 3. Restart the client
 
-Done — the assistant can now reach your servers.
+Done — the assistant can now reach your servers. Ask it to run `ssh_monitor({ action: "stats" })`: it reports the ssh client it found and whether multiplexing is active.
 
 ## Tools
 

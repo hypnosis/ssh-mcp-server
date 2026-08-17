@@ -63,7 +63,7 @@ Key choices:
 
 ## API
 
-### ssh_upload
+### `ssh_upload`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -82,7 +82,7 @@ Key choices:
 
 Returns a text block summarizing: `remote_path`, `bytes`, `sha256` (if verified), `atomic`, `sudo`. For directories, also `files_uploaded`.
 
-### ssh_download
+### `ssh_download`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

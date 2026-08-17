@@ -98,7 +98,7 @@ export class FileTools {
         name: 'ssh_file_read',
         description:
           'Read file(s) from remote server. Supports single file or batch reading. ' +
-          'For binaries use binary=true (reads via SFTP, returns base64). ' +
+          'For binaries use binary=true (reads via scp, returns base64). ' +
           'For large files prefer ssh_download.',
         inputSchema: {
           type: 'object',
@@ -123,7 +123,7 @@ export class FileTools {
             binary: {
               type: 'boolean',
               description:
-                'Read via SFTP and return base64 (binary-safe). Default: false. Implies encoding=base64.',
+                'Read via scp and return base64 (binary-safe). Default: false. Implies encoding=base64.',
               default: false,
             },
             sudo: {
@@ -143,7 +143,7 @@ export class FileTools {
           'Write file(s) to remote server. Supports single file or batch writing. ' +
           'Optional flags per file: verify (sha256 after write), atomic (ignored — the write always ' +
           'uses a temp path next to the target and renames into place), ' +
-          'binary (content is base64; uploaded via SFTP — required for binaries). ' +
+          'binary (content is base64; uploaded via scp — required for binaries). ' +
           'For files >256KB, binaries, or directories prefer ssh_upload.',
         inputSchema: {
           type: 'object',
@@ -174,7 +174,7 @@ export class FileTools {
                     binary: {
                       type: 'boolean',
                       description:
-                        'Content is base64-encoded; upload via SFTP. Default: false.',
+                        'Content is base64-encoded; upload via scp. Default: false.',
                     },
                   },
                   required: ['path', 'content'],

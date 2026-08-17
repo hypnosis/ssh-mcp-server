@@ -6,14 +6,14 @@ README covers what the tools do; this file covers how a call moves through the p
 ## Overview
 
 ```
-~/.cursor/mcp.json
+MCP client config (Claude Code, Codex, …)
       ↓
 SSH MCP Server (stdio)
       ↓
 MCP layer — one source for the tool list and the call routing
       ↓
 18 Tools (exec, file, job, log, snapshot, monitor, transfer, audit)
-      ↓                          ↘ Profile Resolver → ~/.cursor/ssh-profiles.json
+      ↓                          ↘ Profile Resolver → SSH_PROFILES_FILE
 SSH Executor (builds the command: sudo, cwd)
       ↓
 SSH Runner (system ssh/scp, one multiplexed connection per destination)

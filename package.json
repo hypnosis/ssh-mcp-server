@@ -1,7 +1,7 @@
 {
   "name": "@hypnosis/ssh-mcp-server",
   "version": "2.0.0",
-  "description": "SSH MCP Server - Universal tool for managing remote servers via AI assistants (Cursor, Claude Desktop). Supports command execution, file operations, log management and system health check.",
+  "description": "Run commands, move files, tail logs and audit live servers over SSH from an AI assistant (Claude Code, Codex, any MCP client). Uses the system OpenSSH client, keys and config.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -56,8 +56,9 @@
     "crond",
     "backups",
     "packages",
-    "cursor",
     "claude",
+    "claude-code",
+    "codex",
     "model-context-protocol"
   ],
   "author": "hypnosis",

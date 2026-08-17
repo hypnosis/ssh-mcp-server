@@ -1,65 +1,65 @@
 /**
- * Разбор разрушительных команд удаления
+ * Parses destructive removal commands
  *
- * Ловим не «страшное слово», а конкретную беду: удаление корня, домашнего
- * каталога или системного дерева — в том числе через символическую ссылку,
- * которую по тексту команды не видно вовсе.
+ * Catches not a "scary word" but a concrete disaster: removing the root, the
+ * home directory, or a system tree — including through a symlink that the
+ * command's text alone doesn't reveal.
  *
- * Замерено на лаборатории, и контейнеры разошлись:
- *   `rm -rf link`  — обе машины удаляют саму ссылку, цель цела;
- *   `rm -rf link/` — BusyBox тоже удаляет ссылку, а coreutils ОПУСТОШАЕТ цель.
- * Значит опасен завершающий слэш (и `link/*`), а `rm -rf link` — обычная
- * уборка, и блокировать её значило бы мешать работе. Решение принимается по
- * худшей из двух машин: пути со слэшем проверяются резолвом.
+ * `rm -rf link` removes the link itself on both BusyBox and coreutils,
+ * leaving the target intact. `rm -rf link/` (and `link/*`) behaves
+ * differently: BusyBox still removes just the link, but coreutils empties
+ * the target through it. That's why a trailing slash makes a path dangerous
+ * while a bare `rm -rf link` does not: paths with a trailing slash are
+ * resolved before the target is judged.
  *
- * Здесь только разбор строки, без обращений к серверу: чистые функции легко
- * закрыть тестами, а сеть добавляется одним слоем выше.
+ * This module only parses the string, with no calls to the server: pure
+ * functions are easy to cover with tests, and the network is added one layer up.
  */
 
 import { splitSegments, tokenize, unquote } from './command-parse.js';
 
-/** Маркер осознанного подтверждения — тот же приём, что у хука про перезагрузку */
+/** Confirmation marker for a deliberate override — the same device as the reboot hook's */
 export const CONFIRMATION_MARKER = '# CONFIRMED-DESTRUCTIVE';
 
 /**
- * Системные деревья: снести любое из них равносильно потере машины.
- * `/home` в списке нарочно: это дома всех пользователей, а не только своего.
+ * System trees: removing any one of them is as good as losing the machine.
+ * `/home` is in the list on purpose: it holds every user's home, not just one's own.
  */
 const SYSTEM_DIRS = [
   '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/boot', '/var', '/home', '/root', '/opt', '/srv',
 ];
 
-/** Что цель означает на самом деле */
+/** What a target actually means */
 export type TargetVerdict = 'root' | 'system' | 'home' | 'safe';
 
-/** Цель удаления, найденная в команде */
+/** A removal target found in the command */
 export interface RemovalTarget {
-  /** Аргумент как он написан в команде */
+  /** The argument exactly as written in the command */
   raw: string;
   /**
-   * Путь без завершающего слэша и без хвостовой `*` — то, что надо резолвить.
-   * Для `/var/www/data/` это `/var/www/data`.
+   * The path without a trailing slash and without a trailing `*` — the part
+   * that needs resolving. For `/var/www/data/` this is `/var/www/data`.
    */
   path: string;
   /**
-   * Затрагивается ли содержимое цели, а не сама ссылка: путь со слэшем на
-   * конце или с `/*`. Только в этом случае симлинк опасен.
+   * Whether the target's contents are affected rather than the link itself:
+   * a path with a trailing slash or with `/*`. Only in that case is a symlink dangerous.
    */
   followsLink: boolean;
-  /** Раскрывается сервером: переменная, подстановка, шаблон — разобрать нечем */
+  /** Expanded by the server: a variable, a substitution, a glob — nothing to parse here */
   expandable: boolean;
 }
 
-/** Подтверждена ли команда явным маркером */
+/** Whether the command carries the explicit confirmation marker */
 export function isConfirmed(command: string): boolean {
   return command.includes(CONFIRMATION_MARKER);
 }
 
 /**
- * Даёт ли набор флагов рекурсивное удаление.
+ * Whether a set of flags makes the removal recursive.
  *
- * `-f` не требуется: без него `rm -r /` спросит подтверждение только на
- * защищённых от записи файлах, а остальное снесёт молча.
+ * `-f` isn't required: without it `rm -r /` only asks for confirmation on
+ * write-protected files, and destroys the rest silently.
  */
 function isRecursive(tokens: string[]): boolean {
   for (const token of tokens) {
@@ -72,11 +72,11 @@ function isRecursive(tokens: string[]): boolean {
 }
 
 /**
- * Найти цели рекурсивного удаления во всей команде.
+ * Find recursive-removal targets across the whole command.
  *
- * Пустой список означает «в команде нет рекурсивного rm», а не «всё
- * безопасно»: команда могла быть непонятной формы, и это видно по флагу
- * `expandable` у найденных целей.
+ * An empty list means "no recursive rm in the command", not "everything is
+ * safe": the command could have been in an unrecognized form, which shows up
+ * as the `expandable` flag on the targets that were found.
  */
 export function findRemovalTargets(command: string): RemovalTarget[] {
   const targets: RemovalTarget[] = [];
@@ -85,7 +85,7 @@ export function findRemovalTargets(command: string): RemovalTarget[] {
     const tokens = tokenize(segment.trim());
     if (tokens.length === 0) continue;
 
-    // Команда может идти после sudo, env и через полный путь: /bin/rm
+    // The command may follow sudo, env, or a full path: /bin/rm
     let index = 0;
     while (index < tokens.length && /^(sudo|env|nohup|time)$/.test(tokens[index])) index += 1;
     const command0 = tokens[index];
@@ -101,7 +101,7 @@ export function findRemovalTargets(command: string): RemovalTarget[] {
       const raw = unquote(token);
       const expandable = /[$`]|\*|\?|\[/.test(raw);
 
-      // Хвостовая `*` — то же самое, что слэш: работа идёт с содержимым
+      // A trailing `*` is the same as a slash: the work is on the contents
       const starred = /\/\*+$/.test(raw);
       const slashed = raw.endsWith('/');
       const path = raw.replace(/\/\*+$/, '').replace(/\/+$/, '') || '/';
@@ -113,18 +113,18 @@ export function findRemovalTargets(command: string): RemovalTarget[] {
   return targets;
 }
 
-/** Нормализовать путь для сравнения: без хвостовых слэшей, `/` остаётся `/` */
+/** Normalize a path for comparison: no trailing slashes, `/` stays `/` */
 function normalize(path: string): string {
   const trimmed = path.replace(/\/+$/, '');
   return trimmed === '' ? '/' : trimmed;
 }
 
 /**
- * Что означает путь, если понимать его буквально.
+ * What a path means when read literally.
  *
- * `home` — домашний каталог из паспорта сервера. Пустая строка означает «не
- * знаем»: тогда `~` считается домом по написанию, а сравнить с настоящим
- * путём нечем.
+ * `home` is the home directory from the server's profile. An empty string
+ * means "unknown": then `~` is taken as home by how it's written, since
+ * there's nothing to compare it against.
  */
 export function classifyTarget(path: string, home = ''): TargetVerdict {
   const value = normalize(path.trim());
@@ -138,20 +138,20 @@ export function classifyTarget(path: string, home = ''): TargetVerdict {
   return 'safe';
 }
 
-/** Итог проверки одной команды */
+/** Verdict for one command */
 export interface DestructiveVerdict {
   blocked: boolean;
-  /** Человеческое объяснение: что именно и почему остановлено */
+  /** Human-readable explanation: what exactly was stopped, and why */
   reason?: string;
-  /** Цели, судьбу которых по строке не решить — нужен резолв на сервере */
+  /** Targets whose fate the text alone can't settle — they need resolving on the server */
   needsResolution: RemovalTarget[];
 }
 
 /**
- * Проверить команду по одному только тексту.
+ * Inspect a command from its text alone.
  *
- * Возвращает либо готовый отказ, либо список целей, которые надо резолвить
- * на сервере: симлинк виден только оттуда.
+ * Returns either a ready-made refusal, or a list of targets that need
+ * resolving on the server: a symlink is only visible from there.
  */
 export function inspectCommand(command: string, home = ''): DestructiveVerdict {
   if (isConfirmed(command)) return { blocked: false, needsResolution: [] };
@@ -169,9 +169,9 @@ export function inspectCommand(command: string, home = ''): DestructiveVerdict {
       };
     }
 
-    // Раскрытие делает сервер, и что там окажется — неизвестно. Пустая
-    // переменная превращает `rm -rf "$DIR"/*` в снос корня, поэтому такой
-    // случай не «безопасно», а «проверить нечем».
+    // Expansion happens on the server, and what ends up there is unknown. An
+    // empty variable turns `rm -rf "$DIR"/*` into wiping the root, so such a
+    // case isn't "safe" — it's "cannot be checked".
     if (target.expandable) {
       return {
         blocked: true,
@@ -202,10 +202,10 @@ function describe(verdict: TargetVerdict): string {
 }
 
 /**
- * Собрать отказ в том виде, в каком его прочитает агент.
+ * Build the refusal the way the agent will read it.
  *
- * Текст обязан говорить три вещи: команда НЕ выполнена, почему, и как
- * выполнить её осознанно, — иначе агент начнёт подбирать обходы.
+ * The text must say three things: the command was NOT run, why, and how to
+ * run it deliberately — otherwise the agent starts looking for a way around it.
  */
 export function blockedMessage(command: string, reason: string): string {
   return (

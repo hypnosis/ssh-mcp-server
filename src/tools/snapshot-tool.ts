@@ -10,6 +10,11 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { parseDfTable, dedupeByDevice } from '../utils/df-table.js';
 
+/** ssh_snapshot arguments, matching its inputSchema */
+interface SnapshotArgs {
+  profile?: string;
+}
+
 /**
  * Snapshot Tool
  */
@@ -42,12 +47,12 @@ export class SnapshotTool {
   /**
    * Handle tool call
    */
-  // Отмену снимок не берёт: сорванное чтение здесь заменяется пустым
-  // показателем, и отменённый вызов вернулся бы снимком с пустотами вместо
-  // отказа — то есть неполным ответом, выданным за полный
+  // The snapshot does not take a cancellation: a failed read is replaced here
+  // with an empty value, so a cancelled call would return a snapshot full of
+  // gaps instead of a refusal — a partial answer passed off as complete
   async handleCall(request: CallToolRequest): Promise<ToolResult> {
     try {
-      const args = request.params.arguments as any;
+      const args = (request.params.arguments ?? {}) as SnapshotArgs;
       const sshConfig = resolveSSHConfig({ profile: args.profile });
       
       logger.info('Collecting system snapshot...');
@@ -99,25 +104,25 @@ export class SnapshotTool {
   }
   
   /**
-   * Сколько чтений снимка идёт по соединению одновременно.
+   * How many snapshot reads run over the connection at once.
    *
-   * Залп из десяти мгновенных команд dropbear обрывает: часть каналов
-   * возвращается кодом 255 с пустым выводом и без текста ошибки. Обрыв лечит
-   * повтор в транспорте, а очередь нужна, чтобы не устраивать сервер этот залп:
-   * замер на стенде с dropbear дал шесть срывов на шесть снимков вместо
-   * тринадцати. OpenSSH-серверы десять одновременных чтений держат без потерь.
+   * A burst of ten instant commands drops connections on dropbear: some
+   * channels come back with exit code 255, empty output and no error text.
+   * The transport retries the drop, but the queue exists to avoid firing that
+   * burst at the server in the first place. OpenSSH servers hold up under ten
+   * concurrent reads without loss.
    */
   private static readonly READ_CONCURRENCY = 4;
 
-  /** Хвост очереди чтений: следующее ждёт, пока освободится место */
+  /** Tail of the read queue: the next one waits for a slot to free up */
   private readSlots: Array<Promise<void>> = [];
 
   /**
    * Read a value from the server.
    *
-   * Снимок состоит из независимых чтений: неудача одного не должна отменять
-   * остальные, поэтому вместо исключения возвращается запасное значение.
-   * Все команды снимка — только чтение, поэтому повтор при обрыве связи безопасен.
+   * The snapshot consists of independent reads: one failing must not cancel
+   * the rest, so a fallback value is returned instead of an exception. Every
+   * snapshot command is read-only, so retrying on a dropped connection is safe.
    */
   private async read(
     config: any,
@@ -138,15 +143,16 @@ export class SnapshotTool {
 
         return result.stdout.trim();
       } catch (error: any) {
-        // Сорванное чтение — это пустой показатель, а не пустой снимок:
-        // оборвись канал дважды подряд, отчёт целиком заменялся строкой ошибки
+        // A failed read is an empty value, not an empty snapshot: if the
+        // channel drops twice in a row, the whole report would otherwise get
+        // replaced by an error string
         logger.debug(`[Snapshot] "${command}" failed: ${error?.message ?? error}`);
         return options.fallback ?? '';
       }
     });
   }
 
-  /** Пропустить работу, когда одновременных чтений станет меньше предела */
+  /** Let work through once concurrent reads drop below the limit */
   private async withSlot<T>(work: () => Promise<T>): Promise<T> {
     while (this.readSlots.length >= SnapshotTool.READ_CONCURRENCY) {
       await Promise.race(this.readSlots);
@@ -197,19 +203,19 @@ export class SnapshotTool {
     const services = ['nginx', 'apache2', 'docker', 'postgresql', 'mysql', 'redis', 'mongodb'];
     const results: Array<{ name: string; status: string; uptime: string | null }> = [];
 
-    // Без systemctl каждая проверка отвечает «inactive», и сервер без systemd
-    // выглядит сервером, где ни одна служба не работает
+    // Without systemctl, every check answers "inactive", and a server
+    // without systemd looks like a server where not a single service is running
     const systemctl = await this.read(
       config,
       'command -v systemctl >/dev/null 2>&1 && echo yes || echo no',
     );
     if (systemctl !== 'yes') return { checked: false, reason: 'no systemctl on the server', items: [] };
 
-    // Команда на месте, а шина может молчать. Тогда каждая проверка службы
-    // отвечает ошибкой, `|| echo inactive` превращает её в «остановлена», и
-    // непроверенный сервер печатается как сервер без единой работающей службы.
-    // Проба спрашивает про сам systemd, а не про юнит: ответ «нет такого юнита»
-    // не должен читаться как молчание шины
+    // The command is present, but the bus can be silent. Then every service
+    // check answers with an error, `|| echo inactive` turns that into
+    // "stopped", and an unchecked server prints as a server without a single
+    // running service. The probe asks about systemd itself, not about a
+    // unit: an answer of "no such unit" must not be read as the bus being silent
     const bus = await this.read(config, 'systemctl show --property=Version 2>&1 || true');
     if (SnapshotTool.SYSTEMD_SILENT.test(bus)) {
       return { checked: false, reason: 'systemd did not answer on this server', items: [] };
@@ -221,8 +227,8 @@ export class SnapshotTool {
         `systemctl is-active ${service} 2>/dev/null || echo inactive`,
       );
 
-      // Пустой ответ — это сорванное чтение, а не остановленная служба:
-      // молча пропав из списка, она выглядела бы проверенной
+      // An empty answer is a failed read, not a stopped service: silently
+      // dropped from the list, it would look as if it had been checked
       if (!status) {
         results.push({ name: service, status: 'unknown', uptime: null });
         continue;
@@ -240,7 +246,7 @@ export class SnapshotTool {
     return { checked: true, items: results };
   }
 
-  /** Ответы, которыми systemctl сообщает, что шина systemd ему не отвечает */
+  /** Answers by which systemctl reports that the systemd bus is not answering it */
   private static readonly SYSTEMD_SILENT =
     /has not been booted|Failed to connect to bus|Access denied/i;
 
@@ -252,13 +258,14 @@ export class SnapshotTool {
       ): Promise<{ cores: number | null; usage: number | null; loadAvg: string | null }> {
     const coresOutput = await this.read(config, 'nproc');
     const loadOutput = await this.read(config, 'cat /proc/loadavg');
-    // Строка сводки разбирается здесь, а не колонкой в awk: у procps она
-    // «%Cpu(s): … 95.1 id», у BusyBox «CPU: … 99% idle», и вырезанная вслепую
-    // вторая колонка на BusyBox приносила число из таблицы процессов
+    // The summary line is parsed here rather than by column in awk: for
+    // procps it reads "%Cpu(s): … 95.1 id", for BusyBox "CPU: … 99% idle",
+    // and blindly cutting the second column on BusyBox would pull a number
+    // out of the process table instead
     const topOutput = await this.read(config, 'top -bn1 2>/dev/null | head -6');
 
-    // Нечитанное число ядер — это не ноль ядер: пустой ответ обрыва выглядел
-    // исправной машиной без процессоров
+    // An unread core count is not zero cores: an empty answer from a dropped
+    // read would otherwise look like a healthy machine with no processors
     const parsedCores = parseInt(coresOutput);
     const cores = isNaN(parsedCores) ? null : parsedCores;
     const usage = SnapshotTool.parseCpuUsage(topOutput);
@@ -268,8 +275,8 @@ export class SnapshotTool {
   }
 
   /**
-   * Занятость процессора из сводной строки `top`: считается от простоя, потому
-   * что доля простоя есть в обоих форматах. `null` — строки не нашлось.
+   * CPU usage from `top`'s summary line: computed from idle time, because the
+   * idle share is present in both formats. `null` means no such line was found.
    */
   private static parseCpuUsage(topOutput: string): number | null {
     const line = topOutput
@@ -302,7 +309,7 @@ export class SnapshotTool {
     };
   }
 
-  /** Множители суффиксов `free -h`: и `Gi` от coreutils, и `G` от BusyBox — степени 1024 */
+  /** Suffix multipliers for `free -h`: both `Gi` from coreutils and `G` from BusyBox are powers of 1024 */
   private static readonly SIZE_FACTOR: Record<string, number> = {
     b: 1,
     k: 1024,
@@ -313,8 +320,9 @@ export class SnapshotTool {
   };
 
   /**
-   * Размер с суффиксом в байты. Без приведения к общей единице `506Mi` и
-   * `3.8Gi` делились как 506 и 3.8 — отчёт объявлял 13316% занятой памяти.
+   * A size with a suffix, in bytes. Without converting to a common unit,
+   * `506Mi` and `3.8Gi` would be divided as plain 506 and 3.8, and the report
+   * would announce a wildly wrong percentage of memory used.
    */
   private static parseSize(text: string | undefined): number | null {
     const parsed = (text ?? '').match(/^([\d.]+)\s*([a-zA-Z]?)/);
@@ -330,9 +338,9 @@ export class SnapshotTool {
   /**
    * Get Disk information
    *
-   * Тип тома нужен, чтобы отсечь служебные системы ядра: отбор по имени
-   * устройства (`^/dev/`) выбрасывал из обзора корень везде, где он лежит
-   * на overlay, — то есть в любом контейнере.
+   * The volume type is needed to filter out kernel-internal filesystems:
+   * filtering by device name (`^/dev/`) would drop the root filesystem from
+   * the view wherever it sits on overlay — that is, in any container.
    */
   private async getDisk(
     config: any,
@@ -395,9 +403,9 @@ export class SnapshotTool {
   private async getNetwork(
     config: any,
       ): Promise<{ checked: boolean; listening: Array<{ port: string; service: string }>; connections: number }> {
-    // Маркер обязателен: конвейер заканчивается на `sort`, поэтому отсутствие
-    // ss отдавало пустой список с кодом 0 — «никто не слушает» вместо
-    // «смотреть было нечем», и запасной netstat не звали никогда
+    // A marker is required: the pipeline ends on `sort`, so ss being absent
+    // would give an empty list with exit code 0 — "nothing is listening"
+    // instead of "there was nothing to check with" — and the netstat fallback would never get called
     const portsOutput = await this.read(
       config,
       'if command -v ss >/dev/null 2>&1; then ss -tlnp 2>/dev/null | grep LISTEN | awk \'{print $4}\' | sort -u; ' +
@@ -409,8 +417,9 @@ export class SnapshotTool {
       return { checked: false, listening: [], connections: 0 };
     }
 
-    // Порт отделяется последним двоеточием, а не первым: у адреса IPv6
-    // (`[::]:2222`, `:::22`) двоеточий несколько, и по первому порт был пуст
+    // The port is split off at the last colon, not the first: an IPv6
+    // address (`[::]:2222`, `:::22`) has several colons, and splitting at
+    // the first one would leave the port empty
     const seen = new Set<string>();
     for (const address of portsOutput.split('\n')) {
       const port = address.slice(address.lastIndexOf(':') + 1).trim();
@@ -435,16 +444,18 @@ export class SnapshotTool {
   private async getRecentErrors(
     config: any,
       ): Promise<{ checked: boolean; reason?: string; items: Array<{ source: string; message: string; time: string }> }> {
-    // Молчание журнала имеет три причины, и раньше все три выглядели как
-    // «ошибок нет»: файла нет, читать нечем, читали и не нашли
+    // A silent journal has three causes that must not all collapse into
+    // "no errors": the file is missing, there is nothing to read it with, or
+    // it was read and nothing was found
     const command =
       'if [ ! -f /var/log/syslog ]; then echo NO_SYSLOG; ' +
       'elif [ ! -r /var/log/syslog ]; then echo SYSLOG_UNREADABLE; ' +
       'else tail -n 100 /var/log/syslog | grep -iE "error|fatal|critical" | tail -n 3; fi';
 
-    // Сперва под sudo — журнал обычно закрыт от обычного пользователя. Там, где
-    // sudo нет вовсе (root на BusyBox), команда падает целиком, и без второй
-    // попытки причина звучала бы «не прошло» даже на сервере без журнала
+    // Sudo is tried first — the journal is usually closed to a regular user.
+    // Where sudo does not exist at all (root on BusyBox), the command fails
+    // outright, and without a second attempt the reason would read as "the
+    // read did not go through" even on a server that simply has no journal
     let output = await this.read(config, command, {
       sudo: true,
       fallback: 'READ_FAILED',

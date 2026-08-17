@@ -1,30 +1,36 @@
 /**
- * Форма аргументов инструмента: есть ли параметр и того ли он вида.
+ * The shape of tool arguments: whether a parameter is present and of the
+ * right kind.
  *
- * Рядом живёт `shell-arg.ts` — он про **значение** (`lines`, `mode`, `pattern`),
- * которое уезжает в команду. Здесь — про **форму**: пришёл ли обязательный
- * параметр вообще и строка это, массив строк или запись.
+ * `shell-arg.ts` lives alongside this module — it's about the **value**
+ * (`lines`, `mode`, `pattern`) that goes into the command. This one is
+ * about the **shape**: whether a required parameter arrived at all, and
+ * whether it's a string, an array of strings, or an object.
  *
- * Откуда взялось: замер (CORE_10, п. 4.1/4.2) показал, что ошибка в форме даёт
- * агенту не отказ, а внутренний сбой — `Cannot read properties of undefined
- * (reading 'path')` при вызове `ssh_file_write` без `files`, `finalCommand.
- * substring is not a function` при `command: 42`. Из такого текста нельзя
- * понять, что именно передано не так, и агент уходит в обход через `ssh_exec`.
+ * Without this check, a malformed argument shape doesn't produce a clean
+ * rejection — it surfaces as an internal crash such as `Cannot read
+ * properties of undefined (reading 'path')` when `ssh_file_write` is called
+ * without `files`, or `finalCommand.substring is not a function` for
+ * `command: 42`. That text doesn't say what's wrong, so an agent falls back
+ * to `ssh_exec` instead.
  *
- * Схема от этого не спасает: MCP проверяет конверт запроса, а `arguments`
- * отдаёт как есть — `oneOf` в схеме остаётся описанием для клиента, не защитой.
+ * The schema doesn't save us from this: MCP validates the request envelope,
+ * and `arguments` comes through as-is — `oneOf` in the schema stays a
+ * description for the client, not a guard.
  *
- * Тексты отказов держим в одном формате с `shell-arg.ts`: что ожидалось и что
- * пришло. Пустой список — тоже отказ: «записать ноль файлов» это не работа, а
- * потерянный вызов, о котором вызывающий должен узнать.
+ * Rejection messages are kept in the same format as `shell-arg.ts`: what was
+ * expected and what arrived. An empty list is also a rejection: "write zero
+ * files" isn't work done, it's a lost call the caller needs to know about.
  */
 
 /**
- * Значение в тексте отказа: «ничего» отличается от пустой строки и от нуля.
+ * A value in a rejection message: "nothing" is distinct from an empty
+ * string and from zero.
  *
- * Длинное содержимое обрезается: в отказе важно, **что** пришло не той формы,
- * а не весь конфиг целиком. `JSON.stringify` возвращает `undefined` для функции
- * и символа — отсюда `??`, иначе внятный отказ сам упал бы на `.slice`.
+ * Long content is truncated: what matters in a rejection is **what** arrived
+ * in the wrong shape, not the whole config. `JSON.stringify` returns
+ * `undefined` for a function or a symbol — hence the `??`, otherwise the
+ * rejection message itself would fail on `.slice`.
  */
 function describe(value: unknown): string {
   if (value === undefined) return 'nothing';
@@ -39,7 +45,7 @@ function reject(name: string, value: unknown, expected: string): never {
   throw new Error(`${name} must be ${expected}, got ${describe(value)}`);
 }
 
-/** Обязательная строка: путь назначения, каталог, имя файла */
+/** A required string: a destination path, a directory, a file name */
 export function requireText(value: unknown, name: string, example: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
     reject(name, value, `a non-empty string like ${example}`);
@@ -49,9 +55,9 @@ export function requireText(value: unknown, name: string, example: string): stri
 }
 
 /**
- * Обязательная строка или массив строк — форма, объявленная через `oneOf`
- * у `command` и `path`. Наружу всегда отдаётся массив: вызывающему не нужно
- * повторять разбор формы у себя.
+ * A required string or array of strings — the shape declared via `oneOf`
+ * for `command` and `path`. Always returns an array: the caller doesn't
+ * need to repeat the shape parsing itself.
  */
 export function requireTextList(value: unknown, name: string, example: string): string[] {
   const expected = `a string like ${example} or an array of such strings`;
@@ -74,9 +80,10 @@ export function requireTextList(value: unknown, name: string, example: string): 
 }
 
 /**
- * Обязательная запись или массив записей — форма `files` у `ssh_file_write`.
- * Обязательные поля записи проверяются здесь же: без них дальше по коду
- * получится тот самый `undefined.path`, ради которого модуль и написан.
+ * A required object or array of objects — the shape of `files` for
+ * `ssh_file_write`. Required fields on each entry are checked right here:
+ * without this check, the code further down would hit the very
+ * `undefined.path` this module exists to prevent.
  */
 export function requireEntryList<F extends string>(
   value: unknown,

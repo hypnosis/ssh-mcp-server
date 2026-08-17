@@ -1,17 +1,17 @@
 /**
- * Файловые операции установщика на сервере
+ * The installer's file operations on the server.
  *
- * Каждая — одна команда, понятная и coreutils, и BusyBox. Два места, где
- * ошибиться дороже всего:
+ * Each one is a single command that both coreutils and BusyBox understand.
+ * Two spots where a mistake costs the most:
  *
- * 1. Переименование идёт только с `-T`. Обычный `mv` каталога поверх
- *    существующего каталога кладёт его ВНУТРЬ и возвращает успех — проверено
- *    на обоих наборах утилит. Именно из-за этого прежний код был вынужден
- *    сначала делать `rm -rf` по боевому пути, а между удалением и заменой
- *    оставалось окно, в котором обрыв связи уносил данные насовсем.
- * 2. Тип пути определяется начиная с `test -L`. Битая ссылка не видна ни
- *    через `-e`, ни через `-d`: без этой проверки установщик считал бы путь
- *    свободным и падал на замене с необъяснимой ошибкой.
+ * 1. Renaming always uses `-T`. Plain `mv` of a directory onto an existing
+ *    directory nests it INSIDE and reports success, on both toolsets.
+ *    Deleting the live path first and renaming into the gap would open a
+ *    window where a dropped connection loses the data for good.
+ * 2. A path's kind is determined starting with `test -L`. A broken symlink
+ *    is invisible to both `-e` and `-d`: without this check the installer
+ *    would think the path was free and fail on the replacement with an
+ *    unexplained error.
  */
 
 import { posix as posixPath } from 'path';
@@ -20,7 +20,7 @@ import type { SSHExecutor } from './ssh-executor.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 import { shellQuote } from '../utils/shell-arg.js';
 
-/** Маркеры ответа: разбираем по ним, а не по коду возврата */
+/** Response markers: parsing goes by these, not by the exit code */
 const KIND_MARKERS: Record<string, PathKind> = {
   SSH_MCP_KIND_SYMLINK: 'symlink',
   SSH_MCP_KIND_DIR: 'directory',
@@ -43,10 +43,10 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
   return {
     async inspect(path: string): Promise<PathKind> {
       const quoted = shellQuote(path);
-      // Внутри `test` разделителя `--` быть не должно: и BusyBox, и dash
-      // разбирают его как операнд («unknown operand», «binary operator
-      // expected») и отвечают «пути нет» на существующий путь. Проверено
-      // вживую на обоих серверах; от имён с дефисом защищают кавычки.
+      // Inside `test` there must be no `--` separator: both BusyBox and
+      // dash parse it as an operand ("unknown operand", "binary operator
+      // expected") and answer "no such path" for a path that exists.
+      // Quoting alone guards against names starting with a dash.
       const result = await run(
         `if [ -L ${quoted} ]; then echo SSH_MCP_KIND_SYMLINK; ` +
         `elif [ -d ${quoted} ]; then echo SSH_MCP_KIND_DIR; ` +
@@ -63,11 +63,11 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
     },
 
     /**
-     * Точка монтирования: номер устройства у пути и у его родителя разный.
+     * Mount point: the device number differs between the path and its parent.
      *
-     * Нет `stat` или он с другим синтаксисом (`-f` вместо `-c` на BSD и
-     * macOS) — исход «проверить нечем». Операции это не мешает: страховкой
-     * остаётся отказ самого `mv -T`.
+     * No `stat`, or it uses different syntax (`-f` instead of `-c` on BSD
+     * and macOS) — the outcome is "nothing to check with". This does not
+     * block the operation: the fallback safety net is `mv -T` refusing on its own.
      */
     async isSeparateFilesystem(path: string): Promise<MountCheck> {
       const parent = posixPath.dirname(path);
@@ -100,15 +100,16 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
     },
 
     /**
-     * Наши временные пути, оставшиеся рядом с целью от прошлых операций.
+     * Our temporary paths left next to the target by past operations.
      *
-     * В шаблон идут только наши приставки: имя цели пользовательское, и `*`
-     * или `[` в нём стали бы чужим шаблоном. Отбор по самому имени делается у
-     * нас, как и сравнение хэшей.
+     * Only our own prefixes go into the glob pattern: the target's name is
+     * user-supplied, and a `*` or `[` in it would become someone else's
+     * wildcard. Filtering by the actual name happens on our side, same as
+     * the hash comparison.
      *
-     * Читаем построчно: имя с переводом строки внутри даст лишнюю строку в
-     * списке, но список этот только показывается человеку — ничего по нему
-     * не удаляется.
+     * Read line by line: a name with a newline inside it produces an extra
+     * line in the list, but this list is only shown to a human — nothing is
+     * ever deleted based on it.
      */
     async listArtifacts(directory: string): Promise<ArtifactScan> {
       const result = await run(
@@ -127,12 +128,12 @@ export function remotePathOps(context: RemoteOpsContext): PathOps {
     },
 
     /**
-     * Удалить путь целиком.
+     * Remove a path entirely.
      *
-     * Без потолка времени, как и другие шаги, длительность которых задаёт объём
-     * данных: на контейнере полсотни тысяч файлов убираются за секунду, но на
-     * флеш-памяти роутера или сетевом диске уборка в общие тридцать секунд может
-     * не уложиться — и тогда временный путь молча останется на сервере.
+     * No time ceiling, same as the other steps whose duration is set by the
+     * data volume: on a router's flash storage or a network drive, cleanup
+     * may not fit the usual thirty seconds — and then the temporary path
+     * would silently stay on the server.
      */
     async removeTree(path: string): Promise<void> {
       await executor.executeChecked(config, `rm -rf -- ${shellQuote(path)}`, {

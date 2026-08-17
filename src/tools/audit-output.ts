@@ -1,10 +1,10 @@
 /**
- * Разбор ответов аудита: что уезжает клиенту и чем это объявлено.
+ * Shapes of audit responses: what travels to the client and what declares it.
  *
- * Тип и схема лежат рядом намеренно. Клиент сверяет пришедшее с объявленным и
- * на расхождении возвращает ошибку протокола вместо ответа, поэтому схема —
- * не описание намерений, а обещание, которое обязано совпадать с типом строка
- * в строку.
+ * The type and the schema live side by side on purpose. The client checks
+ * what arrives against what was declared and, on a mismatch, returns a
+ * protocol error instead of the answer — so the schema is not a description
+ * of intent but a promise that must match the type line for line.
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -12,8 +12,8 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 type OutputSchema = NonNullable<Tool['outputSchema']>;
 
 /**
- * Разделы обзора. Отсутствующее поле значит «раздел не запрашивали»:
- * пустое значение в невыбранном разделе читается как факт о сервере.
+ * Overview sections. A missing field means "section not requested": an empty
+ * value in an unselected section would otherwise read as a fact about the server.
  */
 export interface BaselineResult {
   hostname?: string;
@@ -38,12 +38,12 @@ export interface BaselineResult {
     failed: string[];
     running_count: number;
   };
-  /** `null` — раздел спрашивали, докера на сервере нет; поля нет — не спрашивали */
+  /** `null` — the section was requested, there is no docker on the server; field absent — not requested */
   docker?: {
     containers: Array<{ id: string; image: string; status: string; names: string }>;
     df: string;
   } | null;
-  /** У каждого межсетевого экрана три исхода: нет его, не дали посмотреть, посмотрели */
+  /** Each firewall has three outcomes: absent, not allowed to look, checked */
   firewall?: {
     ufw: { status: 'not_installed' | 'no_access' | 'read'; active?: boolean; text: string };
     iptables: { status: 'not_installed' | 'no_access' | 'read'; rules?: number };
@@ -53,22 +53,23 @@ export interface BaselineResult {
     reboot_required: boolean;
   };
   /**
-   * Разделы, которые проверить было нечем: команды нет на сервере или она
-   * ничего не вернула. Пустой раздел и непроверенный раздел выглядят
-   * одинаково («disk:» без строк, «listeners (0)»), а значат разное —
-   * без этого списка отчёт объявляет отсутствие данных отсутствием проблем.
+   * Sections that had nothing to check them with: the command is absent from
+   * the server, or it returned nothing. An empty section and an unchecked
+   * section look the same ("disk:" with no rows, "listeners (0)") but mean
+   * different things — without this list the report would announce a lack of
+   * data as a lack of problems.
    */
   unavailable: string[];
   red_flags: { critical: string[]; warning: string[]; ok: string[] };
 }
 
 /**
- * Итог проверки сертификата.
+ * Certificate check result.
  *
- * `null` в поле — «прочитать не удалось», а не «в сертификате этого нет».
- * Схема допускает его везде, где допускает тип: иначе непрочитанный
- * сертификат — обычный для сервера без TLS исход — приезжал бы к клиенту
- * ошибкой протокола.
+ * `null` in a field means "could not be read", not "the certificate lacks
+ * this". The schema allows it wherever the type allows it: otherwise an
+ * unread certificate — an ordinary outcome for a server without TLS — would
+ * reach the client as a protocol error.
  */
 export interface TlsCheckResult {
   domain: string;

@@ -1,10 +1,10 @@
 /**
- * Транспорт поверх системного OpenSSH
+ * Transport on top of the system OpenSSH
  *
- * Соединения переиспользуются механизмом ControlMaster: первая команда
- * поднимает управляющее соединение, все последующие идут по нему — из этого
- * процесса, из соседнего окна клиента, из любого другого процесса на машине.
- * Сервер видит один вход вместо одного входа на команду.
+ * Connections are reused through the ControlMaster mechanism: the first
+ * command brings up the control connection, and every later one rides it —
+ * from this process, from a sibling client window, from any other process on
+ * the machine. The server sees one login instead of one login per command.
  */
 
 import { logger } from '../utils/logger.js';
@@ -52,14 +52,14 @@ import type {
   TransferOptions,
 } from './types.js';
 
-/** Общий срок команды: его же обещает схема `ssh_exec` через `ssh-executor.ts` */
+/** The default command deadline: also what the `ssh_exec` schema promises via `ssh-executor.ts` */
 export const DEFAULT_EXEC_TIMEOUT_MS = 30000;
 const DEFAULT_CONTROL_TIMEOUT_MS = 5000;
-/** Запас поверх локального таймаута для удалённого сторожа */
+/** Margin added on top of the local timeout for the remote guard */
 const REMOTE_TIMEOUT_MARGIN_SEC = 5;
-/** Сколько ждём ответа на пробу паспорта */
+/** How long to wait for a response to the passport probe */
 const PASSPORT_PROBE_TIMEOUT_MS = 15000;
-/** Пауза перед повтором транспортного сбоя */
+/** Pause before retrying a transport failure */
 const RETRY_DELAY_MS = 1000;
 
 function sleep(ms: number): Promise<void> {
@@ -67,20 +67,20 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Транспорт для одного назначения (пользователь + хост + порт)
+ * Transport for a single destination (user + host + port)
  */
 export class OpenSshRunner implements CommandRunner {
   private commandCount = 0;
   private transferCount = 0;
   private lastError?: string;
-  /** Первая команда поднимает master; остальные ждут её, чтобы не входить дважды */
+  /** The first command brings up the master; the rest wait on it to avoid logging in twice */
   private firstCommandGate?: Promise<void>;
-  /** Когда команда в последний раз доказала, что master поднят */
+  /** When a command last proved the master is up */
   private masterSeenAt = 0;
   private askpassScriptPath?: string;
-  /** Последний прочитанный паспорт — для сообщений, где ждать его нельзя */
+  /** The last passport read — for messages where waiting for it isn't an option */
   private knownPassport?: ServerPassport;
-  /** Отвечает ли назначение только классическим протоколом scp */
+  /** Whether the destination only speaks the classic scp protocol */
   private legacyScp = false;
 
   constructor(
@@ -88,7 +88,7 @@ export class OpenSshRunner implements CommandRunner {
     private readonly runtime: SshRuntime
   ) {}
 
-  /** Куда ходит этот транспорт — для логов и ключа кэша */
+  /** Where this transport connects to — for logs and the cache key */
   get destination(): string {
     return `${this.config.username}@${this.config.host}:${this.config.port ?? 22}`;
   }
@@ -169,8 +169,8 @@ export class OpenSshRunner implements CommandRunner {
   async closeMaster(): Promise<MasterCloseOutcome> {
     if (!this.runtime.multiplexing) return 'multiplexing-off';
 
-    // Профиль снова холодный, каким бы ни был исход закрытия: следующая волна
-    // команд обязана идти через шлюз, иначе войдёт каждая по отдельности
+    // The profile goes cold again no matter how the close turns out: the
+    // next wave of commands must go through the gate, or each one will log in separately
     this.masterSeenAt = 0;
 
     const outcome = await runProcess({
@@ -185,12 +185,12 @@ export class OpenSshRunner implements CommandRunner {
       return 'closed';
     }
 
-    // Отсутствие master — норма, а не ошибка: он мог уже истечь по ControlPersist
+    // No master is normal, not an error: it may have already expired via ControlPersist
     logger.debug(`[Runner] ${this.destination}: no master connection to close`);
     return 'nothing-to-close';
   }
 
-  /** Живо ли управляющее соединение */
+  /** Whether the control connection is alive */
   private async checkMaster(): Promise<{ active: boolean; pid?: number }> {
     if (!this.runtime.multiplexing) return { active: false };
 
@@ -223,12 +223,12 @@ export class OpenSshRunner implements CommandRunner {
   }
 
   /**
-   * Поднят ли master прямо сейчас.
+   * Whether the master is up right now.
    *
-   * Судим по часам, а не вопросом `ssh -O check`: проба — это лишний процесс
-   * на каждую команду. Master держится ControlPersist секунд после последней
-   * команды и раньше срока сам не уходит, поэтому в пределах срока ответ
-   * «поднят» верен, а за его пределами ворота просто закрываются снова.
+   * Judged by the clock rather than by asking `ssh -O check`: a probe is an
+   * extra process on every command. The master stays up for ControlPersist
+   * seconds after the last command and doesn't leave early on its own, so
+   * within that window "up" is a correct answer, and past it the gate simply closes again.
    */
   private masterLikelyUp(): boolean {
     const persistSec = resolveControlPersistSec();
@@ -237,12 +237,13 @@ export class OpenSshRunner implements CommandRunner {
   }
 
   /**
-   * Выполнить команду, пропустив первую через шлюз.
+   * Run a command, routing the first one through the gate.
    *
-   * Без шлюза команды холодного профиля открыли бы каждая своё соединение и
-   * дали бы залп входов вместо одного. Шлюз закрывается перед каждым холодным
-   * стартом, а не однажды за жизнь транспорта: соединение закрывают и по
-   * команде, и по сроку простоя, и после этого профиль снова холодный.
+   * Without the gate, commands on a cold profile would each open their own
+   * connection and fire a burst of logins instead of one. The gate is closed
+   * before every cold start, not just once for the transport's lifetime: the
+   * connection closes both on command and after the idle deadline, and after
+   * that the profile is cold again.
    */
   private async execGuarded(
     command: string,
@@ -254,8 +255,9 @@ export class OpenSshRunner implements CommandRunner {
     }
 
     if (this.firstCommandGate) {
-      // Возвращаемся к началу, а не идём выполнять: если ждали напрасно и
-      // master так и не поднялся, первой станет одна команда, а не все сразу
+      // Loop back to the start rather than proceed to execution: if the wait
+      // was in vain and the master never came up, only one command becomes
+      // first, not all of them at once
       await this.firstCommandGate;
       return this.execGuarded(command, options, context);
     }
@@ -297,14 +299,15 @@ export class OpenSshRunner implements CommandRunner {
 
     this.commandCount++;
 
-    // Ответ сервера отдаём как есть. Раньше из него вырезался секрет профиля,
-    // и пароль вида `root` превращал `/etc/passwd` в `***:x:0:0:***:/***`.
-    // Скрывать там нечего: секрет на сервер не уезжает (замерено — в окружении
-    // удалённой сессии его нет), так что совпадение всегда случайное, а порча
-    // молчаливая: прочитанный так конфиг легко записать обратно уже сломанным.
+    // The server's response is returned as-is. Redacting the profile secret
+    // from it by content match is unsafe: a password like `root` would turn
+    // `/etc/passwd` into `***:x:0:0:***:/***`. There's nothing to hide in the
+    // first place — the secret never reaches the server, so a match is
+    // always coincidental, and the corruption would be silent: a config read
+    // this way is easy to write back already broken.
     const stdout = outcome.stdout;
-    // Классификатору нужен нетронутый вывод: жалоба на мультиплексирование
-    // вместе с разрывом соединения — часть картины сбоя
+    // The classifier needs untouched output: a multiplexing complaint
+    // together with a dropped connection is part of the failure picture
     const rawStderr = outcome.stderr;
     const stderr = stripMuxNotices(rawStderr);
 
@@ -341,9 +344,9 @@ export class OpenSshRunner implements CommandRunner {
       throw transportError;
     }
 
-    // Команда дошла до сервера общим соединением — значит master поднят, и
-    // следующим ждать нечего. Команда мимо мультиплексирования этого не
-    // доказывает: она ходила своим соединением
+    // The command reached the server over the shared connection — so the
+    // master is up, and the next one has nothing to wait for. A command that
+    // bypassed multiplexing doesn't prove this: it traveled on its own connection
     if (this.runtime.multiplexing && !context.disableMux) {
       this.masterSeenAt = Date.now();
     }
@@ -358,15 +361,15 @@ export class OpenSshRunner implements CommandRunner {
   }
 
   /**
-   * Обернуть команду удалённым сторожем.
+   * Wrap the command in a remote guard.
    *
-   * Убийство локального ssh закрывает канал, но не обязательно завершает
-   * процесс на сервере. Утилита `timeout` доводит дело до конца.
+   * Killing the local ssh closes the channel, but doesn't necessarily end
+   * the process on the server. The `timeout` utility finishes the job.
    *
-   * Язык команд объявлен: bash при его наличии, иначе sh. Раньше здесь всегда
-   * стоял `sh`, а на Debian и Ubuntu это dash — команды с конструкциями bash,
-   * годами работавшие в login-shell, ломались бы после переключения бэкенда,
-   * причём только на части серверов.
+   * The command language is declared explicitly: bash when it's available,
+   * otherwise sh. This matters because on Debian and Ubuntu sh is dash —
+   * bash-specific constructs that work fine in a login shell would break
+   * under it, and only on some servers.
    */
   private async applyRemoteTimeout(
     command: string,
@@ -384,11 +387,12 @@ export class OpenSshRunner implements CommandRunner {
   }
 
   /**
-   * Паспорт сервера: одна проба за сессию на назначение.
+   * Server passport: one probe per session for a destination.
    *
-   * Проба идёт мимо шлюза первой команды и без сторожа — иначе получилась бы
-   * курица и яйцо: язык команд выясняется ею же, а команды, стоящие в шлюзе,
-   * сами ждут паспорт.
+   * The probe bypasses the first-command gate and the remote guard —
+   * otherwise it would be a chicken and egg problem: it's the one finding
+   * out the command language, while commands sitting in the gate are
+   * themselves waiting on the passport.
    */
   async passport(): Promise<ServerPassport> {
     const passport = await getServerPassport(passportKey(this.config), async () => {
@@ -400,18 +404,19 @@ export class OpenSshRunner implements CommandRunner {
       return result.stdout;
     });
 
-    // Запоминаем и у себя: тексту ошибки таймаута паспорт нужен синхронно,
-    // а ждать его там нельзя — сбой мог произойти как раз внутри самой пробы
+    // Also kept locally: the timeout error message needs the passport
+    // synchronously, and it can't wait for it there — the failure may have
+    // happened inside the probe itself
     this.knownPassport = passport;
     return passport;
   }
 
   /**
-   * Передача с откатом на классический протокол.
+   * Transfer with a fallback to the classic protocol.
    *
-   * На серверах без подсистемы sftp (роутеры, встраиваемые системы) современный
-   * scp обрывается, а классический протокол работает. Отличить такой сервер
-   * заранее нечем, поэтому пробуем один раз и запоминаем ответ назначения.
+   * On servers without an sftp subsystem (routers, embedded systems) modern
+   * scp fails, while the classic protocol works. There's no way to tell such
+   * a server apart in advance, so it's tried once and the destination's answer is remembered.
    */
   private async transfer(
     direction: 'upload' | 'download',
@@ -419,8 +424,8 @@ export class OpenSshRunner implements CommandRunner {
     remotePath: string,
     options: TransferOptions
   ): Promise<void> {
-    // Счёт ведётся по запрошенным передачам: отказ и повтор другим протоколом —
-    // это одна передача, а не две, иначе статистика назвала бы лишнюю
+    // Counted by requested transfers: a failure followed by a retry on
+    // another protocol is one transfer, not two, or the stats would overcount
     this.transferCount++;
 
     const failure = await this.transferOnce(direction, localPath, remotePath, options, this.legacyScp);
@@ -436,11 +441,11 @@ export class OpenSshRunner implements CommandRunner {
   }
 
   /**
-   * Одна попытка передачи.
+   * A single transfer attempt.
    *
-   * Неудачу самой передачи возвращает, а не бросает: вызывающий решает,
-   * повторять ли её другим протоколом. Отмена и исчерпание срока — не тот
-   * случай, они уходят наверх сразу.
+   * Returns a failed transfer rather than throwing it: the caller decides
+   * whether to retry it on another protocol. Cancellation and timeout are a
+   * different case — they propagate up right away.
    */
   private async transferOnce(
     direction: 'upload' | 'download',
@@ -451,10 +456,9 @@ export class OpenSshRunner implements CommandRunner {
   ): Promise<Error | undefined> {
     assertProfileSupported(this.config, this.runtime);
 
-    // Своего потолка у передачи нет: не назвали таймаут — она идёт столько,
-    // сколько нужно. Прежний общий потолок в 300 секунд обрывал большое
-    // дерево и медленный канал, а от зависания не защищал: молчащий канал
-    // рвёт сам ssh за минуту силами ServerAliveInterval (замерено).
+    // The transfer has no cap of its own: without a timeout specified, it
+    // runs for as long as it needs to. A channel that's gone silent is
+    // caught by ssh's own ServerAliveInterval — it closes it within about a minute.
     const timeoutMs = options.timeoutMs;
     const outcome = await runProcess({
       file: 'scp',
@@ -490,8 +494,8 @@ export class OpenSshRunner implements CommandRunner {
       return transportError;
     }
 
-    // У scp ненулевой код всегда означает неудачу передачи —
-    // в отличие от произвольной команды, где это может быть нормальный ответ
+    // For scp a non-zero code always means the transfer failed —
+    // unlike an arbitrary command, where it can be a normal result
     if (outcome.exitCode !== 0) {
       const detail = stderr.trim() || `exit code ${outcome.exitCode}`;
       this.lastError = detail;
@@ -508,11 +512,9 @@ export class OpenSshRunner implements CommandRunner {
 }
 
 /**
- * Назначение: имя профиля в него не входит.
- *
- * Именно здесь чинится давняя проблема, из-за которой профиль "production"
- * и опущенный профиль (тот же сервер по умолчанию) держали два отдельных
- * соединения к одному хосту.
+ * Destination key: the profile name is deliberately left out of it, so a
+ * named profile (e.g. "production") and the default profile pointing at the
+ * same server share one connection instead of holding two separate ones to the same host.
  */
 export function runnerKey(config: RunnerConfig): string {
   return `${config.username}@${config.host}:${config.port ?? 22}`;
@@ -521,12 +523,12 @@ export function runnerKey(config: RunnerConfig): string {
 const runnerCache = new Map<string, OpenSshRunner>();
 
 /**
- * Получить транспорт для профиля.
+ * Get the transport for a profile.
  *
- * Ключ — назначение вместе с отпечатком учётных данных, тот же, что стоит в
- * имени общего сокета. Два профиля с одним ключом на один сервер делят
- * соединение; профиль с другими учётными данными получает своё, а не
- * переиспользует чужое и не выгоняет его.
+ * The key is the destination together with the credential fingerprint, the
+ * same one used in the shared socket's name. Two profiles with the same key
+ * for one server share a connection; a profile with different credentials
+ * gets its own, rather than reusing someone else's or evicting it.
  */
 export async function getOpenSshRunner(config: RunnerConfig): Promise<OpenSshRunner> {
   const runtime = await detectRuntime();
@@ -540,14 +542,14 @@ export async function getOpenSshRunner(config: RunnerConfig): Promise<OpenSshRun
   return runner;
 }
 
-/** Закрыть все управляющие соединения (используется в тестах) */
+/** Close every control connection (used in tests) */
 export async function closeAllRunners(): Promise<void> {
   const runners = [...runnerCache.values()];
   runnerCache.clear();
   await Promise.all(runners.map((runner) => runner.closeMaster().catch(() => undefined)));
 }
 
-/** Сбросить кэш транспортов, не трогая соединения */
+/** Reset the transport cache without touching the connections */
 export function resetRunnerCache(): void {
   runnerCache.clear();
 }

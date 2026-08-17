@@ -4,7 +4,7 @@
 **Дата заведения:** 2026-08-16
 **Ветка:** `feat/openssh-transport`
 **Происхождение:** боевая раскатка на свежем сервере —
-[ACCEPTANCE_LIVE_04](../../acceptance/ACCEPTANCE_LIVE_04.md), долги TD-18 и TD-19
+ACCEPTANCE_LIVE_04, долги TD-18 и TD-19
 
 ---
 

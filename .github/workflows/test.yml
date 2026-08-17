@@ -25,8 +25,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Отдельным шагом, хотя tsc уже отработал внутри npm ci через prepare:
-      # там ошибка типов выглядит как сбой установки зависимостей.
+      # A separate step, even though prepare already ran tsc during npm ci:
+      # in there a type error looks like a failed dependency install.
       - name: Type check
         run: npx tsc --noEmit
 

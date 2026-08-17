@@ -1,46 +1,42 @@
 /**
  * SSH Configuration Module
- * Управление SSH конфигурацией для удаленных серверов
+ * Manages the SSH configuration for remote servers
  */
 
 import type { PathSecurityConfig } from './path-validator.js';
 
 /**
- * Политика проверки ключа хоста.
- * `accept-new` — запомнить ключ при первом подключении, но заметить подмену.
+ * Host key verification policy.
+ * `accept-new` — trust the key on first connection, but flag a change.
  */
 export type StrictHostKeyChecking = 'yes' | 'accept-new' | 'no';
 
 export const STRICT_HOST_KEY_CHECKING_VALUES: StrictHostKeyChecking[] = ['yes', 'accept-new', 'no'];
 
 /**
- * SSH конфигурация для подключения к удаленному серверу
+ * SSH configuration for connecting to a remote server
  */
 export interface SSHConfig {
-  /** Адрес сервера (IP или доменное имя) */
+  /** Server address (IP or domain name) */
   host: string;
-  /** Порт SSH (по умолчанию 22) */
+  /** SSH port (default 22) */
   port?: number;
-  /** Имя пользователя для SSH подключения */
+  /** Username for the SSH connection */
   username: string;
-  /** Путь к приватному SSH ключу */
+  /** Path to the private SSH key */
   privateKeyPath?: string;
-  /** Пароль для зашифрованного SSH ключа */
+  /** Passphrase for an encrypted SSH key */
   passphrase?: string;
-  /** Пароль для аутентификации (не рекомендуется для production) */
+  /** Password for authentication (not recommended for production) */
   password?: string;
-  /** Политика проверки ключа хоста (по умолчанию accept-new; только бэкенд openssh) */
+  /** Host key verification policy (default accept-new; openssh backend only) */
   strictHostKeyChecking?: StrictHostKeyChecking;
-  /** Игнорировать пользовательский ~/.ssh/config (только бэкенд openssh) */
+  /** Ignore the user's ~/.ssh/config (openssh backend only) */
   ignoreUserConfig?: boolean;
   /**
-   * Ограничения на пути: белый и чёрный списки каталогов.
+   * Path access restrictions: allow-list and deny-list of directories.
    *
-   * Поле задаётся в профиле и обязано доехать сюда: инструменты берут правила
-   * только отсюда. Пока его здесь не было, `pathSecurity` из файла профилей
-   * молча терялся при сборке конфига — README обещал защиту, а валидатор ни
-   * разу не создавался (замерено на живых серверах: запись в запрещённый
-   * каталог проходила).
+   * Set in the profile — tools take their rules only from here.
    */
   pathSecurity?: PathSecurityConfig;
 }

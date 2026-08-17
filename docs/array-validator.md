@@ -78,8 +78,14 @@ For array of items, use DOUBLE QUOTES in JSON format:
 For single item, use string:
 ✅ Correct:   command: "item1"
 
+Bash tests are not affected by this check:
+✅ Correct:   command: "[[ -f file.txt ]] && echo exists"
+
 MCP tools require valid JSON syntax for arrays.
 ```
+
+Подсказку про bash-тест валидатор добавляет только для параметра `command` — для
+`path` и других параметров последний блок в сообщении отсутствует.
 
 ## API
 

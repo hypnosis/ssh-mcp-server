@@ -24,16 +24,27 @@ import { buildStartCommand, createJobId, jobPaths, parseJobStart } from '../util
 import { shellQuote } from '../utils/shell-arg.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
+/** ssh_exec arguments, matching its inputSchema */
+interface ExecArgs {
+  profile?: string;
+  command?: unknown;
+  sudo?: boolean;
+  cwd?: string;
+  timeout?: number;
+  detach?: boolean;
+  interactive?: boolean;
+}
+
 /*
- * Предупреждение говорит о том, что команда делает, а не о том, какие слова в
- * ней встретились. Удаление ушло отсюда первым: шаблон `rm -rf /` срабатывал на
- * любом абсолютном пути и печатал «rm -rf / detected» даже на `echo "rm -rf /"`.
- * Предупреждение, которое кричит на штатной уборке, агент перестаёт читать —
- * и настоящий снос корня в этом шуме теряется. Настоящую проверку делает
- * destructive-command.ts: она смотрит, куда путь ведёт, и не пускает команду.
+ * A warning speaks about what the command does, not about which words appear
+ * in it: a pattern like `rm -rf /` would fire on any absolute path and print
+ * "rm -rf / detected" even for `echo "rm -rf /"`. A warning that shouts on
+ * routine cleanup is a warning the agent stops reading — and a genuine root
+ * wipe gets lost in that noise. The real check lives in destructive-command.ts:
+ * it looks at where the path actually leads and blocks the command there.
  */
 
-/** Запросы, меняющие данные разом; снос базы целиком — не сюда, а в отказ */
+/** Queries that alter data all at once; wiping a whole database goes to refusal, not here */
 const SQL_PATTERNS = [
   { pattern: /\bDROP\s+TABLE\b/i, message: 'DROP TABLE detected' },
   { pattern: /\bTRUNCATE\b/i, message: 'TRUNCATE detected' },
@@ -41,10 +52,10 @@ const SQL_PATTERNS = [
 ];
 
 /**
- * Предупреждение о том, что команда собирается сделать.
+ * A warning about what the command is about to do.
  *
- * Имя ищется в позиции команды: `chmod` первым словом — вызов, `chmod`
- * внутри пути или строки — упоминание, и о нём молчим.
+ * The name is looked for in command position: `chmod` as the first word is a
+ * call, `chmod` inside a path or a string is a mention, and we stay silent about that.
  */
 function checkDangerousCommand(command: string): string | null {
   const warning = (message: string) => `⚠️  DANGEROUS COMMAND: ${message}`;
@@ -54,8 +65,8 @@ function checkDangerousCommand(command: string): string | null {
     if (name === 'chmod' && args.some((argument) => unquote(argument) === '777'))
       return warning('chmod 777 detected (security risk)');
 
-    // Снос всех контейнеров разом: сами контейнеры пересоздаются, поэтому это
-    // предупреждение, а не отказ — тома с данными их переживают
+    // Wiping every container at once: the containers themselves get
+    // recreated, so this is a warning, not a refusal — data volumes outlive them
     if (
       name === 'docker' &&
       args[0] === 'rm' &&
@@ -65,8 +76,9 @@ function checkDangerousCommand(command: string): string | null {
       return warning('docker rm all containers detected');
   }
 
-  // Запрос ищется по всей команде, но только если клиент БД в ней вызван: так
-  // ловится и `-c "…"`, и текст на входе, а разговор о запросе остаётся молча
+  // The query is searched for across the whole command, but only if a DB
+  // client is invoked in it: this catches both `-c "…"` and text on stdin,
+  // while a conversation that merely mentions a query stays unflagged
   if (invocations.some(({ name }) => DB_CLIENTS.includes(name))) {
     for (const { pattern, message } of SQL_PATTERNS)
       if (pattern.test(command)) return warning(message);
@@ -76,10 +88,10 @@ function checkDangerousCommand(command: string): string | null {
 }
 
 /**
- * Чего фоновая задача не умеет. Отказ выносится до отправки чего бы то ни было.
+ * What a background job cannot do. The refusal happens before anything is sent.
  *
- * Каждый случай — не строгость ради строгости, а место, где detach отработал бы
- * молча не так, как ждёт вызывающий.
+ * Each case is not strictness for its own sake but a place where detach would
+ * silently behave differently from what the caller expects.
  */
 function assertDetachable(args: { sudo?: boolean; interactive?: boolean }, commands: string[]): void {
   if (args.sudo) {
@@ -176,8 +188,8 @@ export class ExecTool {
    */
   async handleCall(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     try {
-      const args = request.params.arguments as any;
-      
+      const args = (request.params.arguments ?? {}) as ExecArgs;
+
       // Validate array parameter format
       const validation = validateArrayParameter(args.command, 'command');
       if (!validation.isValid) {
@@ -187,24 +199,25 @@ export class ExecTool {
       // Resolve SSH config and profile name
       const sshConfig = resolveSSHConfig({ profile: args.profile });
       
-      // Форма проверяется до первой команды: без этого отсутствующий или не
-      // строковый `command` доходил до executor и падал внутренним
-      // `finalCommand.substring is not a function` — из такого текста
-      // вызывающий не поймёт, что ошибся формой.
+      // The shape is validated before the first command: without this, a
+      // missing or non-string `command` would reach the executor and fail
+      // with an internal `finalCommand.substring is not a function` — text
+      // that gives the caller no clue their input shape was wrong.
       const commands = requireTextList(args.command, 'command', '"uptime"');
 
-      // Что фоновой задаче не по силам, выясняется без сети и до сторожа: эти
-      // отказы не зависят ни от сервера, ни от текста команды
+      // What a background job cannot handle is settled without the network
+      // and before the guard: these refusals depend on neither the server nor the command text
       const detach = args.detach === true;
       if (detach) assertDetachable(args, commands);
 
-      // Удаление корня, дома или системного дерева останавливается ДО первой
-      // отправки — и весь вызов целиком. Проверять по ходу нельзя: половина
-      // батча уехала бы, а состояние сервера стало бы неизвестным.
+      // Deleting the root, the home directory or a system tree is stopped
+      // BEFORE the first command is sent — and the whole call is stopped with
+      // it. Checking along the way is not an option: half the batch would
+      // have already run, and the server's state would become unknown.
       const refusal = await this.refuseDestructive(commands, sshConfig, args.sudo);
       if (refusal) {
-        // Отказ помечается флагом наравне с прочими: читающий признак, а не
-        // текст, иначе счёл бы несостоявшийся снос выполненным
+        // The refusal is flagged the same way as any other: whoever reads the
+        // flag rather than the text would otherwise take a blocked wipe for a completed one
         return { content: [{ type: 'text', text: refusal }], isError: true };
       }
 
@@ -217,8 +230,8 @@ export class ExecTool {
         }
       }
 
-      // Запуск задачи идёт после сторожа удаления: снос корня отменяет вызов
-      // целиком, и заводить под него каталог задачи не за чем
+      // Starting the job happens after the deletion guard: a root wipe cancels
+      // the whole call, and there is no reason to set up a job directory for it
       if (detach) {
         return await this.startJob(sshConfig, commands[0], args.cwd, warnings);
       }
@@ -228,7 +241,7 @@ export class ExecTool {
         const result = await this.executor.execute(sshConfig, commands[0], {
           sudo: args.sudo || false,
           cwd: args.cwd,
-          // Ноль здесь значит «срок не назван»: общий срок подставит слой ниже
+          // Zero here means "no deadline was named": the layer below will supply the shared default
           timeout: args.timeout || undefined,
           signal,
         });
@@ -281,7 +294,7 @@ export class ExecTool {
         const result = await this.executor.execute(sshConfig, cmd, {
           sudo: args.sudo || false,
           cwd: args.cwd,
-          // Ноль здесь значит «срок не назван»: общий срок подставит слой ниже
+          // Zero here means "no deadline was named": the layer below will supply the shared default
           timeout: args.timeout || undefined,
           signal,
         });
@@ -338,11 +351,11 @@ export class ExecTool {
   }
 
   /**
-   * Запустить команду фоновой задачей и ответить сразу.
+   * Start the command as a background job and answer right away.
    *
-   * Состояние задачи остаётся на диске сервера, поэтому ответ содержит только
-   * идентификатор: всё остальное спрашивается инструментами `ssh_job_*` и после
-   * перезапуска нашего процесса тоже.
+   * The job's state stays on the server's disk, so the response carries only
+   * an id: everything else is asked for with the `ssh_job_*` tools, including
+   * after our process restarts.
    */
   private async startJob(
     config: SSHConfig,
@@ -354,12 +367,14 @@ export class ExecTool {
     const id = createJobId();
     const { dir } = jobPaths(passport.home, id);
 
-    // Рабочий каталог уходит внутрь задачи: применённый к запуску, он сменил бы
-    // каталог служебных файлов, а сама команда осталась бы там же, где была
+    // The working directory goes inside the job command: applied to the
+    // launch itself, it would change the directory of the job's own service
+    // files, while the command would stay wherever it was
     const jobCommand = cwd ? `cd ${shellQuote(cwd)} || exit 1; ${command}` : command;
 
-    // Отмена вызова сюда не передаётся намеренно: обрыв между стартом задачи и
-    // ответом оставил бы её работать без идентификатора, то есть без снятия
+    // The call's cancellation is deliberately not passed in here: an abort
+    // between starting the job and answering would leave it running without
+    // an id — that is, with no way to stop it
     const started = await this.executor.executeChecked(
       config,
       buildStartCommand(dir, jobCommand, passport.setsid)
@@ -383,25 +398,26 @@ export class ExecTool {
   }
 
   /**
-   * Отказ, если хоть одна команда вызова уносит данные навсегда.
+   * A refusal if even one command in the call would destroy data for good.
    *
-   * Разбор строки решает почти всё сразу и без сети; на сервер уходит один
-   * запрос и только за тем, чего в тексте не видно, — куда ведёт ссылка.
-   * Возвращает готовый текст отказа или null, если идти можно.
+   * Parsing the text settles almost everything at once and without the
+   * network; one request goes to the server, and only for what the text
+   * cannot show — where a symlink leads. Returns the refusal text, or null if
+   * it is safe to proceed.
    */
   private async refuseDestructive(
     commands: string[],
     config: SSHConfig,
     sudo?: boolean
   ): Promise<string | null> {
-    // Паспорт нужен только ради домашнего каталога, а он нужен только там, где
-    // удаление вообще есть. Обычная команда не должна платить за проверку,
-    // которая её не касается, — поэтому дом берётся лениво.
+    // The passport is only needed for the home directory, and that is only
+    // needed where a deletion appears at all. An ordinary command should not
+    // pay for a check that does not concern it — so the home directory is fetched lazily.
     let home: string | null = null;
 
     for (const command of commands) {
-      // Разбор по тексту идёт первым: он не касается путей, поэтому ранняя
-      // ветка по целям удаления пропустила бы его мимо вместе с командой
+      // Text-based parsing runs first: it does not concern paths, so an
+      // earlier branch keyed on deletion targets would let it slip past along with the command
       const irreversible = inspectIrreversible(command);
       if (irreversible.blocked) {
         return blockedMessage(command, irreversible.reason!);

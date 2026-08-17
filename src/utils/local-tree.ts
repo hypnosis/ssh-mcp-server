@@ -1,19 +1,21 @@
 /**
- * Обход локального дерева перед загрузкой
+ * Walks the local tree before an upload
  *
- * Дерево считается так же, как его видит транспорт: `scp -r` идёт по ссылкам
- * и привозит копии, а на битой ссылке и на цикле останавливается. Если считать
- * иначе, ответ инструмента разойдётся с тем, что уехало: счётчик файлов и
- * размер окажутся занижены, а проверка хешей накроет не всё дерево.
+ * The tree is counted the same way the transport sees it: `scp -r` follows
+ * symlinks and copies their targets, and stops on a broken link or a cycle.
+ * Counting it differently would make the tool's answer diverge from what
+ * actually went out: the file count and size would come out too low, and
+ * the hash check would miss part of the tree.
  *
- * Битую ссылку и цикл ловим здесь, до передачи. Транспорт заметит их сам, но
- * уже на середине — часть дерева к тому времени лежит на сервере.
+ * A broken link or a cycle is caught here, before the transfer. The transport
+ * would notice them too, but only halfway through — part of the tree would
+ * already be sitting on the server by then.
  */
 
 import { readdir, stat } from 'fs/promises';
 import { join } from 'path';
 
-/** Что сломано в ссылке — по коду ошибки от stat */
+/** What's wrong with the link, from stat's error code */
 function describeBadLink(relative: string, error: unknown): Error {
   const code = (error as NodeJS.ErrnoException).code;
 
@@ -35,10 +37,10 @@ function describeBadLink(relative: string, error: unknown): Error {
 }
 
 /**
- * Относительные пути всех файлов дерева.
+ * Relative paths of every file in the tree.
  *
- * Ссылка на файл считается файлом, в ссылку на каталог заходим — ровно то,
- * что привезёт транспорт.
+ * A symlink to a file counts as a file, and a symlink to a directory is
+ * followed — exactly what the transport will bring over.
  */
 export async function listTreeFiles(root: string): Promise<string[]> {
   const files: string[] = [];
@@ -57,8 +59,8 @@ export async function listTreeFiles(root: string): Promise<string[]> {
       }
 
       if (info.isDirectory()) {
-        // Ссылка на каталог-предок увела бы обход в бесконечность, а stat
-        // об этом не скажет: сам по себе такой каталог существует
+        // A symlink to an ancestor directory would send the walk into an
+        // infinite loop, and stat alone won't tell: the directory itself exists
         const id = `${info.dev}:${info.ino}`;
         if (ancestors.has(id)) {
           throw new Error(

@@ -23,6 +23,12 @@ import { describeBrokenProfile } from '../utils/profiles-file.js';
 import { logger } from '../utils/logger.js';
 import type { ToolResult } from '../utils/tool-result.js';
 
+/** ssh_monitor arguments, matching its inputSchema */
+interface MonitorArgs {
+  action?: string;
+  profile?: string;
+}
+
 export class MonitoringTool {
   getTool(): Tool {
     return {
@@ -47,13 +53,13 @@ export class MonitoringTool {
   }
   
   async handleCall(request: CallToolRequest): Promise<ToolResult> {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as MonitorArgs;
     const action = args.action;
     
     logger.debug(`[Monitoring Tool] Action: ${action}, profile: ${args.profile || 'default'}`);
     
     try {
-      // Ожидание здесь обязательно: без него отказ уходит мимо перехвата ниже
+      // Awaiting here is mandatory: without it a rejection would slip past the catch below
       switch (action) {
         case 'stats':
           return await this.getStats(args.profile);
@@ -87,10 +93,11 @@ export class MonitoringTool {
   }
   
   /**
-   * Состояние транспорта профиля.
+   * A profile's transport state.
    *
-   * Метрик пула здесь нет: соединение живёт в самом ssh и общее для всех
-   * процессов машины, поэтому считать его нашими счётчиками нечем.
+   * There are no pool metrics here: the connection lives inside ssh itself
+   * and is shared by every process on the machine, so there is nothing for
+   * our own counters to measure it with.
    */
   private async getStats(profileName?: string) {
     const profile = profileName || getDefaultProfile();
@@ -190,8 +197,8 @@ export class MonitoringTool {
       output += `Host: ${sshConfig.host}:${sshConfig.port || 22}\n`;
       output += `Username: ${sshConfig.username}\n`;
       output += `Latency: ${result.latencyMs}ms\n`;
-      // Разница между «доехало по готовому каналу» и «пришлось входить заново»
-      // объясняет, почему один и тот же вызов иногда занимает секунды
+      // The difference between "travelled over an already-open channel" and
+      // "had to log in again" explains why the same call sometimes takes seconds
       output += result.masterWasActive
         ? `Reused an existing connection\n`
         : `Opened a new connection\n`;
@@ -209,10 +216,11 @@ export class MonitoringTool {
   }
   
   /**
-   * Закрыть общее соединение профиля, не дожидаясь срока простоя.
+   * Close a profile's shared connection without waiting for it to idle out.
    *
-   * Закрывается назначение профиля, а не всё подряд: имя сокета — хэш, по нему
-   * сервер не восстановить, а удаление файла соединение не разрывает.
+   * What closes is the profile's destination, not everything at once: the
+   * socket's name is a hash, the server cannot be recovered from it, and
+   * deleting the file does not tear down the connection.
    */
   private async closeConnection(profileName?: string) {
     const profile = profileName || getDefaultProfile();
@@ -242,8 +250,8 @@ export class MonitoringTool {
   }
 
   /**
-   * Что осталось на машине после закрытия: соединения других профилей переживают
-   * и это действие, и выход сервера.
+   * What is left on the machine after closing: other profiles' connections
+   * outlive both this action and the server process exiting.
    */
   private async describeLeftovers(): Promise<string> {
     try {
@@ -276,8 +284,8 @@ export class MonitoringTool {
       output += `• ${profile}${isDefault}\n`;
     }
 
-    // Сломанные записи — отдельным списком: их нельзя перепутать с рабочими
-    // профилями, а причина отказа видна сразу, без похода в файл
+    // Broken entries get their own list: they cannot be mistaken for working
+    // profiles, and the reason for the failure is visible right away, without opening the file
     if (broken.length > 0) {
       output += `\n⚠️ Broken (fix in SSH_PROFILES_FILE):\n`;
       for (const entry of broken) {

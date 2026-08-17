@@ -78,6 +78,9 @@ skills-lock.json
 # Отчёты о приёмке: содержат подробности боевого сервера, в репозиторий не едут
 docs/acceptance/
 
+# Внутренние правила работы команды, для публичной витрины не предназначены
+CLAUDE.md
+
 # SSH profiles (never commit!)
 *.profiles.json
 ssh-profiles.json

@@ -13,23 +13,23 @@ import {
 import type { PathSecurityConfig } from './path-validator.js';
 
 /**
- * Отклонённый профиль: имя, поле, стоявшее там значение и чем оно плохо.
+ * A rejected profile: its name, the offending field, the value it held, and why it's bad.
  *
- * Разобранная запись, а не готовая строка: отказ на неё смотрит там, где
- * профиль просят по имени, и собирает свой текст.
+ * A parsed record rather than a ready-made string: the rejection is looked up
+ * where a profile is requested by name, and it composes its own message there.
  */
 export interface BrokenProfile {
-  /** Имя профиля в файле */
+  /** Profile name in the file */
   name: string;
-  /** Поле, из-за которого профиль отклонён */
+  /** Field that caused the profile to be rejected */
   field: string;
-  /** Значение поля в том виде, в каком оно записано в файле */
+  /** Field value as it was written in the file */
   value: string;
-  /** Чем значение не годится */
+  /** Why the value doesn't work */
   reason: string;
 }
 
-/** Значение поля в виде, пригодном для сообщения об ошибке */
+/** Field value formatted for use in an error message */
 function formatValue(value: unknown): string {
   if (value === undefined) return 'undefined';
   try {
@@ -39,12 +39,12 @@ function formatValue(value: unknown): string {
   }
 }
 
-/** Одна строка отказа: профиль, поле, причина и то, что стояло в файле */
+/** One rejection line: profile, field, reason, and what was in the file */
 export function describeBrokenProfile(entry: BrokenProfile): string {
   return `Profile "${entry.name}" has invalid ${entry.field}: ${entry.reason} (got ${entry.value})`;
 }
 
-/** Испорченное поле в записи об ограничении путей, или null если всё в порядке */
+/** The broken field in a path-security entry, or null if it's fine */
 interface PathSecurityProblem {
   field: string;
   value: unknown;
@@ -52,16 +52,16 @@ interface PathSecurityProblem {
 }
 
 /**
- * Что не так с записью об ограничении путей, или null если всё в порядке.
+ * What's wrong with a path-security entry, or null if it's fine.
  *
- * Проверяется форма, а не содержимое: список путей обязан быть списком строк,
- * иначе валидатор получит мусор и пропустит всё подряд — то есть защита будет
- * числиться включённой, ничего не запрещая.
+ * Checks shape, not content: the path list must be a list of strings, or the
+ * validator receives garbage and lets everything through — protection would
+ * count as enabled while blocking nothing.
  *
- * Правило обязано быть абсолютным. Валидатор сравнивает его с уже раскрытым
- * путём, поэтому `~/.ssh` или `logs` не совпадут ни с чем; подставить сюда
- * чужой домашний или рабочий каталог — то же угадывание, от которого отказался
- * сам валидатор.
+ * A rule must be absolute. The validator compares it against an already
+ * resolved path, so `~/.ssh` or `logs` would never match anything; guessing
+ * at someone's home or working directory here is the same guesswork the
+ * validator itself refuses to do.
  */
 function describePathSecurityProblem(value: unknown): PathSecurityProblem | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -144,7 +144,7 @@ export interface SSHProfileData {
   strictHostKeyChecking?: StrictHostKeyChecking;
   /** Ignore the user's ~/.ssh/config for this profile */
   ignoreUserConfig?: boolean;
-  /** Ограничения на пути: белый и чёрный списки каталогов */
+  /** Path restrictions: allowed and denied directory lists */
   pathSecurity?: PathSecurityConfig;
 }
 
@@ -156,7 +156,7 @@ export interface ProfilesFileResult {
   config: ProfilesConfig | null;
   /** Validation errors */
   errors: string[];
-  /** Профили, отклонённые из-за испорченного поля */
+  /** Profiles rejected because of a broken field */
   broken: BrokenProfile[];
 }
 
@@ -170,7 +170,7 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
   const errors: string[] = [];
   const broken: BrokenProfile[] = [];
 
-  /** Отклонить профиль: ошибка уходит наверх и строкой, и разобранной записью */
+  /** Reject a profile: the error is reported both as a string and as a parsed record */
   const reject = (name: string, field: string, value: unknown, reason: string): void => {
     const entry: BrokenProfile = { name, field, value: formatValue(value), reason };
     logger.error(`[Profiles File] ❌ ${describeBrokenProfile(entry)}`);
@@ -237,13 +237,13 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
 
       const profile = data as any;
 
-      // Секреты прячем от лога до всех проверок: профиль могут отсеять как
-      // непригодный для SSH (нет host, чужой mode, плохой порт), но пароль в
-      // нём настоящий, и в лог ему нельзя ни при каком исходе разбора
+      // Secrets are hidden from the log before any checks: a profile may still
+      // get filtered out as unfit for SSH (no host, wrong mode, bad port), but
+      // its password is real and must not reach the log under any outcome
       hideFromLogs(typeof profile.password === 'string' ? profile.password : undefined);
       hideFromLogs(typeof profile.passphrase === 'string' ? profile.passphrase : undefined);
 
-      // Пропускаем профили с mode: "local" - они для Docker локального режима, SSH не использует
+      // Skip profiles with mode: "local" - they're for Docker local mode, SSH doesn't use them
       if (profile.mode === 'local') {
         logger.debug(`[Profiles File] Skipping profile "${name}" (mode: local) - not suitable for SSH`);
         skippedCount++;
@@ -255,14 +255,14 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
         logger.debug(`[Profiles File] Skipping profile "${name}" - missing or invalid host (not suitable for SSH)`);
         logger.debug(`[Profiles File] Profile "${name}" host value:`, profile.host);
         skippedCount++;
-        continue; // Пропускаем без ошибки, просто не добавляем в список
+        continue; // Skip without an error, just don't add it to the list
       }
 
       if (!profile.username || typeof profile.username !== 'string') {
         logger.debug(`[Profiles File] Skipping profile "${name}" - missing or invalid username (not suitable for SSH)`);
         logger.debug(`[Profiles File] Profile "${name}" username value:`, profile.username);
         skippedCount++;
-        continue; // Пропускаем без ошибки
+        continue; // Skip without an error
       }
       
       logger.debug(`[Profiles File] Profile "${name}" has required fields: host=${profile.host}, username=${profile.username}`);
@@ -303,8 +303,8 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
         logger.debug(`[Profiles File] Profile "${name}" has password authentication configured`);
       }
 
-      // Опечатка в политике проверки ключа хоста не должна проходить молча:
-      // тихий откат к значению по умолчанию ослабил бы защиту незаметно
+      // A typo in the host key checking policy must not pass silently:
+      // a quiet fallback to the default would weaken protection unnoticed
       if (profile.strictHostKeyChecking !== undefined) {
         if (!STRICT_HOST_KEY_CHECKING_VALUES.includes(profile.strictHostKeyChecking)) {
           reject(
@@ -323,9 +323,9 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
         logger.debug(`[Profiles File] Profile "${name}" ignores the user's ~/.ssh/config`);
       }
 
-      // Ограничения на пути. Испорченная запись — ошибка профиля, а не тихий
-      // пропуск: молча забытое правило выглядит как включённая защита, которой
-      // на самом деле нет
+      // Path restrictions. A broken entry is a profile error, not a silent
+      // skip: a rule dropped without notice would look like enabled
+      // protection that isn't actually there
       if (profile.pathSecurity !== undefined) {
         const problem = describePathSecurityProblem(profile.pathSecurity);
         if (problem) {
@@ -337,7 +337,7 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       }
 
       profiles[name] = profileData;
-      logger.debug(`[Profiles File] ✅ Profile "${name}" validated and added`);
+      logger.debug(`[Profiles File] Profile "${name}" validated and added`);
     }
     
     logger.debug(`[Profiles File] Validation complete: ${Object.keys(profiles).length} valid profiles, ${skippedCount} skipped, ${broken.length} errors`);
@@ -355,32 +355,32 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       profiles,
     };
 
-    // Set default profile - проверяем подходит ли указанный default для SSH
+    // Set default profile - check whether the specified default is suitable for SSH
     if (parsed.default && typeof parsed.default === 'string') {
       logger.debug(`[Profiles File] Checking default profile: "${parsed.default}"`);
       if (profiles[parsed.default]) {
-        // Указанный default подходит для SSH
+        // The specified default is suitable for SSH
         config.default = parsed.default;
-        logger.debug(`[Profiles File] ✅ Default profile "${parsed.default}" is valid for SSH`);
+        logger.debug(`[Profiles File] Default profile "${parsed.default}" is valid for SSH`);
       } else if (broken.some((entry) => entry.name === parsed.default)) {
-        // Испорченный default остаётся на своём имени: сосед вместо него увёл бы
-        // команду без явного профиля на другой сервер
+        // A broken default keeps its own name: falling back to a neighbor
+        // would send a command with no explicit profile to a different server
         config.default = parsed.default;
         logger.error(`[Profiles File] ❌ Default profile "${parsed.default}" is broken and stays unusable`);
       } else {
-        // Указанный default не подходит для SSH (например, mode: "local")
-        // Находим первый подходящий профиль и делаем его default
+        // The specified default isn't suitable for SSH (e.g. mode: "local")
+        // Find the first suitable profile and make it the default
         const firstValidProfile = Object.keys(profiles)[0];
         if (firstValidProfile) {
           logger.warn(`[Profiles File] ⚠️  Default profile "${parsed.default}" is not suitable for SSH`);
           logger.info(`[Profiles File] Using first valid profile as default: "${firstValidProfile}"`);
           config.default = firstValidProfile;
         }
-        // Если firstValidProfile не найден - мы уже проверили это выше (строки 141-144)
-        // Просто не устанавливаем default, будет использован первый из profiles
+        // If firstValidProfile is missing, the empty-profiles check above
+        // already caught it; nothing more to do here
       }
     } else {
-      // Default не указан - используем первый подходящий
+      // No default specified - use the first suitable profile
       logger.debug(`[Profiles File] No default profile specified, using first valid profile`);
       const firstValidProfile = Object.keys(profiles)[0];
       if (firstValidProfile) {
@@ -389,7 +389,7 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       }
     }
 
-    logger.info(`[Profiles File] ✅ Loaded ${Object.keys(profiles).length} SSH profiles from ${resolvedPath}`);
+    logger.info(`[Profiles File] Loaded ${Object.keys(profiles).length} SSH profiles from ${resolvedPath}`);
     if (config.default) {
       logger.info(`[Profiles File] Default SSH profile: "${config.default}"`);
     }
@@ -397,8 +397,9 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       logger.info(`[Profiles File] Skipped ${skippedCount} profiles (not suitable for SSH)`);
     }
 
-    // Ошибки испорченных профилей едут наверх и при уцелевших соседях: иначе
-    // профиль исчезает молча, а default съезжает на другой сервер
+    // Errors from broken profiles are reported even when valid neighbors
+    // survive: otherwise a profile disappears silently, and the default
+    // shifts to a different server
     return { config, errors, broken };
   } catch (error: any) {
     if (error.name === 'SyntaxError') {

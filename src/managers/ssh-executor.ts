@@ -1,9 +1,10 @@
 /**
  * SSH Executor
  *
- * Собирает строку команды (sudo, рабочий каталог) и отдаёт её транспорту.
- * Как команда доедет до сервера — дело раннера; повторы и таймауты живут
- * там же, потому что только транспорт знает, что именно сломалось.
+ * Builds the command string (sudo, working directory) and hands it to the
+ * transport. How the command actually reaches the server is the runner's
+ * job; retries and timeouts live there too, because only the transport
+ * knows what actually broke.
  */
 
 import { getRunner } from '../runner/get-runner.js';
@@ -15,14 +16,14 @@ import { shellQuote } from '../utils/shell-arg.js';
 import { hideArtifactNames } from '../utils/tmp-name.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
-/** Дверь к сроку транспорта для инструментов: они берут его здесь, а не в раннере */
+/** Entry point to the transport's default timeout for tools: they get it here, not from the runner */
 export const DEFAULT_TIMEOUT_MS = DEFAULT_EXEC_TIMEOUT_MS;
 
 export interface SSHExecuteOptions {
   /**
-   * Command execution timeout (ms). Ноль означает «потолка нет»: так зовут
-   * команды, длительность которых задаёт объём данных, — сверка хэшей дерева
-   * на гигабайты не обязана укладываться в общие 30 секунд.
+   * Command execution timeout (ms). Zero means "no ceiling": that's how
+   * commands whose duration is set by the data volume are invoked — hashing
+   * a multi-gigabyte tree is not obligated to fit in the usual 30 seconds.
    */
   timeout?: number;
   /** Working directory */
@@ -31,15 +32,15 @@ export interface SSHExecuteOptions {
   sudo?: boolean;
   /**
    * Safe to repeat after a transport failure.
-   * Ставится только чтению: повтор мутирующей команды опаснее её отказа.
+   * Set only for reads: repeating a mutating command is more dangerous than its failure.
    */
   idempotent?: boolean;
-  /** Данные на вход команды (например, манифест для `sha256sum -c -`) */
+  /** Data fed to the command's stdin (e.g. a manifest for `sha256sum -c -`) */
   stdin?: string | Buffer;
   /**
-   * Отмена вызова, пришедшая от клиента. Команда получает её только там, где
-   * оборваться безопасно: уборка и замена файлов идут без сигнала, иначе
-   * отмена остановила бы тот самый код, который убирает за отменой.
+   * Cancellation coming from the client. The command receives it only where
+   * aborting is safe: cleanup and file replacement run without the signal,
+   * otherwise cancellation would stop the very code that cleans up after cancellation.
    */
   signal?: AbortSignal;
 }
@@ -52,8 +53,8 @@ export interface SSHExecuteResult {
   /** Exit code */
   exitCode: number;
   /**
-   * Вывод не поместился в буфер транспорта и показан частично.
-   * Отдавать такой ответ как полный нельзя — он выглядит достоверным.
+   * The output did not fit the transport buffer and is shown partially.
+   * Such an answer must not be treated as complete — it looks trustworthy.
    */
   truncated: boolean;
 }
@@ -65,8 +66,8 @@ export class SSHExecutor {
   /**
    * Execute command on remote server.
    *
-   * Ненулевой код возврата — часть результата, а не ошибка: `grep` без
-   * совпадений возвращает 1, и вызывающий вправе решать сам, что это значит.
+   * A non-zero exit code is part of the result, not an error: `grep` with
+   * no matches returns 1, and the caller decides for itself what that means.
    *
    * @param config - SSH configuration
    * @param command - Command to execute
@@ -83,10 +84,10 @@ export class SSHExecutor {
     // survive sudo. Plain `sudo (if ...; fi)` is a shell syntax error — sudo expects a
     // program, not a shell construct.
     //
-    // Язык берётся из паспорта. Жёсткий `bash` означал, что на машине без него
-    // не работает ни одна операция с повышением прав: измерено на Alpine, где
-    // любой sudo-вызов отвечал «bash: command not found». `sh` есть везде,
-    // поэтому он же и ответ на «паспорт не прочитан».
+    // The shell is taken from the passport. A hard-coded `bash` would make
+    // every privilege-elevating operation fail on a machine without it,
+    // with sudo answering "bash: command not found". `sh` exists
+    // everywhere, so it's also the answer for "the passport hasn't been read yet".
     let finalCommand = command;
     if (options.sudo) {
       const passport = await this.passport(config);
@@ -95,10 +96,11 @@ export class SSHExecutor {
 
     // Add cd if working directory is specified.
     //
-    // Неудавшийся переход обрывает всю строку, а не только ближайшую команду:
-    // `&&` связывает лишь до первого `;`, и остаток выполнялся в чужом каталоге
-    // с кодом 0. Выход вместо скобок — команда, оканчивающаяся на `&`, внутри
-    // `{ … ; }` даёт синтаксическую ошибку на BusyBox и dropbear
+    // A failed cd must abort the whole line, not just the nearest command:
+    // `&&` only binds up to the first `;`, so without this the rest would
+    // silently run in the wrong directory with exit code 0. Exit is used
+    // instead of braces — a command ending in `&` inside `{ … ; }` is a
+    // syntax error on BusyBox and dropbear
     if (options.cwd) {
       finalCommand = `cd ${shellQuote(options.cwd)} || exit 1; ${finalCommand}`;
     }
@@ -124,10 +126,9 @@ export class SSHExecutor {
   /**
    * Execute a command that must succeed.
    *
-   * Для шагов, после которых нельзя идти дальше: не создан каталог, не
-   * переименован файл, не применены права. Раньше такую проверку делал за нас
-   * транспорт — он бросал на любом ненулевом коде; теперь код честный, и места,
-   * где неудача означает провал операции, называются явно.
+   * For steps after which there is no going forward: a directory wasn't
+   * created, a file wasn't renamed, permissions weren't applied. The
+   * places where a failure means the operation failed are named explicitly here.
    */
   async executeChecked(
     config: SSHConfig,
@@ -150,11 +151,12 @@ export class SSHExecutor {
   }
 
   /**
-   * Паспорт сервера: что на нём есть из утилит.
+   * The server's passport: which utilities are available on it.
    *
-   * Спрашивается у транспорта, а не собирается здесь своей командой: только он
-   * умеет провести пробу мимо шлюза первой команды. Проба через `exec` замыкала
-   * круг — команды, стоящие в шлюзе, ждут паспорт, а паспорт ждёт шлюз.
+   * Requested from the transport rather than assembled here with its own
+   * command: only the transport can run the probe past the gate on the
+   * first command. Probing via `exec` would close the loop — commands
+   * waiting at the gate would wait for the passport, and the passport would wait for the gate.
    */
   async passport(config: SSHConfig): Promise<ServerPassport> {
     const runner = await getRunner(config);

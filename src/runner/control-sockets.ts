@@ -1,10 +1,11 @@
 /**
- * Что мы оставили на машине
+ * What we left behind on the machine
  *
- * Управляющие сокеты переживают выход сервера: соединение общее для машины,
- * и закрытие рвало бы канал соседнему окну. Модуль отвечает только фактами —
- * какие сокеты лежат в каталоге и живы ли они. Текст для показа собирают
- * потребители: печать на выходе и ssh_monitor.
+ * Control sockets outlive the server exiting: the connection is shared across
+ * the machine, and closing it would cut the channel out from under a sibling
+ * window. This module only reports facts — which sockets sit in the directory
+ * and whether they're alive. Consumers assemble display text themselves:
+ * output printing and ssh_monitor.
  */
 
 import { readdir, stat } from 'fs/promises';
@@ -13,32 +14,34 @@ import { join } from 'path';
 import { CONTROL_SOCKET_PREFIX, resolveControlPersistSec } from './ssh-args.js';
 import { resolveControlDir } from './runtime-check.js';
 
-/** Сколько ждать ответа от локального сокета, прежде чем считать состояние неизвестным */
+/** How long to wait for a response from the local socket before considering its state unknown */
 const PROBE_TIMEOUT_MS = 1000;
 
 /**
- * Состояние управляющего сокета.
+ * State of a control socket.
  *
- * `stale` — файл остался от убитого master: следующая команда поднимет
- * соединение заново, но до тех пор сокет занимает место и вводит в заблуждение.
+ * `stale` — the file is left over from a killed master: the next command
+ * will bring the connection back up, but until then the socket takes up
+ * space and is misleading.
  */
 type ControlSocketState = 'alive' | 'stale' | 'unknown';
 
 export interface ControlSocket {
   path: string;
   /**
-   * Когда поднят master. Командами не обновляется, поэтому по этому времени
-   * нельзя судить, сколько соединению осталось жить.
+   * When the master came up. Not updated by commands, so this time can't be
+   * used to judge how much longer the connection has left to live.
    */
   since: Date;
   state: ControlSocketState;
 }
 
 /**
- * Живо ли соединение за сокетом.
+ * Whether the connection behind the socket is alive.
  *
- * Подключение без единого байта — штатный путь: master принимает его и ждёт
- * приветствия протокола, а разрыв не трогает ни его, ни соседние сессии.
+ * Connecting without sending a single byte is the normal path: the master
+ * accepts it and waits for the protocol handshake, and disconnecting affects
+ * neither it nor sibling sessions.
  */
 function probeSocket(path: string): Promise<ControlSocketState> {
   return new Promise((resolve) => {
@@ -57,11 +60,12 @@ function probeSocket(path: string): Promise<ControlSocketState> {
 }
 
 /**
- * Управляющие сокеты, оставленные в каталоге.
+ * Control sockets left in the directory.
  *
- * Каталог принадлежит серверу, но кроме сокетов там лежит askpass-скрипт,
- * поэтому имена отбираются по префиксу. Сокет, исчезнувший между чтением
- * каталога и опросом, в список не попадает: срок вышел, и он уже не наш.
+ * The directory belongs to the server, but besides sockets it also holds the
+ * askpass script, so names are filtered by prefix. A socket that disappears
+ * between reading the directory and probing it is left out of the list: its
+ * time ran out, and it's no longer ours.
  */
 export async function listControlSockets(
   controlDir: string = resolveControlDir()
@@ -70,7 +74,7 @@ export async function listControlSockets(
   try {
     names = await readdir(controlDir);
   } catch (error) {
-    // Каталога нет — соединений не заводили вовсе
+    // No directory — no connections were ever made
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
@@ -83,7 +87,7 @@ export async function listControlSockets(
     const path = join(controlDir, name);
     try {
       const info = await stat(path);
-      // Тип файла из stat решает сразу: подключением опрашивают только настоящие сокеты
+      // The file type from stat decides right away: only real sockets get probed by connecting
       const state = info.isSocket() ? await probeSocket(path) : 'unknown';
       sockets.push({ path, since: info.mtime, state });
     } catch (error) {
@@ -96,11 +100,11 @@ export async function listControlSockets(
 }
 
 /**
- * Сколько соединение живёт после последней команды, секунды.
+ * How long the connection lives after the last command, in seconds.
  *
- * Именно это значение уходит в команду ssh, поэтому вызывающий называет срок,
- * а не обещание. Остаток срока не вычисляется: время сокета — это момент
- * подъёма master, команды его не двигают.
+ * This is the exact value that goes into the ssh command, so the caller
+ * states a deadline, not a promise. The remaining time isn't computed: the
+ * socket's timestamp is the moment the master came up — commands don't move it.
  */
 export function idleWindowSec(): number {
   return resolveControlPersistSec();

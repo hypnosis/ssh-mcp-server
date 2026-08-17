@@ -1,25 +1,26 @@
 /**
- * Разбор командной строки на вызовы
+ * Parses a command line into invocations
  *
- * Отвечает на один вопрос: какие программы команда запускает и с какими
- * аргументами. Решение по найденному принимают вызывающие — здесь только
- * разбор строки, без обращений к серверу.
+ * Answers one question: which programs the command runs and with what
+ * arguments. Callers decide what to do with the finding — this module only
+ * parses the string, with no calls to the server.
  */
 
-/** Обёртки, за которыми стоит настоящая команда */
+/** Wrappers behind which the real command stands */
 const WRAPPERS = /^(sudo|doas|env|nohup|time|timeout|nice|ionice|setsid)$/;
 
-/** Хвост обёртки: её флаги, присваивания переменных, длительность у timeout */
+/** Wrapper tail: its flags, variable assignments, the duration for timeout */
 const WRAPPER_ARGS = /^(-|\w+=|\d)/;
 
 /**
- * Флаги обёрток, забирающие следующее слово, — у каждой обёртки свои.
+ * Wrapper flags that consume the next word — each wrapper has its own set.
  *
- * Без них имя пользователя из `sudo -u postgres dropdb app` встаёт в позицию
- * команды, а сама команда остаётся невидимой. Список общим быть не может:
- * `-n` у `nice` — это величина, а у `sudo` — «не спрашивай», и съеденным словом
- * оказалась бы сама команда. Флаги с числовым значением сюда не входят: число
- * пропускается разбором хвоста и так.
+ * Without them the username from `sudo -u postgres dropdb app` lands in the
+ * command position, leaving the real command invisible. The list can't be
+ * shared across wrappers: `-n` is a value for `nice` but means "don't ask"
+ * for `sudo`, and the word it would eat is the command itself. Flags with a
+ * numeric value are not listed here: the number is already skipped by the
+ * tail parsing.
  */
 const WRAPPER_FLAGS_WITH_VALUE: Record<string, Set<string>> = {
   sudo: new Set(['-u', '--user', '-g', '--group']),
@@ -31,26 +32,26 @@ const WRAPPER_FLAGS_WITH_VALUE: Record<string, Set<string>> = {
 
 const NO_VALUED_FLAGS = new Set<string>();
 
-/** Запуск одной программы в пределах простого сегмента команды */
+/** One program invocation within a simple command segment */
 export interface Invocation {
-  /** Имя без пути: `/sbin/reboot` и `reboot` дают одно и то же */
+  /** Name without the path: `/sbin/reboot` and `reboot` are the same */
   name: string;
-  /** Аргументы в том виде, в каком написаны, вместе с кавычками */
+  /** Arguments as written, quotes included */
   args: string[];
 }
 
-/** Убрать кавычки, которыми аргумент мог быть обёрнут целиком */
+/** Strip the quotes an argument may be wrapped in entirely */
 export function unquote(argument: string): string {
   const paired = /^'(.*)'$/.exec(argument) ?? /^"(.*)"$/.exec(argument);
   return paired ? paired[1] : argument;
 }
 
 /**
- * Разрезать команду на простые сегменты.
+ * Split the command into simple segments.
  *
- * Разделители shell (`;`, `&&`, `||`, `|`, перевод строки) разделяют команды
- * только вне кавычек: `git commit -m "fix; reboot handler"` — одна команда, а
- * разрез по точке с запятой оставлял бы `reboot` в позиции команды.
+ * Shell separators (`;`, `&&`, `||`, `|`, newline) split commands only
+ * outside quotes: `git commit -m "fix; reboot handler"` is one command, and
+ * splitting on the semicolon would leave `reboot` in the command position.
  */
 export function splitSegments(command: string): string[] {
   const segments: string[] = [];
@@ -93,16 +94,16 @@ export function splitSegments(command: string): string[] {
   return segments;
 }
 
-/** Разбить сегмент на слова, не разрывая закавыченные куски */
+/** Split a segment into words without breaking quoted chunks */
 export function tokenize(segment: string): string[] {
   return segment.match(/'[^']*'|"[^"]*"|\S+/g) ?? [];
 }
 
 /**
- * Найти вызовы программ во всей команде.
+ * Find program invocations across the whole command.
  *
- * Слово в позиции команды — это вызов; то же слово в аргументе, пути или
- * строке в кавычках вызовом не является.
+ * A word in the command position is an invocation; the same word in an
+ * argument, a path, or a quoted string is not.
  */
 export function parseInvocations(command: string): Invocation[] {
   const invocations: Invocation[] = [];
@@ -118,7 +119,7 @@ export function parseInvocations(command: string): Invocation[] {
       while (index < tokens.length && WRAPPER_ARGS.test(tokens[index])) {
         const takesValue = valued.has(unquote(tokens[index]));
         index += 1;
-        // Значением бывает только слово: следующий флаг значением не считается
+        // Only a word can be a value: the next flag is never treated as one
         if (takesValue && index < tokens.length && !tokens[index].startsWith('-')) index += 1;
       }
     }

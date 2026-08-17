@@ -1,12 +1,12 @@
 /**
- * Построение аргументов для системного ssh/scp
+ * Building arguments for the system ssh/scp
  *
- * Чистые функции без побочных эффектов: на вход — конфигурация профиля,
- * на выход — массив аргументов. Массив передаётся в spawn без участия shell,
- * поэтому спецсимволы в путях и именах интерпретироваться не могут.
+ * Pure functions with no side effects: profile configuration goes in, an
+ * argument array comes out. The array is passed to spawn without a shell, so
+ * special characters in paths and names can't be interpreted.
  *
- * Секреты (пароль, passphrase) здесь не появляются никогда: аргументы процесса
- * видны в `ps` любому пользователю системы. Секрет доставляется через askpass.
+ * Secrets (password, passphrase) never appear here: process arguments are
+ * visible via `ps` to any user on the system. The secret is delivered through askpass.
  */
 
 import { createHash } from 'crypto';
@@ -14,57 +14,57 @@ import { logger } from '../utils/logger.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
 
 /**
- * Конфигурация профиля для транспорта.
+ * Profile configuration for the transport.
  *
- * Совпадает с конфигурацией профиля: транспортные настройки
- * (проверка ключа хоста, отказ от ~/.ssh/config) живут там же, где host
- * и username, — это часть формата профиля, а не отдельная сущность.
+ * Matches the profile configuration: transport settings (host key checking,
+ * opting out of ~/.ssh/config) live alongside host and username — they're
+ * part of the profile format, not a separate entity.
  */
 export type RunnerConfig = SSHConfig;
 
 /**
- * Возможности окружения, влияющие на набор аргументов
+ * Environment capabilities that affect the argument set
  */
 export interface SshCapabilities {
-  /** Поддерживается ли мультиплексирование (на нативном Windows — нет) */
+  /** Whether multiplexing is supported (not on native Windows) */
   multiplexing: boolean;
-  /** Каталог для управляющих сокетов (права 0700) */
+  /** Directory for control sockets (0700 permissions) */
   controlDir: string;
   /**
-   * Гоняет ли scp файлы поверх SFTP (клиент 9.0+). От этого зависит судьба
-   * удалённого пути: в классическом протоколе его разбирает shell сервера,
-   * в SFTP-режиме путь-приёмник берётся буквально.
+   * Whether scp transfers files over SFTP (client 9.0+). This determines the
+   * fate of the remote path: in the classic protocol it's parsed by the
+   * server's shell, in SFTP mode the destination path is taken literally.
    */
   scpOverSftp: boolean;
 }
 
 /**
- * Настройки, у которых есть разумные значения по умолчанию
+ * Settings that have sensible defaults
  */
 export interface SshArgsOptions {
-  /** Таймаут установки соединения, секунды */
+  /** Connection setup timeout, seconds */
   connectTimeoutSec?: number;
-  /** Интервал keepalive-проб, секунды */
+  /** Keepalive probe interval, seconds */
   serverAliveIntervalSec?: number;
-  /** Сколько проб без ответа считать разрывом */
+  /** How many unanswered probes count as a dropped connection */
   serverAliveCountMax?: number;
 }
 
 const DEFAULT_CONTROL_PERSIST_SEC = 600;
 const DEFAULT_CONNECT_TIMEOUT_SEC = 10;
-/** Имя управляющего сокета начинается с этого — по нему же он и опознаётся в каталоге */
+/** A control socket's name starts with this — also how it's recognized in the directory */
 export const CONTROL_SOCKET_PREFIX = 's-';
 const DEFAULT_SERVER_ALIVE_INTERVAL_SEC = 15;
 const DEFAULT_SERVER_ALIVE_COUNT_MAX = 3;
 
-/** О непонятном значении переменной предупреждаем один раз, а не на каждую команду */
+/** An unrecognized variable value is warned about once, not on every command */
 let unknownPersistReported = false;
 
 /**
- * Сколько соединение живёт после последней команды, секунды.
+ * How long the connection lives after the last command, in seconds.
  *
- * Единственный источник: отсюда значение уходит и в команду ssh, и в ответ
- * инструментов о том, что осталось на машине. Ноль означает «закрывать сразу».
+ * The single source of truth: this value flows both into the ssh command and
+ * into tool responses about what's left running on the machine. Zero means "close immediately".
  */
 export function resolveControlPersistSec(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.SSH_MCP_CONTROL_PERSIST?.trim();
@@ -84,14 +84,14 @@ export function resolveControlPersistSec(env: NodeJS.ProcessEnv = process.env): 
   return DEFAULT_CONTROL_PERSIST_SEC;
 }
 
-/** Забыть, что о значении уже предупреждали (используется в тестах) */
+/** Forget that the value was already warned about (used in tests) */
 export function resetControlPersistWarning(): void {
   unknownPersistReported = false;
 }
 
 /**
- * Значение, которое ssh воспримет как опцию, а не как аргумент.
- * Хост вида "-oProxyCommand=..." в профиле — это подмена команды, а не хост.
+ * A value that ssh would take as an option rather than an argument.
+ * A host like "-oProxyCommand=..." in a profile is a command substitution, not a host.
  */
 function assertNotOptionLike(value: string, fieldName: string): void {
   if (value.startsWith('-')) {
@@ -103,14 +103,14 @@ function assertNotOptionLike(value: string, fieldName: string): void {
 }
 
 /**
- * Нужен ли профилю интерактивный ввод секрета через askpass
+ * Whether the profile needs interactive secret input via askpass
  */
 export function needsAskpass(config: RunnerConfig): boolean {
   return Boolean(config.password || config.passphrase);
 }
 
 /**
- * Отпечаток учётных данных: профили с разными ключами не делят соединение.
+ * Credential fingerprint: profiles with different keys don't share a connection.
  */
 export function configFingerprint(config: RunnerConfig): string {
   const material = [
@@ -125,16 +125,18 @@ export function configFingerprint(config: RunnerConfig): string {
 }
 
 /**
- * Путь к управляющему сокету.
+ * Path to the control socket.
  *
- * Имя — хэш от назначения и учётных данных. Назначение делает сокет общим для
- * всех процессов клиента: разные окна попадают на одно соединение, ради этого
- * мультиплексирование и заводили. Учётные данные в имени обязательны: без них
- * профиль без ключа проезжает по соединению, поднятому чужим ключом, — сокет
- * доступ не проверяет, он его уже даёт.
+ * The name is a hash of the destination and the credentials. The
+ * destination makes the socket shared across every client process: separate
+ * windows land on the same connection, which is the whole point of
+ * multiplexing. The credentials in the name are mandatory: without them a
+ * profile with no key would ride on a connection brought up by someone
+ * else's key — the socket doesn't check access, it already grants it.
  *
- * Считаем сами, а не через `%C` клиента: тот знает только хост, порт и
- * пользователя. Длина пути важна — лимит адреса unix-сокета на macOS 104 байта.
+ * Computed ourselves rather than via the client's `%C`: that only knows
+ * host, port and username. Path length matters — the unix socket address
+ * limit on macOS is 104 bytes.
  */
 export function buildControlPath(controlDir: string, config: RunnerConfig): string {
   const material = [
@@ -149,7 +151,7 @@ export function buildControlPath(controlDir: string, config: RunnerConfig): stri
 }
 
 /**
- * Опции, общие для ssh и scp
+ * Options shared by ssh and scp
  */
 export function buildCommonOptions(
   config: RunnerConfig,
@@ -170,37 +172,37 @@ export function buildCommonOptions(
 
   const args: string[] = [];
 
-  // Пользовательский ~/.ssh/config читается по умолчанию: он даёт ProxyJump,
-  // ssh-agent и политики алгоритмов бесплатно. Наши -o всегда его перекрывают.
+  // The user's ~/.ssh/config is read by default: it gives ProxyJump,
+  // ssh-agent and algorithm policies for free. Our -o flags always override it.
   if (config.ignoreUserConfig) {
     args.push('-F', process.platform === 'win32' ? 'NUL' : '/dev/null');
   }
 
-  // Мультиплексирование — то, ради чего всё затевалось: одна аутентификация
-  // на окно ControlPersist вместо одной на каждую команду.
+  // Multiplexing is what this is all for: one authentication per
+  // ControlPersist window instead of one per command.
   if (caps.multiplexing) {
     args.push('-o', 'ControlMaster=auto');
     args.push('-o', `ControlPath=${buildControlPath(caps.controlDir, config)}`);
     args.push('-o', `ControlPersist=${resolveControlPersistSec()}`);
   }
 
-  // Штатный keepalive вместо самодельных пингов командой
+  // Built-in keepalive instead of homemade pings via a command
   args.push('-o', `ServerAliveInterval=${serverAliveIntervalSec}`);
   args.push('-o', `ServerAliveCountMax=${serverAliveCountMax}`);
   args.push('-o', `ConnectTimeout=${connectTimeoutSec}`);
 
   args.push('-o', `StrictHostKeyChecking=${config.strictHostKeyChecking ?? 'accept-new'}`);
 
-  // Без этого предупреждения вида "Permanently added ..." попадают в stderr
-  // и ломают классификацию ошибок
+  // Without this, warnings like "Permanently added ..." land in stderr
+  // and break error classification
   args.push('-o', 'LogLevel=ERROR');
 
   args.push('-o', `User=${config.username}`);
 
   if (config.privateKeyPath) {
     args.push('-o', `IdentityFile=${config.privateKeyPath}`);
-    // Без IdentitiesOnly клиент перебирает все ключи агента по очереди,
-    // и каждый отвергнутый сервер считает неудачной попыткой входа
+    // Without IdentitiesOnly the client offers every agent key in turn, and
+    // the server counts each rejected one as a failed login attempt
     args.push('-o', 'IdentitiesOnly=yes');
   } else if (config.password) {
     args.push('-o', 'PubkeyAuthentication=no');
@@ -208,8 +210,8 @@ export function buildCommonOptions(
     args.push('-o', 'NumberOfPasswordPrompts=1');
   }
 
-  // BatchMode запрещает любые запросы ввода, включая askpass. Для профилей
-  // с паролем или passphrase его ставить нельзя — иначе секрет некуда подать.
+  // BatchMode blocks any input prompt, askpass included. It can't be set for
+  // profiles with a password or passphrase — there'd be nowhere to feed the secret.
   if (!needsAskpass(config)) {
     args.push('-o', 'BatchMode=yes');
   }
@@ -218,7 +220,7 @@ export function buildCommonOptions(
 }
 
 /**
- * Аргументы для выполнения команды: ssh [опции] <host> <command>
+ * Arguments for running a command: ssh [options] <host> <command>
  */
 export function buildSshArgs(
   config: RunnerConfig,
@@ -231,8 +233,8 @@ export function buildSshArgs(
   args.push('-p', String(config.port ?? 22));
 
   if (options.requestTty) {
-    // -tt форсирует псевдотерминал даже без локального tty. Нужен программам,
-    // читающим /dev/tty напрямую. Побочный эффект — stderr сливается в stdout.
+    // -tt forces a pseudo-terminal even without a local tty. Needed by
+    // programs that read /dev/tty directly. Side effect — stderr merges into stdout.
     args.push('-tt');
   }
 
@@ -243,7 +245,7 @@ export function buildSshArgs(
 }
 
 /**
- * Аргументы управляющей команды: ssh -O check|exit <host>
+ * Arguments for a control command: ssh -O check|exit <host>
  */
 export function buildControlArgs(
   config: RunnerConfig,
@@ -259,34 +261,35 @@ export function buildControlArgs(
 }
 
 /**
- * Что происходит с удалённым путём по дороге к серверу.
+ * What happens to the remote path on its way to the server.
  *
- * Замерено на одном клиенте (OpenSSH 10.2) в обоих режимах:
- * - `literal` — цель загрузки в SFTP-режиме. Путь уходит как есть, и обратный
- *   слэш стал бы частью имени: файл лёг бы под именем `a\ b.txt`, а следом
- *   развалились бы сверка, переименование и уборка — они ищут путь без него.
- * - `glob` — источник скачивания. Шаблоны раскрывает клиент, и `star*name.txt`
- *   тащит три посторонних файла; обратный слэш это чинит.
- * - `shell` — классический протокол (клиенты до 9.0). Путь разбирает shell
- *   сервера: пробел рвёт его на два аргумента, а `$(id)` исполняется.
+ * - `literal` — the upload destination in SFTP mode. The path travels as-is,
+ *   and a backslash would become part of the name: the file would land under
+ *   the name `a\ b.txt`, breaking verification, renaming and cleanup right
+ *   after — they look for the path without it.
+ * - `glob` — the download source. Patterns are expanded by the client, so
+ *   `star*name.txt` pulls in three unrelated files; a backslash escape avoids that.
+ * - `shell` — the classic protocol (clients before 9.0). The path is parsed
+ *   by the server's shell: a space splits it into two arguments, and `$(id)` gets executed.
  */
 export type RemotePathUse = 'literal' | 'glob' | 'shell';
 
 /**
- * Подготовить удалённый путь к передаче.
+ * Prepare a remote path for transfer.
  *
- * Экранирование обратным слэшем — единственное, что работает: одинарные кавычки
- * в SFTP-режиме становятся частью имени, а в классическом дают `protocol error`.
+ * Backslash-escaping is the only thing that works: single quotes become part
+ * of the name in SFTP mode, and produce a `protocol error` in the classic one.
  *
- * Не трогаем разделитель пути, безопасную латиницу с цифрами, тильду и всё, что
- * вне ASCII. Тильду — потому что её раскрывает сервер, и `\~/app.conf` уехал бы
- * в несуществующий каталог с именем `~` (замерено). Кириллицу — потому что она
- * работает и без экранирования.
+ * The path separator, safe ASCII letters and digits, the tilde, and anything
+ * outside ASCII are left untouched. The tilde, because the server expands
+ * it, and `\~/app.conf` would land in a nonexistent directory named `~`.
+ * Cyrillic, because it works fine without escaping.
  *
- * Перевод строки и возврат каретки не экранируются: `\` перед переводом строки
- * означает продолжение строки, символ исчезает, и имя становится другим. В
- * SFTP-режиме такой путь работает как есть, а в классическом остаток строки
- * выполняется на сервере как команда — поэтому там он отклоняется.
+ * Newline and carriage return are not escaped: a `\` right before a newline
+ * means line continuation, the character disappears, and the name becomes
+ * different. In SFTP mode such a path works as-is, while in the classic
+ * protocol the rest of the line runs on the server as a command — so it's
+ * rejected there instead.
  */
 export function prepareRemotePath(remotePath: string, use: RemotePathUse): string {
   if (use === 'literal') return remotePath;
@@ -302,16 +305,16 @@ export function prepareRemotePath(remotePath: string, use: RemotePathUse): strin
   return escapeRemotePath(remotePath);
 }
 
-/** Экранировать всё, что удалённая сторона прочтёт как разметку, а не как имя */
+/** Escape everything the remote side would read as syntax rather than as part of the name */
 export function escapeRemotePath(remotePath: string): string {
   return remotePath.replace(/[^A-Za-z0-9._/~\n\r\u0080-\uFFFF-]/g, (char) => `\\${char}`);
 }
 
 /**
- * Удалённый путь в формате scp.
+ * Remote path in scp format.
  *
- * IPv6-адрес заключается в скобки, иначе двоеточия внутри адреса
- * будут прочитаны как разделитель хоста и пути.
+ * An IPv6 address is wrapped in brackets, otherwise the colons inside it
+ * would be read as the host/path separator.
  */
 export function buildRemoteSpec(host: string, remotePath: string): string {
   const isIPv6 = host.includes(':');
@@ -320,11 +323,11 @@ export function buildRemoteSpec(host: string, remotePath: string): string {
 }
 
 /**
- * Локальный путь для scp.
+ * Local path for scp.
  *
- * Путь, содержащий двоеточие до первого слэша, scp примет за удалённый, а
- * путь, начинающийся с дефиса, — за опцию. Префикс "./" снимает обе
- * двусмысленности.
+ * A path containing a colon before its first slash would be taken by scp as
+ * remote, and a path starting with a dash as an option. The "./" prefix
+ * clears up both ambiguities.
  */
 export function normalizeLocalSpec(localPath: string): string {
   const firstSlash = localPath.indexOf('/');
@@ -339,10 +342,10 @@ export function normalizeLocalSpec(localPath: string): string {
 }
 
 /**
- * Аргументы передачи файла: scp [опции] <src> <dst>
+ * Arguments for a file transfer: scp [options] <src> <dst>
  *
- * scp переиспользует то же master-соединение, что и ssh, потому что получает
- * те же ControlPath/ControlMaster — передача файла не создаёт новый вход.
+ * scp reuses the same master connection as ssh, because it gets the same
+ * ControlPath/ControlMaster — a file transfer doesn't create a new login.
  */
 export function buildScpArgs(
   config: RunnerConfig,
@@ -354,12 +357,12 @@ export function buildScpArgs(
 ): string[] {
   const args = buildCommonOptions(config, caps, options);
 
-  // У scp порт задаётся заглавной -P, в отличие от ssh
+  // scp takes the port as capital -P, unlike ssh
   args.push('-P', String(config.port ?? 22));
   args.push('-q');
 
-  // Классический протокол вместо SFTP: на клиентах до 9.0 он и так
-  // единственный, поэтому флаг нужен только новым
+  // The classic protocol instead of SFTP: on clients before 9.0 it's the
+  // only one anyway, so the flag is only needed on newer ones
   const classicProtocol = options.legacyProtocol || !caps.scpOverSftp;
   if (options.legacyProtocol && caps.scpOverSftp) {
     args.push('-O');
@@ -370,8 +373,8 @@ export function buildScpArgs(
   }
 
   const localSpec = normalizeLocalSpec(localPath);
-  // Цель загрузки в SFTP-режиме — единственный путь, который уходит буквально:
-  // экранирование сделало бы обратный слэш частью имени (замерено)
+  // The upload destination in SFTP mode is the one path that travels
+  // literally: escaping it would turn the backslash into part of the name
   const use: RemotePathUse = classicProtocol ? 'shell' : direction === 'upload' ? 'literal' : 'glob';
   const remoteSpec = buildRemoteSpec(config.host, prepareRemotePath(remotePath, use));
 

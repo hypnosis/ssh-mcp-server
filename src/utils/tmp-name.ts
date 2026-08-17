@@ -22,13 +22,13 @@ export function buildTempPath(remotePath: string): string {
 }
 
 /**
- * Имя для отложенной старой копии рядом с целью.
+ * Name for a deferred old copy next to the target.
  *
  * /var/www/app → /var/www/.bak-<rand>.app
  *
- * Случайный суффикс обязателен: с фиксированным `.bak` повторная установка
- * при оставшейся с прошлой аварии копии перенесла бы боевой каталог внутрь
- * неё, а следующий шаг штатно удалил бы всё вместе.
+ * The random suffix is mandatory: with a fixed `.bak`, a re-install with a
+ * copy left over from a previous crash would move the live directory inside
+ * it, and the next step would routinely delete everything together.
  */
 export function buildBackupPath(path: string): string {
   const rand = randomBytes(6).toString('hex');
@@ -42,24 +42,25 @@ export function buildBackupPath(path: string): string {
   return `${parent}/.bak-${rand}.${base}`;
 }
 
-/** Приставки временных имён — по ним узнаём свои следы рядом с целью */
+/** Temp name prefixes — used to recognize our own traces next to the target */
 export const ARTIFACT_PREFIXES = ['.upload-', '.bak-'];
 
 /**
- * Вернуть в текст путь, который назвал человек.
+ * Restore the path the human named, in the text.
  *
- * Данные едут через временное имя рядом с целью, и это имя попадало в сообщения
- * об ошибке: пользователь просил записать `/etc/nginx.conf`, а отказ приходил
- * про `/etc/.upload-7952b8939bc0.nginx.conf` — путь, которого он не называл и
- * найти на сервере уже не может.
+ * Data travels under a temp name next to the target, and that name was
+ * leaking into error messages: the human asked to write `/etc/nginx.conf`,
+ * and the rejection came back about `/etc/.upload-7952b8939bc0.nginx.conf`
+ * — a path they never named and can no longer find on the server.
  *
- * Временный путь получает пометку, а не просто теряет свой хвост: в одной
- * строке рядом стоят оба пути, и без пометки замена превращает `mv` временной
- * копии на место цели в бессмысленное «переименовать цель саму в себя».
+ * The temp path gets a note rather than simply losing its suffix: both
+ * paths end up next to each other on one line, and without the note, the
+ * substitution turns the `mv` of the staged copy onto the target into a
+ * meaningless "rename the target to itself".
  *
- * Отложенная копия (`.bak-`) под это правило не подпадает: она на сервере
- * лежит, её адрес мы человеку и сообщаем, а стёртый он превращает «не убралась
- * старая копия» в «не удалось удалить боевой путь».
+ * The deferred copy (`.bak-`) doesn't fall under this rule: it stays on the
+ * server, and we do tell the human its address — erasing it would turn "the
+ * old copy wasn't cleaned up" into "failed to delete the live path".
  */
 export function hideArtifactNames(text: string): string {
   return text
@@ -68,11 +69,11 @@ export function hideArtifactNames(text: string): string {
 }
 
 /**
- * Похоже ли имя на наш временный путь для этой цели.
+ * Whether a name looks like our temp path for this target.
  *
- * Проверка нужна точная: рядом лежат и чужие скрытые файлы, и наши же
- * временные пути от **другой** цели в том же каталоге. Назвать чужое своим —
- * значит посоветовать человеку удалить не то.
+ * The check needs to be exact: the same directory can hold both unrelated
+ * hidden files and our own temp paths for a **different** target. Calling
+ * someone else's file ours means telling the human to delete the wrong one.
  */
 export function isArtifactOf(name: string, base: string): boolean {
   return ARTIFACT_PREFIXES.some((prefix) => {

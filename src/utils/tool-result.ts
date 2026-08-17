@@ -1,29 +1,30 @@
 /**
- * Ответ инструмента: провал отличается от результата флагом, а не текстом.
+ * Tool response: failure is marked by a flag, not inferred from the text.
  *
- * «Проверить нечем» провалом не считается — это успех с пометкой внутри
- * содержимого, и флаг ему не ставится.
+ * "No way to tell" doesn't count as a failure — it's a success with a note
+ * inside the content, and it gets no flag.
  */
 
 import { partialOutputSection } from './output-notes.js';
 
 /**
- * Ответ инструмента в форме, которую ждёт протокол.
+ * A tool response in the shape the protocol expects.
  *
- * Именно псевдоним, а не интерфейс: обработчик запроса в SDK принимает объект
- * с произвольными полями, и интерфейс под такой параметр не подставляется.
+ * A type alias, not an interface: the SDK's request handler accepts an
+ * object with arbitrary fields, and an interface doesn't fit such a
+ * parameter.
  */
 export type ToolResult = {
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
   /**
-   * Разбор ответа для инструментов, объявивших его схему. У отказа его нет:
-   * клиент требует разбор только от ответа без флага провала.
+   * Parsed response for tools that declared its schema. A failure has none:
+   * the client only requires parsing for a response without the failure flag.
    */
   structuredContent?: object;
 };
 
-/** Ошибка, которая несёт вывод, накопленный командой до остановки */
+/** An error that carries the output the command accumulated before it was stopped */
 type PartialOutputCarrier = { partialStdout: string; partialStderr: string };
 
 function carriesPartialOutput(error: unknown): error is PartialOutputCarrier {
@@ -36,12 +37,13 @@ function carriesPartialOutput(error: unknown): error is PartialOutputCarrier {
 }
 
 /**
- * Ответ вызова, обработавшего список путей.
+ * Response for a call that processed a list of paths.
  *
- * Заголовок называет число удавшихся, а не число обработанных: «Read 2 files»
- * над двумя отказами описывает работу, которой не было. Ноль удавшихся — провал
- * вызова целиком, и он помечается флагом наравне с одиночной формой; частичный
- * исход провалом не считается — он честно показан значками внутри текста.
+ * The header names the number that succeeded, not the number processed:
+ * "Read 2 files" over two failures describes work that never happened. Zero
+ * successes is a failure of the whole call, flagged the same as the
+ * single-path form; a partial outcome isn't a failure — it's honestly shown
+ * with markers inside the text.
  */
 export function batchOutcome(
   action: string,
@@ -57,10 +59,11 @@ export function batchOutcome(
 }
 
 /**
- * Инструмент не сделал того, о чём его просили.
+ * The tool didn't do what it was asked.
  *
- * Убитая по таймауту команда успевает что-то напечатать, и это единственный
- * след её работы: повторить её нельзя — она уже стартовала на сервере.
+ * A command killed by the timeout manages to print something first, and
+ * that's the only trace of its work: it can't be retried — it already
+ * started on the server.
  */
 export function toolFailure(error: unknown): ToolResult {
   const message = error instanceof Error ? error.message : String(error);

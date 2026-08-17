@@ -57,7 +57,7 @@
 
 ## Как закрыто
 
-Спринт [FIX_16](../sprints/planned/FIX_16_audit_speaks_to_the_point.md), задачи 1 и 2.
+Спринт [FIX_16](../../sprints/planned/FIX_16_audit_speaks_to_the_point.md), задачи 1 и 2.
 
 **Замер «до»** — alpine, в конфигурации `Port 2222`, демон слушает 22, пароли разрешены:
 ответ пуст. Флаг паролей глушился условием `/^22$/.test(result.ssh.port)`, расхождение

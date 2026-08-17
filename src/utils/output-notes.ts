@@ -1,18 +1,18 @@
 /**
- * Пометки о неполном ответе
+ * Notes about an incomplete response
  *
- * Транспорт складывает вывод команды в буфер ограниченного размера и честно
- * сообщает, если вывод в него не поместился. Дальше это должен увидеть
- * человек: кусок файла или списка внешне ничем не отличается от целого,
- * и молча отданный огрызок читается как достоверный ответ.
+ * The transport collects command output into a buffer of limited size and
+ * honestly reports when the output didn't fit. A human needs to see this
+ * next: a piece of a file or a listing looks no different from the whole,
+ * and a silently truncated scrap reads as a trustworthy answer.
  */
 
-/** Сколько вывода команды помещается в буфер транспорта; сверх этого ответ обрезается */
+/** How much command output fits into the transport buffer; anything past this gets truncated */
 export const OUTPUT_LIMIT_BYTES = 10 * 1024 * 1024;
 
 const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB'];
 
-/** Человеческая запись объёма: 10485760 → «10 MiB» */
+/** Human-readable size label: 10485760 → "10 MiB" */
 export function byteLimitLabel(bytes: number): string {
   let value = bytes;
   let unit = 0;
@@ -27,11 +27,12 @@ export function byteLimitLabel(bytes: number): string {
 const OUTPUT_LIMIT_LABEL = byteLimitLabel(OUTPUT_LIMIT_BYTES);
 
 /**
- * Коды, которыми удалённый сторож сообщает, что убил затянувшуюся команду.
+ * Exit codes the remote timeout guard uses to report that it killed a
+ * command that ran too long.
  *
- * Замерено на живых серверах: coreutils возвращает 124, BusyBox — 143
- * (это 128 + SIGTERM). Работу убивают оба, но голое «143» без пояснения
- * читается как отказ самой команды.
+ * coreutils returns 124, BusyBox returns 143 (128 + SIGTERM). Both mean the
+ * guard killed the command, but a bare 143 without explanation reads as the
+ * command's own failure.
  */
 const TIMEOUT_GUARD_EXIT_CODES = [124, 143];
 
@@ -39,18 +40,18 @@ export const TRUNCATED_OUTPUT_NOTE =
   `⚠️ Output truncated at the transport buffer limit (${OUTPUT_LIMIT_LABEL}) — ` +
   'this is only its first part.';
 
-/** Подписать вывод, если он неполный */
+/** Append a note if the output is incomplete */
 export function withTruncationNote(text: string, truncated: boolean): string {
   if (!truncated) return text;
   return text ? `${text}\n\n${TRUNCATED_OUTPUT_NOTE}` : TRUNCATED_OUTPUT_NOTE;
 }
 
 /**
- * Почему чтение файла отказало и что делать вместо него.
+ * Why the file read failed and what to do instead.
  *
- * Для файла пометка не спасает: содержимое уходит дальше как данные — его
- * записывают обратно, разбирают, сравнивают. Обрезанный файл в этой цепочке
- * опаснее отказа, поэтому здесь отказ с готовым обходным путём.
+ * A note doesn't help for a file: the content moves on as data — it gets
+ * written back, parsed, compared. A truncated file is more dangerous than a
+ * failure in that chain, so this is a failure with a ready workaround.
  */
 export function truncatedReadMessage(path: string): string {
   return (
@@ -61,9 +62,9 @@ export function truncatedReadMessage(path: string): string {
 }
 
 /**
- * Байты, не сложившиеся в текст, приходят знаком замены — файл уже испорчен,
- * и записанный обратно даст другой файл. Поэтому здесь тоже отказ с обходным
- * путём, а не пометка поверх содержимого.
+ * Bytes that don't form text arrive as a replacement character — the file is
+ * already damaged, and writing it back would produce a different file. So
+ * this is also a failure with a workaround, not a note on top of the content.
  */
 export function binaryReadMessage(path: string): string {
   return (
@@ -77,10 +78,12 @@ export const PARTIAL_OUTPUT_NOTE =
   '⚠️ The command was stopped before it finished — this is only what it printed until then.';
 
 /**
- * Вывод, накопленный командой до остановки, под пометкой о неполноте.
+ * Output the command accumulated before it was stopped, under an
+ * incomplete-output note.
  *
- * Пустая строка, если печатать нечего: команду могли убить до первого байта,
- * и пустая секция читалась бы как «вывода не было», хотя проверить это нечем.
+ * Empty string when there's nothing to print: the command may have been
+ * killed before its first byte, and an empty section would read as "there
+ * was no output", though there's no way to tell.
  */
 export function partialOutputSection(stdout: string, stderr: string): string {
   const parts: string[] = [];
@@ -92,14 +95,15 @@ export function partialOutputSection(stdout: string, stderr: string): string {
 }
 
 /**
- * Сколько совпадений поиска по журналу помещается в один ответ.
+ * How many log search matches fit into a single response.
  *
- * Без предела поиск по настоящему журналу отдавал 3736 строк одним ответом:
- * единственной границей был буфер транспорта, а он лежит в тридцать раз выше.
+ * Without a limit, the only boundary is the transport buffer, which sits far
+ * above a reasonable response size — so an unbounded search would flood the
+ * caller with the whole log instead of just the matches.
  */
 export const DEFAULT_MAX_MATCHES = 200;
 
-/** Что вывод обрезан по числу совпадений, а не по объёму буфера */
+/** Note that the output was truncated by match count, not by buffer size */
 export function matchLimitNote(max: number): string {
   return (
     `⚠️ Showing the first ${max} matches — the log has more. ` +
@@ -108,10 +112,11 @@ export function matchLimitNote(max: number): string {
 }
 
 /**
- * Оставить не больше `max` совпадений.
+ * Keep no more than `max` matches.
  *
- * Совпадение отличается от строки контекста знаком после номера: `12:` у
- * найденной строки и `12-` у соседней, поэтому считаются только первые.
+ * A match differs from a context line by the character after the number:
+ * `12:` for a found line and `12-` for a neighboring one, so only the
+ * former is counted.
  */
 export function limitMatches(text: string, max: number): { text: string; limited: boolean } {
   const lines = text.split('\n');
@@ -126,12 +131,12 @@ export function limitMatches(text: string, max: number): { text: string; limited
   return { text, limited: false };
 }
 
-/** Есть ли в прочитанном знак замены — след потерянных байтов */
+/** Whether the text read back contains a replacement character — a trace of lost bytes */
 export function looksDamagedAsText(text: string): boolean {
   return text.includes('�');
 }
 
-/** Пояснение к коду возврата, если голое число вводит в заблуждение */
+/** Hint for the exit code, when the bare number alone would mislead */
 export function exitCodeHint(exitCode: number): string {
   if (TIMEOUT_GUARD_EXIT_CODES.includes(exitCode)) {
     return ' (killed by the timeout guard on the server — it ran past the allowed time)';

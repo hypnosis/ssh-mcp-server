@@ -21,25 +21,24 @@ export async function sha256OfFile(localPath: string): Promise<string> {
 }
 
 /**
- * Сколько файлов дерева читаем одновременно.
+ * How many files of the tree are read concurrently.
  *
- * Раньше хэши считались через `Promise.all` по всему списку — открывались
- * разом все файлы дерева. На тысяче файлов это упирается в лимит дескрипторов
- * процесса (замерено: при `nofile=1024` дерево из 1100 файлов даёт EMFILE), и
- * страдает не только сверка: без свободного дескриптора процесс не может
- * открыть ни сокет, ни файл. Шестнадцать ничего не стоят по скорости: замер на
- * дереве в 2000 файлов дал 31 мс против 51 у сплошного `Promise.all`, а сверх
- * фона процесс держит ровно шестнадцать дескрипторов при любом размере дерева.
+ * Opening every file of a large tree at once runs into the process's open
+ * file descriptor limit (EMFILE). That doesn't just break hashing — without
+ * a free descriptor the process can't open a socket or a file either. A
+ * capped concurrency keeps descriptor usage constant regardless of tree
+ * size, at negligible cost to speed.
  */
 const HASH_CONCURRENCY = 16;
 
 /**
- * Посчитать sha256 списка файлов, читая не больше шестнадцати разом.
- * Порядок результатов совпадает с порядком путей.
+ * Compute sha256 for a list of files, reading no more than sixteen at once.
+ * Results are returned in the same order as the input paths.
  *
- * Первый же нечитаемый файл останавливает работу: причина уходит наверх, а
- * остальные читатели не дочитывают дерево, от которого вызывающий уже отказался
- * (при скачивании они читали бы staging, который вот-вот удалят).
+ * The first unreadable file stops the work: the error propagates up, and
+ * the remaining readers don't finish the tree the caller has already given
+ * up on (for a download, they'd otherwise be reading the staging path right
+ * before it gets deleted).
  */
 export async function sha256OfFiles(localPaths: string[]): Promise<string[]> {
   const hashes = new Array<string>(localPaths.length);

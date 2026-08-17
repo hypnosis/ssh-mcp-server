@@ -1,65 +1,65 @@
 /**
- * Разбор команд, уносящих данные навсегда
+ * Parses commands that carry data away for good
  *
- * Отвечает на один вопрос по тексту команды: уничтожает ли она сосуд целиком —
- * машину, базу, том, диск, набор заданий. Содержимое внутри сосуда сюда не
- * относится: его правят каждый день, и отказ на нём превратил бы маркер в
- * привычку.
+ * Answers one question about a command's text: does it destroy the whole
+ * container — a machine, a database, a volume, a disk, a set of jobs. The
+ * contents inside a container are out of scope here: they get changed every
+ * day, and a block on them would turn the marker into a habit.
  *
- * Сервер здесь не нужен вовсе: решение принимается по имени команды и её
- * аргументам. Пути и символические ссылки разбирает destructive-command.ts.
+ * No server is needed here at all: the verdict is decided from the command's
+ * name and its arguments. Paths and symlinks are the job of destructive-command.ts.
  */
 
 import { type Invocation, parseInvocations, unquote } from './command-parse.js';
 import { isConfirmed } from './destructive-command.js';
 
-/** Команды, останавливающие машину */
+/** Commands that stop the machine */
 const HALTING_COMMANDS = ['reboot', 'shutdown', 'halt', 'poweroff'];
 
-/** Клиенты БД: запрос виден только у них, в аргументе или на входе */
+/** DB clients: the query is only visible in their own argument or on stdin */
 export const DB_CLIENTS = [
   'psql', 'mysql', 'mariadb', 'sqlite3', 'mongo', 'mongosh', 'clickhouse-client',
 ];
 
-/** Снос базы целиком; таблицы внутри неё правят каждый день и сюда не входят */
+/** Destroys a database entirely; tables inside it are changed daily and are out of scope */
 const DROP_DATABASE = /\bDROP\s+DATABASE\b/i;
 
-/** Очистка Redis: обе формы уносят всё, что в памяти */
+/** Redis flush: both forms carry away everything held in memory */
 const REDIS_FLUSH = /^(FLUSHALL|FLUSHDB)$/i;
 
-/** Менеджеры томов: снятый том не восстанавливается */
+/** Volume managers: a removed volume does not come back */
 const VOLUME_REMOVERS = ['lvremove', 'vgremove', 'pvremove'];
 
 /**
- * Устройства, запись в которые ничего не портит.
+ * Devices that writing to does not damage anything.
  *
- * Всё остальное в `/dev/` — диск или том: `dd of=/dev/sda` сносит его целиком,
- * а `of=/swapfile` — обычный файл и штатная работа.
+ * Everything else under `/dev/` is a disk or a volume: `dd of=/dev/sda`
+ * destroys it whole, while `of=/swapfile` is a plain file and routine work.
  */
 const HARMLESS_DEVICES = new Set([
   '/dev/null', '/dev/zero', '/dev/random', '/dev/urandom', '/dev/stdout', '/dev/stderr', '/dev/tty',
 ]);
 
-/** Раскрывает сервер: что окажется за этим, из текста не видно */
+/** Expanded by the server: what ends up there is not visible from the text */
 const EXPANDABLE = /[$`]|\*|\?|\[/;
 
-/** Флаги docker, забирающие следующее слово: без этого значение сойдёт за подкоманду */
+/** Docker flags that consume the next word: without this the value would pass for a subcommand */
 const DOCKER_FLAGS_WITH_VALUE = new Set([
   '-H', '--host', '-c', '--context', '--config', '-l', '--log-level',
   '-f', '--file', '-p', '--project-name', '--project-directory', '--env-file', '--profile',
 ]);
 
-/** Подкоманда и флаги отдельно: позиция подкоманды плавает от глобальных флагов */
+/** Subcommand and flags kept apart: the subcommand's position drifts with global flags */
 interface DockerCall {
   words: string[];
   flags: string[];
 }
 
 /**
- * Разложить аргументы docker на слова и флаги.
+ * Split docker's arguments into words and flags.
  *
- * По позициям искать нельзя: `docker -H unix://… compose down` и
- * `docker compose -f prod.yml down` сдвигают подкоманду на любое место.
+ * Position alone can't be relied on: `docker -H unix://… compose down` and
+ * `docker compose -f prod.yml down` shift the subcommand to different spots.
  */
 function splitDockerArgs(args: string[]): DockerCall {
   const words: string[] = [];
@@ -71,8 +71,8 @@ function splitDockerArgs(args: string[]): DockerCall {
     if (argument.startsWith('-')) {
       flags.push(argument);
 
-      // Значением флага может быть только слово: у `prune` тот же `-f` значит
-      // «не спрашивай», и съеденный им `-a` увёл бы из-под проверки снос всего
+      // Only a word can be a flag's value: for `prune` the same `-f` means
+      // "don't ask", and letting it eat `-a` would take the removal check off guard
       const value = unquote(args[index + 1] ?? '');
       if (DOCKER_FLAGS_WITH_VALUE.has(argument) && !value.startsWith('-')) index += 1;
 
@@ -86,9 +86,9 @@ function splitDockerArgs(args: string[]): DockerCall {
 }
 
 /**
- * Флаг присутствует, в том числе слитно с соседями: `prune -af` чистит так же.
+ * Whether a flag is present, including fused with its neighbors: `prune -af` cleans the same way.
  *
- * Короткая форма есть не у каждого флага, поэтому она необязательна.
+ * Not every flag has a short form, so it is optional.
  */
 function hasFlag(flags: string[], long: string, short?: string): boolean {
   const compact = short ? new RegExp(`^-[a-z]*${short}`) : null;
@@ -96,10 +96,10 @@ function hasFlag(flags: string[], long: string, short?: string): boolean {
 }
 
 /**
- * Что из работы docker уносит данные навсегда.
+ * What in docker's work carries data away for good.
  *
- * Останов и пересоздание контейнеров сюда не относятся: тома их переживают,
- * а `compose down` без флага — обычный перезапуск.
+ * Stopping and recreating containers is out of scope: volumes outlive them,
+ * and `compose down` without the flag is a plain restart.
  */
 function inspectDocker(call: DockerCall): string | null {
   const { words, flags } = call;
@@ -122,20 +122,20 @@ function inspectDocker(call: DockerCall): string | null {
   return null;
 }
 
-/** Итог проверки одной команды */
+/** Verdict for one command */
 export interface IrreversibleVerdict {
   blocked: boolean;
-  /** Человеческое объяснение: что именно и почему остановлено */
+  /** Human-readable explanation: what exactly was stopped, and why */
   reason?: string;
 }
 
 const PASSED: IrreversibleVerdict = { blocked: false };
 
 /**
- * Что из работы с базами уносит её целиком.
+ * What in database work carries the whole database away.
  *
- * Имя базы у `mysqladmin` стоит за словом `drop`, а команда Redis — среди
- * аргументов, а не первым: `redis-cli -h db -p 6379 FLUSHALL`.
+ * `mysqladmin`'s database name sits after the word `drop`, and the Redis
+ * command is among the arguments rather than first: `redis-cli -h db -p 6379 FLUSHALL`.
  */
 function inspectDatabase(name: string, args: string[]): string | null {
   const words = args.map(unquote);
@@ -152,17 +152,17 @@ function inspectDatabase(name: string, args: string[]): string | null {
 }
 
 /**
- * Куда `dd` пишет.
+ * Where `dd` writes.
  *
- * Опасен не сам `dd`, а его приёмник: `of=/dev/sda` сносит диск, `of=/swapfile`
- * создаёт подкачку, `of=/dev/null` не делает ничего.
+ * The danger isn't `dd` itself but its sink: `of=/dev/sda` destroys the disk,
+ * `of=/swapfile` creates swap space, `of=/dev/null` does nothing at all.
  */
 function inspectDiskWrite(args: string[]): string | null {
   const output = args.map(unquote).find((argument) => argument.startsWith('of='));
   if (output === undefined) return null;
 
-  // Кавычки стоят вокруг значения, а не всего аргумента: `of="/dev/sda"` —
-  // тот же диск, и unquote самого аргумента их не снимает
+  // Quotes wrap the value, not the whole argument: `of="/dev/sda"` is still
+  // the same disk, and unquoting the argument itself doesn't strip them
   const target = unquote(output.slice('of='.length));
 
   if (EXPANDABLE.test(target))
@@ -175,56 +175,56 @@ function inspectDiskWrite(args: string[]): string | null {
 }
 
 /**
- * Команды, после которых названного объекта по этому адресу больше нет.
+ * Commands after which the named object no longer exists at that address.
  *
- * Снос базы, тома и файловой системы сюда не входит: он отказывает раньше,
- * первой проверкой порога, и до разбора порядка дело не доходит.
+ * Destroying a database, a volume or a filesystem is out of scope here: it
+ * fails earlier, on the first threshold check, before the ordering check is reached.
  */
 const DESTROYERS = ['rm', 'mv'];
 
 /**
- * Команды, которые данных не читают.
+ * Commands that do not read data.
  *
- * Осмотр — так проверяют, что удаление прошло. Создание пустого — так место
- * готовят заново, и приёмников у него бывает сколько угодно: у `mkdir -p A B`
- * оба аргумента появляются, а не читаются.
+ * Inspection is how removal gets verified. Creating something empty is how a
+ * spot gets prepared again, and it can have any number of sinks: for
+ * `mkdir -p A B` both arguments come into existence rather than being read.
  */
 const NON_READERS = new Set(['ls', 'test', 'stat', 'rm', 'mkdir', 'touch', 'mkfifo']);
 
-/** Архиваторы: приёмник у них стоит за ключом `f`, а не последним */
+/** Archivers: their sink sits behind the `f` key, not last */
 const ARCHIVERS = new Set(['tar']);
 
-/** Ключ файла у архиватора пишут и слитно, и без дефиса: `czf` — тот же `-f` */
+/** An archiver's file key is written both fused and unfused: `czf` is the same as `-f` */
 const ARCHIVE_KEY = /^-?[a-z]*f$/;
 
-/** У `zip` архив стоит первым, а ключа под файл нет: `-f` значит «освежить» */
+/** For `zip` the archive comes first, and there is no key for the file: `-f` means "refresh" */
 const SINK_FIRST = new Set(['zip']);
 
-/** Приёмник назван флагом: `cp -t DEST SRC` ставит его вперёд */
+/** The sink is named by a flag: `cp -t DEST SRC` puts it up front */
 const SINK_FLAGS = new Set(['-t', '--target-directory', '--target-dir']);
 
-/** Путь без хвостовых слэшей и ведущего `./`: `A/` и `./A` — тот же объект */
+/** A path without trailing slashes and a leading `./`: `A/` and `./A` are the same object */
 function normalizePath(value: string): string {
   return value.replace(/^\.\//, '').replace(/\/+$/, '');
 }
 
-/** Путь из аргумента: `dd` называет свои присваиванием — `if=A`, `of=B` */
+/** The path from an argument: `dd` names its own as an assignment — `if=A`, `of=B` */
 function pathOf(word: string): string {
   return normalizePath(word.replace(/^(if|of)=/, ''));
 }
 
-/** Тот же объект или лежащее внутри него: удалили `A`, читаем `A/data` */
+/** The same object, or something lying inside it: `A` was removed, `A/data` is being read */
 function isWithin(candidate: string, destroyed: string): boolean {
   return candidate === destroyed || candidate.startsWith(`${destroyed}/`);
 }
 
 /**
- * Куда команда пишет.
+ * Where a command writes.
  *
- * По умолчанию приёмник — последний аргумент, и этого хватает для `cp`, `mv`,
- * `rsync`, `scp`, `mkdir` и перенаправления. Исключения, где он не последний,
- * названы явно: ключ `f` у архиватора, `of=` у `dd`, `-t` у копий. Ключ `f`
- * читается только у архиваторов: у `cp` тот же `-f` значит «не спрашивай».
+ * By default the sink is the last argument, and that's enough for `cp`, `mv`,
+ * `rsync`, `scp`, `mkdir` and redirection. Exceptions where it isn't last are
+ * named explicitly: an archiver's `f` key, `dd`'s `of=`, `cp`'s `-t`. The `f`
+ * key is only read for archivers: for `cp` the same `-f` means "don't ask".
  */
 function findSink(name: string, args: string[]): string | undefined {
   const words = args.map(unquote);
@@ -245,7 +245,7 @@ function findSink(name: string, args: string[]): string | undefined {
   return last === undefined ? undefined : normalizePath(last);
 }
 
-/** Объекты, которых лишает существования эта команда */
+/** Objects this command wipes out of existence */
 function destroyedBy(name: string, args: string[]): string[] {
   if (!DESTROYERS.includes(name)) return [];
 
@@ -254,8 +254,9 @@ function destroyedBy(name: string, args: string[]): string[] {
     .filter((argument) => !argument.startsWith('-'))
     .map(normalizePath);
 
-  // `mv` уносит источник со старого места, а приёмник, наоборот, появляется.
-  // Приёмник ищется там же, где у остальных: флаг `-t` ставит его вперёд
+  // `mv` carries the source away from its old place, while the sink, on the
+  // contrary, comes into existence. The sink is found the same way as for
+  // the rest: the `-t` flag puts it up front
   if (name !== 'mv') return words;
 
   const sink = findSink(name, args);
@@ -263,9 +264,9 @@ function destroyedBy(name: string, args: string[]): string[] {
 }
 
 /**
- * Ошибочный порядок внутри одного вызова: объект уничтожен, а дальше его
- * читают. Правильный порядок — копия, перенос, удаление — сюда не попадает,
- * потому что уничтожение в нём последнее.
+ * Wrong order within a single call: an object was destroyed, then read
+ * afterward. The correct order — copy, move, delete — does not land here,
+ * because the destruction in it comes last.
  */
 function inspectOrder(invocations: Invocation[]): string | null {
   const destroyed: string[] = [];
@@ -292,16 +293,16 @@ function inspectOrder(invocations: Invocation[]): string | null {
   return null;
 }
 
-/** Слово — сокращение полного имени команды: `sub` вместо `subvolume` */
+/** Whether a word abbreviates a full command name: `sub` for `subvolume` */
 function abbreviates(word: string | undefined, full: string): boolean {
   return word !== undefined && word.length > 0 && full.startsWith(word);
 }
 
 /**
- * Что из работы с дисками и томами уносит носитель целиком.
+ * What in disk and volume work carries away the whole medium.
  *
- * Осмотр и перечисление сюда не входят: `wipefs` без `-a` только читает
- * подписи, `lvs` и `zfs list` не меняют ничего.
+ * Inspection and listing are out of scope: `wipefs` without `-a` only reads
+ * signatures, `lvs` and `zfs list` don't change anything.
  */
 function inspectStorage(name: string, args: string[]): string | null {
   const words = args.map(unquote).filter((argument) => !argument.startsWith('-'));
@@ -317,7 +318,7 @@ function inspectStorage(name: string, args: string[]): string | null {
 
   if (name === 'zfs' && words[0] === 'destroy') return 'zfs destroy removes the dataset';
 
-  // btrfs принимает свои команды сокращёнными: `btrfs sub del` — то же самое
+  // btrfs accepts its commands abbreviated: `btrfs sub del` is the same thing
   if (name === 'btrfs' && abbreviates(words[0], 'subvolume') && abbreviates(words[1], 'delete'))
     return 'btrfs subvolume delete removes the subvolume with its data';
 
@@ -325,18 +326,20 @@ function inspectStorage(name: string, args: string[]): string | null {
 }
 
 /**
- * Проверить команду по одному только тексту.
+ * Inspect a command from its text alone.
  *
- * Имя ищется в позиции команды: `reboot` первым словом — вызов, `reboot` внутри
- * пути или строки в кавычках — упоминание, и его пропускаем.
+ * A name is looked for in the command position: `reboot` as the first word
+ * is an invocation, `reboot` inside a path or a quoted string is a mention,
+ * and it is skipped.
  */
 export function inspectIrreversible(command: string): IrreversibleVerdict {
   if (isConfirmed(command)) return PASSED;
 
   const invocations = parseInvocations(command);
 
-  // Запрос ищется по всей команде, но только если клиент БД в ней вызван: так
-  // ловится и `-c "…"`, и текст на входе, а разговор о запросе остаётся молча
+  // The query is searched for across the whole command, but only if a DB
+  // client is actually invoked in it: this catches both `-c "…"` and stdin
+  // text, while an unrelated mention of the query stays silent
   if (invocations.some(({ name }) => DB_CLIENTS.includes(name)) && DROP_DATABASE.test(command)) {
     return { blocked: true, reason: 'DROP DATABASE destroys the whole database' };
   }
@@ -351,8 +354,8 @@ export function inspectIrreversible(command: string): IrreversibleVerdict {
 
     if (name === 'docker' || name === 'docker-compose') {
       const call = splitDockerArgs(args);
-      // У отдельной программы `docker-compose` подкоманда идёт сразу, а разбор
-      // ждёт её вторым словом — как у `docker compose`
+      // The standalone `docker-compose` program has the subcommand right
+      // away, while the parser expects it as the second word — like `docker compose`
       if (name === 'docker-compose') call.words.unshift('compose');
 
       const reason = inspectDocker(call);
@@ -362,8 +365,8 @@ export function inspectIrreversible(command: string): IrreversibleVerdict {
     const database = inspectDatabase(name, args);
     if (database) return { blocked: true, reason: database };
 
-    // Соседняя с `-e` клавиша уносит все задания пользователя разом и ничего
-    // не переспрашивает; список заданий нигде больше не хранится
+    // The key next to `-e` wipes out every cron job of the user at once and
+    // asks nothing: the job list is stored nowhere else
     if (name === 'crontab' && args.map(unquote).includes('-r')) {
       return { blocked: true, reason: 'crontab -r removes every cron job of the user' };
     }

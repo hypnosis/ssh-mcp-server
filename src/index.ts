@@ -12,36 +12,10 @@ import { logger } from './utils/logger.js';
 import { installProcessGuards } from './utils/process-guards.js';
 import { getAvailableProfiles, getDefaultProfile } from './utils/profile-resolver.js';
 import { createMcpServer } from './mcp-server.js';
-import { listControlSockets, idleWindowSec } from './runner/control-sockets.js';
-
-/**
- * Сказать на выходе, что осталось на машине.
- *
- * Соединения переживают сервер намеренно: сокет общий, и закрытие рвало бы
- * канал соседнему окну. Сколько именно осталось жить каждому — не считаем:
- * время сокета показывает подъём соединения, а не последнюю команду.
- */
-async function reportLeftoverConnections(): Promise<void> {
-  const sockets = await listControlSockets();
-  if (sockets.length === 0) return;
-
-  const alive = sockets.filter((socket) => socket.state === 'alive');
-  const stale = sockets.filter((socket) => socket.state === 'stale');
-
-  logger.info(
-    `Оставлено соединений: ${alive.length} (закроются сами через ${idleWindowSec()} с простоя)`
-  );
-  for (const socket of alive) {
-    logger.info(`  ${socket.path} — поднято ${socket.since.toISOString()}`);
-  }
-  if (stale.length > 0) {
-    logger.info(`Сокеты без соединения: ${stale.length} — уйдут при следующей команде`);
-  }
-  logger.info('Закрыть сразу: ssh -O exit <сервер> с теми же настройками профиля');
-}
+import { reportLeftoverConnections } from './runner/leftover-report.js';
 
 async function main() {
-  // Одна сорвавшаяся операция не должна уносить весь сервер
+  // A single failed operation must not take down the whole server
   installProcessGuards();
 
   // Get version from package.json
@@ -65,7 +39,7 @@ async function main() {
     logger.debug(`[MCP Server] Loading SSH profiles...`);
     const profiles = getAvailableProfiles();
     const defaultProfile = getDefaultProfile();
-    logger.info(`[MCP Server] ✅ Loaded ${profiles.length} SSH profiles: ${profiles.join(', ')}`);
+    logger.info(`[MCP Server] Loaded ${profiles.length} SSH profiles: ${profiles.join(', ')}`);
     logger.info(`[MCP Server] Default profile: "${defaultProfile}"`);
     logger.debug(`[MCP Server] Profile details:`, profiles.map(p => ({ name: p, default: p === defaultProfile })));
   } catch (error: any) {
@@ -88,7 +62,7 @@ async function main() {
   
   // Graceful shutdown
   const shutdown = async (signal: string) => {
-    logger.info(`\nReceived ${signal}, shutting down SSH MCP Server...`);
+    logger.info(`Received ${signal}, shutting down SSH MCP Server...`);
     
     try {
       await reportLeftoverConnections();

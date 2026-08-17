@@ -1,20 +1,20 @@
 /**
- * Правила доступа к путям: белый и чёрный списки каталогов профиля.
+ * Path access rules: allow-list and deny-list of profile directories.
  *
- * Правила сравниваются с каноническим путём — приводит его `path-guard`.
+ * Rules are compared against the canonical path — `path-guard` produces it.
  */
 
 import { posix } from 'path';
 
-/** Правила доступа к путям, задаются в профиле */
+/** Path access rules, set in the profile */
 export interface PathSecurityConfig {
-  /** Каталоги, за пределы которых выходить нельзя */
+  /** Directories the path may not go outside of */
   allowedPaths?: string[];
-  /** Каталоги, закрытые независимо от белого списка */
+  /** Directories that are closed regardless of the allow-list */
   deniedPaths?: string[];
-  /** Пропускать ли `..` в пути; по умолчанию да */
+  /** Whether to allow `..` in a path; defaults to yes */
   allowTraversal?: boolean;
-  /** Предел длины пути; по умолчанию без предела */
+  /** Path length limit; unlimited by default */
   maxPathLength?: number;
 }
 
@@ -24,12 +24,13 @@ export interface PathValidationResult {
 }
 
 /**
- * Путь, о котором можно судить: абсолютный, без `.` и `..`, без сдвоенных
- * слэшей. Приводит к такому виду resolveRemotePath.
+ * A path that can be judged: absolute, with no `.` or `..`, no doubled
+ * slashes. resolveRemotePath brings paths to this form.
  *
- * Тильда отдельного условия не требует: раскрывается только ведущая, а она
- * невозможна у пути, начинающегося со слэша. В середине `~` — обычное имя
- * файла, и такой путь судится наравне с остальными.
+ * The tilde needs no separate check: only a leading one expands, and that's
+ * impossible for a path that already starts with a slash. A `~` in the
+ * middle is just an ordinary file name character, and such a path is
+ * judged like any other.
  */
 function isCanonical(path: string): boolean {
   if (!path.startsWith('/')) return false;
@@ -39,20 +40,21 @@ function isCanonical(path: string): boolean {
 }
 
 /**
- * Каталог из правила в том же виде, в каком приходит проверяемый путь.
- * Тильда и относительный вид сюда не доходят: правило обязано быть абсолютным,
- * это проверяет загрузчик профилей.
+ * A directory from a rule, in the same form as the path being checked.
+ * A tilde or a relative form never reach here: a rule must be absolute,
+ * which the profile loader enforces.
  */
 function normalizeRule(directory: string): string {
   return posix.normalize(directory);
 }
 
 /**
- * Лежит ли путь внутри каталога.
+ * Whether a path lies inside a directory.
  *
- * Сравнение идёт по границе имени, иначе правило цепляет соседей: запрет
- * `/root` отклонял бы `/rootkit`, а разрешение `/var/log` пропускало бы
- * `/var/logs-of-someone-else` — другой каталог с похожим именем.
+ * The comparison is done at the name boundary, otherwise a rule catches
+ * neighbors too: denying `/root` would also deny `/rootkit`, and allowing
+ * `/var/log` would let through `/var/logs-of-someone-else` — a different
+ * directory with a similar name.
  */
 export function isUnder(path: string, directory: string): boolean {
   const base = directory.length > 1 && directory.endsWith('/')
@@ -64,9 +66,9 @@ export function isUnder(path: string, directory: string): boolean {
   return path === base || path.startsWith(`${base}/`);
 }
 
-/** Судит путь по правилам профиля: белый список, чёрный список, длина, `..` */
+/** Judges a path against the profile's rules: allow-list, deny-list, length, `..` */
 export class PathValidator {
-  /** Правила сравнения, приведённые к виду проверяемого пути */
+  /** Comparison rules, normalized to the form of the path being checked */
   private readonly deniedPaths: string[];
   private readonly allowedPaths: string[];
 
@@ -75,7 +77,7 @@ export class PathValidator {
     this.allowedPaths = (config?.allowedPaths ?? []).map(normalizeRule);
   }
 
-  /** Причина отказа или согласие: путь судится по всем заданным правилам */
+  /** Rejection reason or approval: the path is judged against every configured rule */
   validate(path: string): PathValidationResult {
     if (!this.config) {
       return { valid: true };
@@ -95,9 +97,9 @@ export class PathValidator {
       };
     }
     
-    // Правила сравнивают путь с каталогами, поэтому судить можно только
-    // канонический абсолютный путь: `~` и `logs/app.log` ведут неизвестно куда.
-    // Приведением занимается resolveRemotePath
+    // Rules compare a path against directories, so only a canonical
+    // absolute path can be judged: `~` and `logs/app.log` could lead
+    // anywhere. resolveRemotePath handles the conversion.
     if (!this.hasRules()) {
       return { valid: true };
     }
@@ -110,7 +112,7 @@ export class PathValidator {
       };
     }
 
-    // Чёрный список судит первым: он закрывает путь и внутри разрешённого
+    // The deny-list is judged first: it closes a path even inside an allowed one
     for (const denied of this.deniedPaths) {
       if (isUnder(path, denied)) {
         return {
@@ -134,12 +136,12 @@ export class PathValidator {
     return { valid: true };
   }
 
-  /** Есть ли правила, которые сравнивают путь с каталогами */
+  /** Whether there are any rules that compare a path against directories */
   private hasRules(): boolean {
     return this.deniedPaths.length > 0 || this.allowedPaths.length > 0;
   }
-  
-  /** Пачка путей: ответом становится первый отказ */
+
+  /** A batch of paths: the response is the first rejection */
   validateBatch(paths: string[]): PathValidationResult {
     for (const path of paths) {
       const result = this.validate(path);
@@ -151,7 +153,7 @@ export class PathValidator {
   }
 }
 
-/** Валидатор профиля, или ничего — если правил в профиле нет */
+/** A validator for the profile, or nothing — if the profile has no rules */
 export function createPathValidator(sshConfig: any): PathValidator | undefined {
   if (sshConfig.pathSecurity) {
     return new PathValidator(sshConfig.pathSecurity);

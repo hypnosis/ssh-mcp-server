@@ -41,7 +41,7 @@ import {
 interface ProfilesConfig {
   default: string;
   profiles: Record<string, SSHProfileData>;
-  /** Профили, отклонённые загрузчиком: имя, поле, значение, причина */
+  /** Profiles rejected by the loader: name, field, value, reason */
   broken: BrokenProfile[];
 }
 
@@ -87,8 +87,8 @@ function loadProfilesFromEnv(): ProfilesConfig {
     try {
       const result = loadProfilesFile(profilesFile);
 
-      // Испорченный профиль не отменяет исправных соседей: каждая ошибка уходит
-      // в лог отдельной строкой, а отказ достаётся тому, кто просит именно его
+      // A broken profile doesn't invalidate its valid neighbors: each error goes
+      // to the log as its own line, and the rejection only reaches whoever asks for that profile by name
       for (const message of result.errors) {
         logger.error(`Error in SSH profiles file: ${message}`);
       }
@@ -153,16 +153,16 @@ function getProfiles(): ProfilesConfig {
 }
 
 /**
- * Забыть всё, что выведено из прежних профилей.
+ * Forget everything derived from previous profiles.
  *
- * Секреты для маскировки, транспорты и паспорта серверов лежат по ключу
- * назначения и переживают перезапись файла: удалённый профиль остаётся в
- * памяти вместе с паролем, а сервер, успевший измениться, отвечает по старому
- * паспорту. Соединения при этом не закрываются — управляющий сокет общий для
- * машины, и следующая команда садится на него же.
+ * Secrets kept for masking, transports, and server passports are keyed by
+ * destination and outlive a file rewrite: a removed profile stays in memory
+ * along with its password, and a server that has since changed keeps getting
+ * answered against its old passport. Connections themselves aren't closed —
+ * the control socket is shared for the machine, and the next command rides it too.
  *
- * Зовётся там, где файл действительно мог измениться, а не при каждом
- * истечении срока кэша: иначе паспорт пересниматься раз в минуту.
+ * Called where the file could actually have changed, not on every cache
+ * expiry — otherwise the passport would be reshot once a minute.
  */
 function forgetDerivedState(): void {
   forgetLoggedSecrets();
@@ -171,7 +171,7 @@ function forgetDerivedState(): void {
 }
 
 /**
- * Перечитать профили с диска, забыв всё выведённое из прежних
+ * Reload profiles from disk, forgetting everything derived from the previous ones
  */
 export function reloadProfiles(): void {
   logger.info('[Profiles] Reloading profiles');
@@ -201,10 +201,10 @@ function watchProfilesFile(filePath: string): void {
         logger.info(`[Profiles] SSH_PROFILES_FILE changed, reloading...`);
         
         try {
-          // Через ту же дверь, что и ручной вызов: производное состояние
-          // обязано забываться и здесь, а двумя дорогами оно разъезжается
+          // Goes through the same door as a manual call: derived state
+          // must be forgotten here too, or the two paths drift apart
           reloadProfiles();
-          logger.info('[Profiles] ✅ Profiles reloaded successfully');
+          logger.info('[Profiles] Profiles reloaded successfully');
         } catch (error: any) {
           logger.error(`[Profiles] ❌ Failed to reload profiles: ${error.message}`);
         }
@@ -215,7 +215,7 @@ function watchProfilesFile(filePath: string): void {
       logger.error(`[Profiles] File watcher error: ${error.message}`);
     });
     
-    logger.info('[Profiles] ✅ File watcher started');
+    logger.info('[Profiles] File watcher started');
   } catch (error: any) {
     logger.error(`[Profiles] Failed to start file watcher: ${error.message}`);
   }
@@ -250,8 +250,8 @@ function expandTilde(filepath?: string): string | undefined {
 /**
  * Build a connection config from profile data.
  *
- * Единственное место сборки: раньше он был скопирован трижды, и новое поле
- * профиля легко доезжало по одному пути и терялось по двум другим.
+ * The single place this is assembled: it used to be copied three times, and
+ * a new profile field would easily reach one path while getting lost on the other two.
  */
 function toSSHConfig(profileData: SSHProfileData): SSHConfig {
   return {
@@ -291,7 +291,7 @@ function toSSHConfig(profileData: SSHProfileData): SSHConfig {
 export function resolveSSHConfig(args: {
   profile?: string;
 }): SSHConfig {
-  const PROFILES = getProfiles(); // ✅ Use cached profiles with auto-reload
+  const PROFILES = getProfiles(); // Use cached profiles with auto-reload
   
   logger.debug(`[Profile Resolver] Resolving SSH config, requested profile: ${args.profile || 'default'}`);
   logger.debug(`[Profile Resolver] Available profiles: ${Object.keys(PROFILES.profiles).join(', ')}`);
@@ -303,8 +303,8 @@ export function resolveSSHConfig(args: {
     const profileData = PROFILES.profiles[args.profile];
     
     if (!profileData) {
-      // Испорченный профиль в файле есть, и «не найден» увело бы искать опечатку
-      // в имени вместо того поля, которое на самом деле мешает
+      // A broken profile does exist in the file, and "not found" would send someone
+      // hunting for a typo in the name instead of the field that's actually the problem
       const rejected = PROFILES.broken.find((entry) => entry.name === args.profile);
       if (rejected) {
         logger.error(`[Profile Resolver] ❌ ${describeBrokenProfile(rejected)}`);
@@ -332,7 +332,7 @@ export function resolveSSHConfig(args: {
       throw new Error(`Profile "${args.profile}" must have "host" and "username" fields`);
     }
     
-    logger.info(`[Profile Resolver] ✅ Using SSH profile: "${args.profile}"`);
+    logger.debug(`[Profile Resolver] Using SSH profile: "${args.profile}"`);
     logger.debug(`[Profile Resolver] Profile details: host=${profileData.host}, port=${profileData.port || 22}, username=${profileData.username}`);
     
     const expandedKeyPath = expandTilde(profileData.privateKeyPath);
@@ -373,8 +373,8 @@ export function resolveSSHConfig(args: {
   const defaultProfileName = PROFILES.default;
   logger.debug(`[Profile Resolver] No profile specified, using default: "${defaultProfileName}"`);
 
-  // Испорченный default никем не подменяется: соседний профиль — другая машина,
-  // и команда без явного профиля ушла бы туда молча
+  // A broken default isn't substituted by anything: a neighboring profile is a
+  // different machine, and a command without an explicit profile would go there silently
   const brokenDefault = PROFILES.broken.find((entry) => entry.name === defaultProfileName);
   if (brokenDefault) {
     logger.error(`[Profile Resolver] ❌ ${describeBrokenProfile(brokenDefault)}`);
@@ -388,7 +388,7 @@ export function resolveSSHConfig(args: {
   
   // If default profile is suitable for SSH - use it
   if (defaultProfileData && defaultProfileData.host && defaultProfileData.username) {
-    logger.info(`[Profile Resolver] ✅ Using default SSH profile: "${defaultProfileName}"`);
+    logger.debug(`[Profile Resolver] Using default SSH profile: "${defaultProfileName}"`);
     logger.debug(`[Profile Resolver] Default profile data: host=${defaultProfileData.host}, port=${defaultProfileData.port || 22}, username=${defaultProfileData.username}`);
     
     const expandedKeyPath = expandTilde(defaultProfileData.privateKeyPath);
@@ -418,7 +418,7 @@ export function resolveSSHConfig(args: {
   
   for (const [profileName, profileData] of Object.entries(PROFILES.profiles)) {
     if (profileData.host && profileData.username) {
-      logger.info(`[Profile Resolver] ✅ Using first valid SSH profile: "${profileName}"`);
+      logger.debug(`[Profile Resolver] Using first valid SSH profile: "${profileName}"`);
       logger.debug(`[Profile Resolver] Profile data: host=${profileData.host}, port=${profileData.port || 22}, username=${profileData.username}`);
       
       const expandedKeyPath = expandTilde(profileData.privateKeyPath);
@@ -467,7 +467,7 @@ export function getDefaultProfile(): string {
 }
 
 /**
- * Профили, отклонённые загрузчиком при последней загрузке файла
+ * Profiles rejected by the loader on the last file load
  */
 export function getBrokenProfiles(): BrokenProfile[] {
   const PROFILES = getProfiles();

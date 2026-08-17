@@ -36,11 +36,11 @@ interface UploadFileResult {
   bytes: number;
   sha256?: string;
   verified: boolean;
-  /** Почему сверка не состоялась — если она не состоялась */
+  /** Why verification did not happen — when it did not happen */
   verifyNote?: string;
   atomic: boolean;
   sudo: boolean;
-  /** Что случилось уже после того, как данные встали на место */
+  /** What happened after the data was already in place */
   warnings?: string[];
 }
 
@@ -49,10 +49,11 @@ interface UploadDirResult extends UploadFileResult {
 }
 
 /**
- * Сведения о локальном файле — или отказ на человеческом языке.
+ * Local file stats — or a plain-language refusal.
  *
- * Сырое исключение узла (`ENOENT: no such file or directory, stat '…'`) читается
- * как поломка инструмента, хотя это обычный ответ: файла по названному пути нет.
+ * A raw Node exception (`ENOENT: no such file or directory, stat '…'`) reads
+ * like a tool failure, though it is an ordinary answer: there is no file at
+ * the given path.
  */
 async function statLocal(path: string) {
   try {
@@ -65,42 +66,43 @@ async function statLocal(path: string) {
 }
 
 /**
- * Дописать к ответу то, что случилось уже после успешной замены.
+ * Append to the response whatever happened after a successful replace.
  *
- * Такие вещи нельзя ни выдавать за ошибку (данные на месте), ни глотать:
- * неубранная старая копия занимает диск, а неприменённые права меняют доступ.
+ * These things can be neither reported as an error (the data is in place) nor
+ * swallowed: a leftover old copy takes up disk space, and permissions that
+ * did not apply change access.
  */
 function formatWarnings(warnings: string[]): string {
   return warnings.length > 0 ? `\n  warnings:\n${warnings.map((w) => `    - ${w}`).join('\n')}` : '';
 }
 
-/** Владельца ставит `chown`, а он под обычным пользователем откажет на чужом имени */
+/** The owner is set by `chown`, and under a regular user it refuses on a name that isn't its own */
 const OWNER_NEEDS_SUDO =
   'owner was NOT applied: chown needs sudo — the file belongs to the connecting user';
 
 /**
- * Наибольший таймаут, который умеет ждать таймер Node (~24.8 суток).
- * Всё, что больше, срабатывает у него немедленно — это уже не «подольше»,
- * а мгновенный обрыв, поэтому такие значения читаются как «без потолка».
+ * The largest timeout Node's timer can wait for (~24.8 days).
+ * Anything above that fires immediately — no longer "wait longer" but an
+ * instant abort, so such values are read as "no limit".
  */
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /**
- * Потолок передачи, названный вызывающим.
+ * The transfer's ceiling, named by the caller.
  *
- * Не назвали — потолка нет. Назвали мусор — отказ до первой команды на
- * сервере: тип из схемы ничего не гарантирует, `arguments` приходят как есть.
- * Число строкой принимается: так его шлёт часть клиентов, и отвергать
- * рабочую форму ввода незачем.
+ * Not named — no ceiling. Named garbage — refuse before the first command on
+ * the server: the schema's type guarantees nothing, `arguments` arrive as is.
+ * A number as a string is accepted: some clients send it that way, and there
+ * is no reason to reject a working input shape.
  *
- * Ноль отклоняется, хотя внутри он и означает «без потолка»: у соседнего
- * `ssh_exec` тот же ноль читается как «значение по умолчанию», и два
- * противоположных смысла одного значения в одном сервере — ловушка.
- * Способ сказать «не ограничивай» ровно один: не называть параметр.
+ * Zero is rejected even though internally it means "no ceiling": the
+ * neighboring `ssh_exec` reads that same zero as "use the default", and one
+ * value carrying two opposite meanings on the same server is a trap. There is
+ * exactly one way to say "don't limit it": omit the parameter.
  *
- * Бесконечность и всё сверх предела таймера — тоже «не ограничивай»:
- * такое значение таймер отрабатывает немедленно, то есть буквальное
- * прочтение дало бы мгновенный обрыв вместо запрошенного «подольше».
+ * Infinity and anything past the timer's limit also mean "don't limit it":
+ * such a value fires the timer immediately, so a literal reading would give
+ * an instant abort instead of the requested "run longer".
  */
 function parseTimeoutMs(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
@@ -116,6 +118,30 @@ function parseTimeoutMs(value: unknown): number | undefined {
   if (parsed > MAX_TIMEOUT_MS) return undefined;
 
   return parsed;
+}
+
+/** ssh_upload arguments, matching its inputSchema */
+interface UploadArgs {
+  profile?: string;
+  local_path?: unknown;
+  remote_path?: unknown;
+  mode?: unknown;
+  recursive?: boolean;
+  verify?: boolean;
+  sudo?: boolean;
+  owner?: unknown;
+  overwrite?: boolean;
+  timeout?: unknown;
+}
+
+/** ssh_download arguments, matching its inputSchema */
+interface DownloadArgs {
+  profile?: string;
+  remote_path?: unknown;
+  local_path?: unknown;
+  recursive?: boolean;
+  verify?: boolean;
+  timeout?: unknown;
 }
 
 export class TransferTool {
@@ -259,22 +285,24 @@ export class TransferTool {
   // ---------------------------------------------------------------------------
 
   private async handleUpload(request: CallToolRequest) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as UploadArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
-    // Права и владелец проверяются до первого касания сервера: оба уезжают в
-    // команду отдельными словами, где кавычки их не удержат
+    // Mode and owner are validated before the first touch of the server: both
+    // travel into the command as separate words, where quotes would not hold them
     const mode = args.mode ? shellMode(args.mode, 'mode') : undefined;
     const owner = args.owner ? shellOwner(args.owner, 'owner') : undefined;
     const timeoutMs = parseTimeoutMs(args.timeout);
 
-    // Тильду раскрываем у себя, до первой команды. Дальше путь едет только в
-    // одинарных кавычках, где `~` — обычная буква: сама передача её раскрывала
-    // (scp отдаёт путь shell-у), а сверка, уборка и создание каталога — нет.
-    // Замерено: файл уезжал в дом, сверка его там не находила, ответ врал
-    // расхождением, staging оставался на сервере, а рядом появлялся каталог
-    // с именем «~». Правила доступа применяются здесь же — к раскрытому пути,
-    // то есть к тому, куда запись пойдёт на самом деле.
+    // The tilde is expanded on our side, before the first command. After that
+    // the path travels only in single quotes, where `~` is an ordinary
+    // character: the transfer itself expands it (scp hands the path to the
+    // shell), but verification, cleanup and directory creation do not. Left
+    // unexpanded, the file would land in the home directory, verification
+    // would not find it there, the response would falsely report a mismatch,
+    // staging would remain on the server, and a directory literally named
+    // "~" would appear next to it. Access rules are applied right here — to
+    // the expanded path, i.e. to where the write actually goes.
     const remotePath = requireText(args.remote_path, 'remote_path', '"/opt/app"');
     const localPath = requireText(args.local_path, 'local_path', '"./dist"');
 
@@ -336,12 +364,12 @@ export class TransferTool {
   }
 
   /**
-   * Ответ о загрузке.
+   * Upload response.
    *
-   * Печатается путь, по которому файл лёг на самом деле: при `~` он отличается
-   * от запрошенного. Предупреждения идут туда же — и те, что накопил
-   * установщик (неубранная старая копия), и те, что появились при раскрытии
-   * пути; раньше они просто пропадали.
+   * The path printed is where the file actually landed: with `~` it differs
+   * from what was requested. Warnings go into the same place — both the ones
+   * the installer collected (an uncleaned old copy) and the ones that came up
+   * while expanding the path; without this they would simply vanish.
    */
   private formatUploadResult(
     r: UploadFileResult | UploadDirResult,
@@ -359,7 +387,7 @@ export class TransferTool {
     } else if (r.sha256) {
       lines.push(`  sha256: ${r.sha256} (verified)`);
     } else {
-      // У каталога общего хэша нет — сошлись все файлы разом
+      // A directory has no single hash — all files matched together
       lines.push(`  sha256: verified (${(r as UploadDirResult).files_uploaded} files)`);
     }
     lines.push(`  atomic: ${r.atomic}`);
@@ -368,12 +396,12 @@ export class TransferTool {
   }
 
   /**
-   * Загрузка одного файла.
+   * Upload a single file.
    *
-   * Оба пути, обычный и под sudo, идут через установщик: данные ложатся на
-   * временный путь рядом с целью и встают на место переименованием. Различие
-   * одно — чем наполняется этот временный путь: передачей напрямую или копией
-   * из /tmp, потому что сама передача под root не ходит.
+   * Both paths, plain and under sudo, go through the installer: data lands on
+   * a staging path next to the target and takes its place by rename. The only
+   * difference is how that staging path gets filled — a direct transfer, or a
+   * copy from /tmp, because the transfer itself does not run as root.
    */
   private async uploadFile(
     sshConfig: any,
@@ -385,7 +413,7 @@ export class TransferTool {
       sudo: boolean;
       owner?: string;
       overwrite: boolean;
-      /** Потолок передачи; без него она идёт столько, сколько нужно */
+      /** Transfer ceiling; without it the transfer runs as long as it takes */
       timeoutMs?: number;
     }
   ): Promise<UploadFileResult> {
@@ -405,8 +433,8 @@ export class TransferTool {
       }
     }
 
-    // Установщик один на оба пути; под sudo от него отличается только то, чьими
-    // правами идут команды и как наполняется временный путь
+    // One installer serves both paths; under sudo, only whose privileges the
+    // commands run with and how the staging path gets filled differ
     const ops = remotePathOps({
       executor: this.executor,
       config: sshConfig,
@@ -431,7 +459,7 @@ export class TransferTool {
           sshConfig,
           [{ path: staging, hash: await localHashPromise! }],
           'upload',
-          // под sudo копия рядом с целью уже не наша — прочесть её иначе нечем
+          // under sudo the copy next to the target is no longer ours — there is no other way to read it
           { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
         );
         return null;
@@ -453,12 +481,12 @@ export class TransferTool {
   }
 
   /**
-   * Положить один файл на сервер.
+   * Put a single file on the server.
    *
-   * Родительский каталог здесь не создаётся: временный путь всегда лежит рядом
-   * с целью, а его каталог установщик создал до начала передачи. На пути под
-   * sudo это и вовсе `/tmp`. Лишняя команда стоила по одному обращению к
-   * серверу на каждую загрузку — замерено на обоих контейнерах.
+   * The parent directory is not created here: the staging path always sits
+   * next to the target, and the installer has already created its directory
+   * before the transfer starts. On the sudo path it is `/tmp` outright. An
+   * extra command here would cost one round trip to the server per upload.
    */
   private async putFile(
     sshConfig: any,
@@ -471,11 +499,11 @@ export class TransferTool {
   }
 
   /**
-   * Наполнить временный путь рядом с целью, когда писать туда можно только под root.
+   * Fill the staging path next to the target when only root can write there.
    *
-   * Передача идёт от имени пользователя в /tmp, а рядом с целью файл появляется
-   * копией под sudo: сам транспорт правами root не располагает. Промежуточный
-   * файл убирается в любом исходе.
+   * The transfer runs as the connecting user into /tmp, and the file appears
+   * next to the target as a sudo copy: the transport itself has no root
+   * privileges. The intermediate file is removed either way.
    */
   private async stageUnderSudo(
     sshConfig: any,
@@ -487,8 +515,8 @@ export class TransferTool {
     await this.putFile(sshConfig, localPath, handoff, timeoutMs);
 
     try {
-      // Названный потолок доходит и сюда: копирование целого файла соразмерно
-      // его размеру
+      // The named ceiling reaches this far too: copying the whole file scales
+      // with its size
       await this.executor.executeChecked(
         sshConfig,
         `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
@@ -502,11 +530,11 @@ export class TransferTool {
   }
 
   /**
-   * Права и владелец на временном пути — до того, как он станет целью.
+   * Mode and owner on the staging path — before it becomes the target.
    *
-   * Иначе на боевом пути возникает окно, в котором данные уже видны, а доступ
-   * к ним ещё чужой. Владелец — только для пути под sudo: под обычным
-   * пользователем `chown` откажет на чужом имени.
+   * Otherwise a window opens on the live path where the data is already
+   * visible but access to it is still wrong. Owner applies only under sudo:
+   * under a regular user `chown` refuses on a name that isn't its own.
    */
   private async applyOwnership(
     sshConfig: any,
@@ -524,8 +552,8 @@ export class TransferTool {
     if (!opts.owner) return [];
 
     if (!opts.sudo) {
-      // Названного владельца молча терять нельзя: файл остаётся за тем, кто
-      // его записал, и человек об этом узнаёт только из `ls -l` на сервере
+      // A named owner cannot be silently dropped: the file stays with whoever
+      // wrote it, and the only way to notice is `ls -l` on the server
       return [OWNER_NEEDS_SUDO];
     }
 
@@ -538,9 +566,9 @@ export class TransferTool {
   }
 
   /**
-   * Есть ли путь на сервере. «Проверить не вышло» — отдельный исход: раньше
-   * сорванная проверка отвечала «нет файла», и защита `overwrite: false`
-   * пропускала запись поверх того, чего не сумела разглядеть.
+   * Whether the path exists on the server. "Failed to check" is a separate
+   * outcome: a failed check answering "no file" would let the
+   * `overwrite: false` guard write over something it never managed to see.
    */
   private async remoteExists(
     sshConfig: any,
@@ -562,12 +590,12 @@ export class TransferTool {
   }
 
   /**
-   * Сверить переданное с исходником.
+   * Verify the transferred data against the source.
    *
-   * Три исхода различаются по-разному: несовпадение — провал передачи (бросаем),
-   * «проверить нечем» — успех с пометкой. Смешивать их нельзя: раньше сервер без
-   * sha256sum давал ту же реакцию, что испорченный файл, и обработчик ошибки шёл
-   * удалять только что записанное.
+   * The three outcomes differ in kind: a mismatch is a transfer failure (we
+   * throw), "nothing to verify with" is a success with a note. Mixing them up
+   * means a server without sha256sum gets the same reaction as a corrupted
+   * file, and the error handler goes on to delete what was just written.
    */
   private async verify(
     sshConfig: any,
@@ -576,8 +604,9 @@ export class TransferTool {
     opts: { sudo?: boolean; timeoutMs?: number } = {}
   ): Promise<{ verified: boolean; verifyNote?: string }> {
     const { sudo = false, timeoutMs } = opts;
-    // Потолок стоит на всей операции, а не на одной её части: иначе дерево на
-    // гигабайты доедет и упрётся в общие для команд 30 секунд уже здесь
+    // The ceiling applies to the whole operation, not one part of it:
+    // otherwise a gigabyte-sized tree would run into the commands' shared
+    // 30-second limit right here
     const outcome = await verifyRemoteFiles(this.executor, sshConfig, entries, {
       sudo,
       timeoutMs: timeoutMs ?? 0,
@@ -610,7 +639,7 @@ export class TransferTool {
       sudo: boolean;
       owner?: string;
       overwrite: boolean;
-      /** Потолок передачи; без него она идёт столько, сколько нужно */
+      /** Transfer ceiling; without it the transfer runs as long as it takes */
       timeoutMs?: number;
     }
   ): Promise<UploadDirResult> {
@@ -637,9 +666,9 @@ export class TransferTool {
       }
     }
 
-    // Дерево считаем так же, как его видит транспорт: по ссылкам он идёт,
-    // на битой и на цикле останавливается — узнать об этом лучше здесь,
-    // до того как часть файлов уедет на сервер
+    // The tree is counted the same way the transport sees it: it follows
+    // symlinks, and stops on a broken one or a cycle — better to find out
+    // here, before part of the files have already left for the server
     const files = await listTreeFiles(localDir);
     if (files.length === 0) {
       throw new Error(`local directory is empty: ${localDir}`);
@@ -653,16 +682,17 @@ export class TransferTool {
     const ops = remotePathOps({ executor: this.executor, config: sshConfig });
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
-    // Каталог заменяется только целиком и только через установщик. Раньше здесь
-    // стоял `rm -rf` по боевому пути, а следом отдельной командой `mv`: обрыв
-    // между ними не оставлял на сервере ничего, и обработчик ошибки добивал
-    // остатки. Теперь старое отводится в сторону и удаляется лишь после того,
-    // как новое встало на место.
+    // The directory is replaced only as a whole and only through the
+    // installer. A separate `rm -rf` on the live path followed by a `mv`
+    // would leave nothing on the server if interrupted in between, and the
+    // error handler would finish off what remained. Instead, the old
+    // directory is set aside and removed only after the new one has taken
+    // its place.
     const outcome = await install(ops, {
       finalPath: finalDir,
       kind: 'directory',
       stage: async (staging) => {
-        // Дерево уезжает целиком: подкаталоги создаёт транспорт
+        // The whole tree travels at once: the transport creates subdirectories
         const runner = await getRunner(sshConfig);
         await runner.upload(localDir, staging, { recursive: true, timeoutMs: opts.timeoutMs });
       },
@@ -681,9 +711,10 @@ export class TransferTool {
       },
       finalize: async (staging) => {
         if (!opts.mode) return;
-        // Права ставятся до замены: иначе дерево какое-то время живёт на
-        // боевом пути с чужим доступом. Обход дерева тоже соразмерен его
-        // размеру, поэтому потолок здесь тот же, что у передачи
+        // Mode is applied before the replace: otherwise the tree would live
+        // on the live path with the wrong access for a while. Walking the
+        // tree also scales with its size, so the ceiling here is the same as
+        // for the transfer
         await this.executor.executeChecked(
           sshConfig,
           `chmod -R ${opts.mode} -- ${shellQuote(staging)}`,
@@ -699,7 +730,7 @@ export class TransferTool {
       atomic: true,
       sudo: false,
       files_uploaded: files.length,
-      // Рекурсивная отправка идёт без sudo — значит и владельца сменить нечем
+      // A recursive upload runs without sudo — so there is nothing to change the owner with
       warnings: [...outcome.warnings, ...(opts.owner ? [OWNER_NEEDS_SUDO] : [])],
     };
   }
@@ -709,17 +740,17 @@ export class TransferTool {
   // ---------------------------------------------------------------------------
 
   private async handleDownload(request: CallToolRequest) {
-    const args = request.params.arguments as any;
+    const args = (request.params.arguments ?? {}) as DownloadArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
 
     const timeoutMs = parseTimeoutMs(args.timeout);
 
-    // Тильду раскрываем до первой команды. Без этого передача её раскрывала
-    // (файл приезжал), а сверка искала файл с именем «~» и не находила —
-    // расхождение уносило уже скачанное, и у человека не оставалось ничего.
-    // Замерено на обоих серверах: с `verify: false` тот же вызов проходил.
-    // Правила доступа проверяются по раскрытому пути — по тому, откуда файл
-    // будет прочитан на самом деле.
+    // The tilde is expanded before the first command. Without this the
+    // transfer would expand it (the file would arrive), but verification
+    // would look for a file named "~" and not find it — the mismatch would
+    // discard what was already downloaded, leaving the user with nothing.
+    // Access rules are checked against the expanded path — the one the file
+    // will actually be read from.
     const remotePath = requireText(args.remote_path, 'remote_path', '"/opt/app/app.conf"');
     const localPath = requireText(args.local_path, 'local_path', '"./app.conf"');
 
@@ -800,8 +831,8 @@ export class TransferTool {
     let bytes = 0;
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
 
-    // Файл пользователя заменяется только целым: раньше скачивание писало
-    // прямо в конечный путь, и обрыв оставлял от старого файла огрызок
+    // The user's file is replaced only as a whole: writing straight to the
+    // final path would leave a mangled remnant of the old file if interrupted
     const outcome = await install(localPathOps, {
       finalPath: localPath,
       kind: 'file',
@@ -825,11 +856,11 @@ export class TransferTool {
   }
 
   /**
-   * Скачать каталог целиком.
+   * Download a directory as a whole.
    *
-   * Обход удалённого дерева теперь делает транспорт, поэтому здесь остаётся
-   * только пересчитать полученное и, если просили, сверить хэши — раньше
-   * verify для каталога молча ничего не делал.
+   * Walking the remote tree is the transport's job, so what remains here is
+   * just recounting what arrived and, if asked, verifying hashes — without
+   * this, `verify` for a directory would silently do nothing.
    */
   private async downloadDirectory(
     sshConfig: any,

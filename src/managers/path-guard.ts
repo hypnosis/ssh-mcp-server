@@ -1,19 +1,21 @@
 /**
- * Куда путь ведёт на самом деле — решается здесь, до рабочей команды.
+ * Where a path actually leads — decided here, before the working command runs.
  *
- * Правила профиля сравнивают путь с каталогами, поэтому сравнивать можно
- * только канонический вид. Три источника знания, каждый на своём уровне:
+ * Profile rules compare a path against directories, so only the canonical
+ * form can be compared. Three sources of knowledge, each at its own level:
  *
- *   локально  — тильда, рабочий каталог, `.`, `..`, сдвоенные слэши;
- *   паспорт   — домашний каталог, одна проба за сессию из кэша;
- *   сервер    — куда ведут символические ссылки, одна проба на путь.
+ *   local    — tilde, working directory, `.`, `..`, doubled slashes;
+ *   passport — home directory, one cached probe per session;
+ *   server   — where symbolic links actually lead, one probe per path.
  *
- * Сервер спрашивается только там, где заданы правила: без них выяснять нечего.
+ * The server is asked only where rules are configured: without rules there
+ * is nothing to determine.
  *
- * В команду уезжает путь с раскрытой тильдой и ничего больше. Свёрнутый `..`
- * отправлять нельзя: он считается после перехода по ссылке, а не до неё, и
- * `/var/log/link/../x` у нас и на сервере означают разные файлы. Канонический
- * вид служит суждению, операция идёт по пути вызывающего.
+ * Only the path with the tilde expanded goes into the command, nothing
+ * else. A collapsed `..` must not be sent: it is resolved after following a
+ * link, not before it, and `/var/log/link/../x` means different files here
+ * and on the server. The canonical form serves the judgment; the operation
+ * runs on the caller's own path.
  */
 
 import { posix as posixPath } from 'path';
@@ -24,43 +26,43 @@ import { shellQuote } from '../utils/shell-arg.js';
 
 export interface ExpandedPath {
   path: string;
-  /** Что человек должен узнать: путь получился не тот, о котором он думал */
+  /** What a human needs to know: the path did not turn out to be the one they had in mind */
   warnings: string[];
 }
 
 /**
- * Чем закончился разбор пути:
+ * How path resolution ended:
  *
- *   ok         — правила сошлись на всём, что удалось выяснить;
- *   rewritten  — путь пришлось привести к другому виду (раскрыта тильда);
- *   unverified — по имени сошлось, а куда ведут ссылки — выяснить нечем;
- *   denied     — правило профиля не пускает.
+ *   ok         — the rules matched on everything that could be determined;
+ *   rewritten  — the path had to be rewritten into another form (tilde expanded);
+ *   unverified — matched by name, but where links lead could not be determined;
+ *   denied     — a profile rule blocks it.
  */
 type PathOutcome = 'ok' | 'rewritten' | 'unverified' | 'denied';
 
 export interface PathDecision {
   outcome: PathOutcome;
-  /** Путь для команды */
+  /** The path to use for the command */
   path: string;
-  /** Канонический вид, по которому судили */
+  /** The canonical form the judgment was based on */
   canonical: string;
-  /** Куда ведёт путь по мнению сервера, если его удалось спросить */
+  /** Where the server says the path leads, if it could be asked */
   target?: string;
   warnings: string[];
-  /** Заполнено только у denied */
+  /** Filled in only for denied */
   reason?: string;
 }
 
-/** Маркер ответа: баннер и motd в вывод попадают, ответ — нет */
+/** Response marker: banners and the motd end up in the output, the answer does not */
 const RESOLVE_MARKER = 'SSH_MCP_PATH';
 const UNRESOLVED = 'SSH_MCP_PATH_UNRESOLVED';
 
 /**
- * Превратить `~` и `~/…` в настоящий путь.
+ * Turn `~` and `~/…` into a real path.
  *
- * Пути без тильды возвращаются как есть и паспорт не запрашивают.
- * `~user/…` отклоняется: чужой домашний каталог нам неизвестен, а угадывать
- * его — значит писать или читать не то.
+ * Paths without a tilde are returned as is, without requesting a passport.
+ * `~user/…` is rejected: another user's home directory is unknown to us,
+ * and guessing it would mean writing or reading the wrong thing.
  */
 async function expandRemoteHome(
   executor: SSHExecutor,
@@ -87,8 +89,8 @@ async function expandRemoteHome(
 
   const expanded = path === '~' ? passport.home : posixPath.join(passport.home, path.slice(2));
 
-  // Под sudo тильда ведёт в дом входного пользователя, а не в /root: адрес
-  // другой, и человек должен это прочитать
+  // Under sudo, the tilde leads to the login user's home, not /root: the
+  // address is different, and a human needs to see that
   const warnings = options.sudo
     ? [
         `"${path}" points at ${expanded} — the home of the login user, not root's. ` +
@@ -100,11 +102,12 @@ async function expandRemoteHome(
 }
 
 /**
- * Канонический вид для суждения: абсолютный путь без `.`, `..` и лишних слэшей.
+ * Canonical form for judgment: an absolute path without `.`, `..`, or extra slashes.
  *
- * Относительный путь достраивается от домашнего каталога — рабочего каталога
- * неинтерактивной команды. Дома нет — путь возвращается как есть и каноническим
- * не становится: судить его правилами нечем, и валидатор об этом скажет.
+ * A relative path is resolved against the home directory — the working
+ * directory of a non-interactive command. With no home available, the path
+ * is returned as is and never becomes canonical: there's nothing to judge
+ * it against by rule, and the validator will say so.
  */
 function toCanonical(path: string, home: string): string {
   if (!path.startsWith('/')) {
@@ -116,14 +119,15 @@ function toCanonical(path: string, home: string): string {
 }
 
 /**
- * Спросить сервер, куда путь ведёт на самом деле.
+ * Ask the server where a path actually leads.
  *
- * `readlink -f` молчит, если в середине пути нет каталога, поэтому хвост
- * снимается до ближайшего существующего предка, резолвится он, и хвост
- * возвращается на место: ссылка в середине так всё равно раскрывается.
+ * `readlink -f` stays silent if a directory in the middle of the path is
+ * missing, so the tail is stripped down to the nearest existing ancestor,
+ * that ancestor is resolved, and the tail is put back — a link partway
+ * through the path is still resolved this way.
  *
- * Пустой ответ значит «выяснить нечем» и отказом не является: сервера без
- * `readlink` работы не лишаются.
+ * An empty answer means "cannot be determined" and is not a rejection:
+ * servers without `readlink` are not shut out of working.
  */
 async function resolveOnServer(
   executor: SSHExecutor,
@@ -150,17 +154,17 @@ async function resolveOnServer(
   const line = result.stdout.split('\n').find((candidate) => candidate.includes(RESOLVE_MARKER));
   if (!line || result.stdout.includes(UNRESOLVED)) return undefined;
 
-  // BusyBox отдаёт корень сдвоенным слэшем: `//root/x` вместо `/root/x`
+  // BusyBox reports root with a doubled slash: `//root/x` instead of `/root/x`
   const answer = line.slice(line.indexOf(RESOLVE_MARKER) + RESOLVE_MARKER.length).trim();
   return answer ? posixPath.normalize(answer) : '/';
 }
 
 /**
- * Разобрать путь и решить, что с ним делать.
+ * Resolve a path and decide what to do with it.
  *
- * Правило применяется дважды: к имени и к тому, куда имя ведёт. Запрещает
- * любое из двух — иначе ссылка внутри разрешённого каталога выносила бы данные
- * куда угодно, оставаясь по имени законной.
+ * The rule is applied twice: to the name and to where the name leads. If
+ * either one denies it, the path is denied — otherwise a link inside an
+ * allowed directory could carry data anywhere while still looking legitimate by name.
  */
 export async function decideRemotePath(
   executor: SSHExecutor,
@@ -181,7 +185,7 @@ export async function decideRemotePath(
     };
   }
 
-  // Дом нужен только относительному пути, и только он один за ним ходит
+  // Only a relative path needs the home directory, and it's the only one that requests it
   const home = expanded.path.startsWith('/')
     ? ''
     : (await executor.passport(config)).home;
@@ -228,10 +232,10 @@ export async function decideRemotePath(
 }
 
 /**
- * Раскрыть путь и проверить его правилами доступа профиля.
+ * Expand a path and check it against the profile's access rules.
  *
- * Порядок здесь и есть суть: правила применяются к тому пути, по которому
- * операция пойдёт на самом деле, а не к тому, что назвал вызывающий.
+ * The order is the whole point: the rules are applied to the path the
+ * operation actually takes, not to the one the caller named.
  */
 export async function resolveRemotePath(
   executor: SSHExecutor,

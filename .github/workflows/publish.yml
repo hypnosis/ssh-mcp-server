@@ -64,9 +64,12 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       
+      # --provenance signs the package against this workflow run, so npm can show
+      # which commit and which build produced it. Needs the id-token permission
+      # declared above, and only works when publishing from CI.
       - name: Publish to NPM
         if: steps.check_version.outputs.already_published != 'true'
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       

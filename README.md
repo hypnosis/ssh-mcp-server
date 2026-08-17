@@ -1,6 +1,6 @@
 # SSH MCP Server
 
-An MCP server that lets an AI assistant — Claude Code, Codex, or anything else that speaks MCP — run commands, move files, and audit live servers over SSH, using the OpenSSH client, keys, and config already on your machine.
+An MCP server that lets an AI coding agent — Claude Code, Codex, Gemini CLI, Hermes, or anything else that speaks MCP — run commands, move files, and audit live servers over SSH, using the OpenSSH client, keys, and config already on your machine.
 
 [![npm version](https://img.shields.io/npm/v/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server)
 [![npm downloads](https://img.shields.io/npm/dm/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=CB3837&label=downloads)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server)
@@ -10,7 +10,7 @@ An MCP server that lets an AI assistant — Claude Code, Codex, or anything else
 [![MCP SDK](https://img.shields.io/npm/dependency-version/@hypnosis/ssh-mcp-server/@modelcontextprotocol/sdk?style=flat-square&logo=modelcontextprotocol&logoColor=white&color=0F172A&label=MCP%20SDK)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/npm/l/@hypnosis/ssh-mcp-server?style=flat-square&color=2563EB)](LICENSE)
 
-**[Install](#installation) · [Quick start](#quick-start) · [Tools](#tools) · [Security](#security) · [Docs](docs/) · [Changelog](CHANGELOG.md)**
+**[Install](#installation) · [Quick start](#quick-start) · [Tools](#tools) · [Security](#security) · [Docs](docs/) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)**
 
 ---
 
@@ -284,6 +284,8 @@ The shared connection outlives this process on purpose: closing it on exit would
 | [docs/transfer.md](docs/transfer.md) | Upload and download in depth |
 | [docs/audit.md](docs/audit.md) | Audit tools and the recommended pipeline |
 | [docs/architecture.md](docs/architecture.md) | How the project is built, and how to work on it |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to set up the lab and what a patch has to prove |
+| [SECURITY.md](SECURITY.md) | What the server promises, and how to report a vulnerability privately |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ## Development

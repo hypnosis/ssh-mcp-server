@@ -53,13 +53,22 @@ The everyday jobs it was built for:
 
 ## Installation
 
-```bash
-# Global install
-npm install -g @hypnosis/ssh-mcp-server
+**You do not have to install anything.** Every example below launches the server with
+`npx -y`, which fetches the package on first use and keeps it in the npx cache — the `-y`
+answers the prompt npx would otherwise ask before downloading:
 
-# Or run on demand without installing
-npx @hypnosis/ssh-mcp-server
+```bash
+npx -y @hypnosis/ssh-mcp-server
 ```
+
+Install it globally if you would rather pin a version, work offline, or avoid the extra
+second npx spends checking the registry:
+
+```bash
+npm install -g @hypnosis/ssh-mcp-server
+```
+
+Then use `ssh-mcp-server` as the command in the client config instead of `npx`.
 
 ## Quick start
 

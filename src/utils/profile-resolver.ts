@@ -71,84 +71,77 @@ let PROFILES_CACHE: ProfilesCache | null = null;
 let fileWatcher: FSWatcher | null = null;
 
 /**
- * Load profiles from file
- * 
- * Priority:
- * 1. SSH_PROFILES_FILE - path to JSON file (required for SSH MCP)
- * 2. Fallback to error (no local mode for SSH)
+ * Load profiles from an already-resolved file path (tilde expanded by the caller)
  */
-function loadProfilesFromEnv(): ProfilesConfig {
-  // Load from file (SSH_PROFILES_FILE)
-  const profilesFile = process.env.SSH_PROFILES_FILE;
-  
-  if (profilesFile) {
-    logger.debug(`Loading SSH profiles from file: ${profilesFile}`);
-    
-    try {
-      const result = loadProfilesFile(profilesFile);
+function loadProfilesFromFile(profilesFile: string): ProfilesConfig {
+  logger.debug(`Loading SSH profiles from file: ${profilesFile}`);
 
-      // A broken profile doesn't invalidate its valid neighbors: each error goes
-      // to the log as its own line, and the rejection only reaches whoever asks for that profile by name
-      for (const message of result.errors) {
-        logger.error(`Error in SSH profiles file: ${message}`);
-      }
+  try {
+    const result = loadProfilesFile(profilesFile);
 
-      if (!result.config) {
-        throw new Error(`Failed to load SSH profiles: ${result.errors.join('; ')}`);
-      }
-
-      const profileCount = Object.keys(result.config.profiles).length;
-      logger.info(`Loaded ${profileCount} SSH profiles from file: ${profilesFile}`);
-
-      return {
-        default: result.config.default || Object.keys(result.config.profiles)[0],
-        profiles: result.config.profiles,
-        broken: result.broken,
-      };
-    } catch (err: any) {
-      logger.error(`Exception loading SSH profiles file: ${err.message}`);
-      throw err;
+    // A broken profile doesn't invalidate its valid neighbors: each error goes
+    // to the log as its own line, and the rejection only reaches whoever asks for that profile by name
+    for (const message of result.errors) {
+      logger.error(`Error in SSH profiles file: ${message}`);
     }
+
+    if (!result.config) {
+      throw new Error(`Failed to load SSH profiles: ${result.errors.join('; ')}`);
+    }
+
+    const profileCount = Object.keys(result.config.profiles).length;
+    logger.info(`Loaded ${profileCount} SSH profiles from file: ${profilesFile}`);
+
+    return {
+      default: result.config.default || Object.keys(result.config.profiles)[0],
+      profiles: result.config.profiles,
+      broken: result.broken,
+    };
+  } catch (err: any) {
+    logger.error(`Exception loading SSH profiles file: ${err.message}`);
+    throw err;
   }
-  
-  // No fallback - SSH MCP requires profiles
-  throw new Error('SSH_PROFILES_FILE environment variable not set. Please configure SSH profiles.');
 }
 
 /**
  * Get profiles with caching and auto-reload
+ *
+ * SSH_PROFILES_FILE is read and tilde-expanded here, once: the resolved path
+ * becomes the cache key and is what the loader and the file watcher act on.
  */
 function getProfiles(): ProfilesConfig {
-  const profilesFile = process.env.SSH_PROFILES_FILE;
-  
-  if (!profilesFile) {
+  const rawProfilesFile = process.env.SSH_PROFILES_FILE;
+
+  if (!rawProfilesFile) {
     throw new Error('SSH_PROFILES_FILE not set');
   }
-  
+
+  const profilesFile = expandTilde(rawProfilesFile)!;
+
   // Check cache
   const now = Date.now();
   const cacheValid = PROFILES_CACHE &&
                      PROFILES_CACHE.filePath === profilesFile &&
                      (now - PROFILES_CACHE.loadedAt) < CACHE_TTL;
-  
+
   if (cacheValid) {
     logger.debug('[Profiles] Using cached profiles');
     return PROFILES_CACHE!.config;
   }
-  
+
   // Load profiles
   logger.debug(`[Profiles] Cache expired or invalid, reloading from ${profilesFile}`);
-  
-  const config = loadProfilesFromEnv();
-  
+
+  const config = loadProfilesFromFile(profilesFile);
+
   PROFILES_CACHE = {
     config,
     loadedAt: now,
     filePath: profilesFile
   };
-  
+
   logger.info(`[Profiles] Reloaded ${Object.keys(config.profiles).length} profiles`);
-  
+
   return config;
 }
 
@@ -222,13 +215,12 @@ function watchProfilesFile(filePath: string): void {
 }
 
 // Initialize: load profiles and start watching
-const profilesFile = process.env.SSH_PROFILES_FILE;
-if (profilesFile) {
-  // Initial load
+if (process.env.SSH_PROFILES_FILE) {
+  // Initial load resolves and tilde-expands the path, caching it
   getProfiles();
-  
-  // Start watching
-  watchProfilesFile(profilesFile);
+
+  // Watch the same resolved path the cache and loader used
+  watchProfilesFile(PROFILES_CACHE!.filePath);
 }
 
 /**

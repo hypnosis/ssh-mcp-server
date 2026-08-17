@@ -1,7 +1,7 @@
 {
   "name": "@hypnosis/ssh-mcp-server",
   "version": "2.0.1",
-  "description": "Run commands, move files, tail logs and audit live servers over SSH from an AI assistant (Claude Code, Codex, any MCP client). Uses the system OpenSSH client, keys and config.",
+  "description": "Run commands, move files, tail logs and audit live servers over SSH from an AI coding agent — Claude Code, Codex, Gemini CLI, Hermes, or any MCP client. Uses the system OpenSSH client, keys and config.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -50,22 +50,37 @@
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
+    "mcp-server",
     "ssh",
-    "nginx",
+    "openssh",
+    "scp",
+    "sftp",
+    "remote-server",
     "server-management",
+    "devops",
+    "sysadmin",
     "logs",
-    "crond",
-    "backups",
-    "packages",
+    "audit",
     "claude",
     "claude-code",
     "codex",
-    "model-context-protocol"
+    "gemini-cli",
+    "hermes",
+    "ai-agent"
   ],
   "author": "hypnosis",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hypnosis/ssh-mcp-server.git"
+  },
+  "homepage": "https://github.com/hypnosis/ssh-mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/hypnosis/ssh-mcp-server/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

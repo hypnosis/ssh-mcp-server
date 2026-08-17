@@ -1,0 +1,73 @@
+name: Bug report
+description: Something behaves differently from what the docs promise
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please remove hostnames, usernames and passwords from anything you paste.
+        A profile name is often enough to identify a machine — rename it here.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The tool call you made and the answer you got back.
+      placeholder: |
+        ssh_exec({ profile: "example", command: "uptime" })
+        → ❌ Error: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: input
+    id: ssh-version
+    attributes:
+      label: Output of `ssh -V`
+      description: Behaviour differs across OpenSSH versions — multiplexing needs 5.6, password profiles 8.4, scp over SFTP 9.0.
+      placeholder: OpenSSH_9.6p1, LibreSSL 3.3.6
+    validations:
+      required: true
+
+  - type: input
+    id: package-version
+    attributes:
+      label: Package version
+      placeholder: 2.0.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: server-kind
+    attributes:
+      label: What is on the other end
+      description: BusyBox and coreutils disagree quietly, and appliances often have no POSIX shell at all.
+      options:
+        - Linux with coreutils (Debian, Ubuntu, RHEL…)
+        - Alpine or another BusyBox system
+        - Router, NAS or appliance with its own CLI
+        - macOS
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: client-os
+    attributes:
+      label: Your machine and MCP client
+      placeholder: macOS 15, Claude Code
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, if you have them
+      description: Run the server with `SSH_MCP_LOG_LEVEL=debug`. Secrets are masked, but read before pasting.
+      render: shell

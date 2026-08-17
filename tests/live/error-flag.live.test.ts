@@ -33,7 +33,6 @@ process.env.SSH_MCP_PROFILES_WATCH = 'false';
 writeFileSync(
   profilesFile,
   JSON.stringify({
-    default: LAB_SERVERS[0].container,
     profiles: Object.fromEntries(
       LAB_SERVERS.map((server: LabServer) => [
         server.container,

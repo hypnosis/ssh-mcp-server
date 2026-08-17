@@ -25,6 +25,9 @@ lerna-debug.log*
 
 # Secrets — никогда не коммитим
 .secrets.local
+.secrets.*.local
+secrets.local
+secrets.*.local
 .secrets/
 secrets.json
 *.secrets.json
@@ -77,6 +80,13 @@ skills-lock.json
 
 # Отчёты о приёмке: содержат подробности боевого сервера, в репозиторий не едут
 docs/acceptance/
+
+# Черновики: пишутся по горячим следам, с именами машин и версиями прошивок.
+# Причёсанное из них переезжает в BUGLIST и решения — уже обезличенным
+docs/drafts/
+
+# Песочница мутационных прогонов
+.stryker-tmp/
 
 # Внутренние правила работы команды, для публичной витрины не предназначены
 CLAUDE.md

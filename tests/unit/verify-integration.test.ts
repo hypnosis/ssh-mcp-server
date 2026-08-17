@@ -43,7 +43,6 @@ vi.mock('../../src/runner/get-runner.js', () => ({
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: () => ({ host: 'example.com', username: 'deploy', port: 22 }),
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { TransferTool } = await import('../../src/tools/transfer-tool.js');

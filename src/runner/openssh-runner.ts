@@ -11,8 +11,11 @@ import { logger } from '../utils/logger.js';
 import { buildRunnerEnv, ensureAskpassScript } from './askpass.js';
 import { classifySpawnOutcome, stripMuxNotices } from './error-classifier.js';
 import {
+  SSHAuthError,
   SSHCancelledError,
   SSHChannelClosedError,
+  SSHHostKeyError,
+  SSHMuxLimitError,
   SSHRunnerError,
   SSHTimeoutError,
   isRetryable,
@@ -48,6 +51,7 @@ import type {
   ExecResult,
   MasterCloseOutcome,
   PingResult,
+  PingState,
   RunnerStats,
   TransferOptions,
 } from './types.js';
@@ -64,6 +68,24 @@ const RETRY_DELAY_MS = 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Which side of the trip failed.
+ *
+ * The split follows what the caller has to do next: `rejected` means the server was
+ * reached and refused us, so credentials and known hosts are worth looking at and the
+ * network is not; anything else means we never got that far.
+ */
+function pingStateForError(error: unknown): PingState {
+  if (
+    error instanceof SSHAuthError ||
+    error instanceof SSHHostKeyError ||
+    error instanceof SSHMuxLimitError
+  ) {
+    return 'rejected';
+  }
+  return 'no-route';
 }
 
 /**
@@ -140,10 +162,27 @@ export class OpenSshRunner implements CommandRunner {
         idempotent: true,
         remoteTimeout: false,
       });
-      return { ok: result.exitCode === 0, masterWasActive, latencyMs: Date.now() - startedAt };
+      if (result.exitCode === 0) {
+        return { state: 'ready', masterWasActive, latencyMs: Date.now() - startedAt };
+      }
+      // The session was established and the server answered — it just has no `true`.
+      // A device whose login shell is a vendor CLI lands here, and it is usable.
+      return {
+        state: 'limited',
+        masterWasActive,
+        latencyMs: Date.now() - startedAt,
+        exitCode: result.exitCode,
+        detail: (result.stderr || result.stdout).trim() || undefined,
+      };
     } catch (error) {
-      this.lastError = (error as Error).message;
-      return { ok: false, masterWasActive, latencyMs: Date.now() - startedAt };
+      const detail = (error as Error).message;
+      this.lastError = detail;
+      return {
+        state: pingStateForError(error),
+        masterWasActive,
+        latencyMs: Date.now() - startedAt,
+        detail,
+      };
     }
   }
 
@@ -512,9 +551,9 @@ export class OpenSshRunner implements CommandRunner {
 }
 
 /**
- * Destination key: the profile name is deliberately left out of it, so a
- * named profile (e.g. "production") and the default profile pointing at the
- * same server share one connection instead of holding two separate ones to the same host.
+ * Destination key: the profile name is deliberately left out of it, so two
+ * profiles pointing at the same server share one connection instead of holding
+ * two separate ones to the same host.
  */
 export function runnerKey(config: RunnerConfig): string {
   return `${config.username}@${config.host}:${config.port ?? 22}`;

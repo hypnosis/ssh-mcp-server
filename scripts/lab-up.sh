@@ -84,11 +84,39 @@ ensure_pwuser() {
   ' >/dev/null
 }
 
-# Оба лабораторных пользователя. Заводятся и на свежем контейнере, и на уже
+# Пользователь с вендорской оболочкой: команд POSIX она не знает и на любую
+# отвечает кодом 127 со своим текстом — так ведут себя роутеры и встраиваемые
+# устройства с собственным CLI. На нём проверяется состояние `limited`:
+# соединение рабочее, но пробная команда `true` серверу неизвестна.
+ensure_vendorcli() {
+  docker exec "$1" sh -c '
+    cat > /usr/local/bin/vendorsh <<"SHELL"
+#!/bin/sh
+echo "Command::Base error[7405600]: no such command: ${2:-login}." >&2
+exit 127
+SHELL
+    chmod 755 /usr/local/bin/vendorsh
+    id vendorcli >/dev/null 2>&1 ||
+      adduser -D -s /usr/local/bin/vendorsh vendorcli 2>/dev/null ||
+      useradd -m -s /usr/local/bin/vendorsh vendorcli
+    # Оболочка задаётся и уже заведённому пользователю: без этого контейнер,
+    # переживший правку скрипта, оставался бы с прежней оболочкой
+    sed -i "s#^\(vendorcli:.*\):[^:]*\$#\1:/usr/local/bin/vendorsh#" /etc/passwd
+    sed -i "s/^vendorcli:!:/vendorcli:*:/" /etc/shadow
+    mkdir -p /home/vendorcli/.ssh
+    cp /root/.ssh/authorized_keys /home/vendorcli/.ssh/authorized_keys
+    chown -R vendorcli:vendorcli /home/vendorcli/.ssh
+    chmod 700 /home/vendorcli/.ssh
+    chmod 600 /home/vendorcli/.ssh/authorized_keys
+  ' >/dev/null
+}
+
+# Лабораторные пользователи. Заводятся и на свежем контейнере, и на уже
 # поднятом: иначе после правки скрипта пришлось бы сносить лабораторию руками.
 ensure_users() {
   ensure_deploy "$1"
   ensure_pwuser "$1"
+  ensure_vendorcli "$1"
 }
 
 start() {

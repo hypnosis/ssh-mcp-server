@@ -48,7 +48,6 @@ vi.mock('../../src/runner/get-runner.js', () => ({
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: () => ({ host: 'example.com', username: 'deploy', port: 22 }),
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { ExecTool } = await import('../../src/tools/exec-tool.js');

@@ -53,7 +53,6 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
     return profile.config;
   },
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { FileTools } = await import('../../src/tools/file-tools.js');

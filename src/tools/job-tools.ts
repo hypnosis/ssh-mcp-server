@@ -91,7 +91,7 @@ export class JobTools {
   getTools(): Tool[] {
     const profile = {
       type: 'string',
-      description: 'SSH profile name. If not specified, uses default profile.',
+      description: 'SSH profile name. Required: every profile is a different server, so none is assumed.',
     };
     const id = {
       type: 'string',

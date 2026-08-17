@@ -37,7 +37,6 @@ const ALLOWED_DIR = '/tmp/rules-allowed';
 await writeFile(
   profilesPath,
   JSON.stringify({
-    default: LAB_SERVERS[0].name,
     profiles: Object.fromEntries(
       LAB_SERVERS.flatMap((server) => {
         const base = {

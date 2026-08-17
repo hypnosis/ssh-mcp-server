@@ -9,7 +9,6 @@
  * @example File configuration
  * ```json
  * {
- *   "default": "production",
  *   "profiles": {
  *     "production": {
  *       "host": "server.example.com",
@@ -39,7 +38,6 @@ import {
  * Profiles configuration structure
  */
 interface ProfilesConfig {
-  default: string;
   profiles: Record<string, SSHProfileData>;
   /** Profiles rejected by the loader: name, field, value, reason */
   broken: BrokenProfile[];
@@ -93,7 +91,6 @@ function loadProfilesFromFile(profilesFile: string): ProfilesConfig {
     logger.info(`Loaded ${profileCount} SSH profiles from file: ${profilesFile}`);
 
     return {
-      default: result.config.default || Object.keys(result.config.profiles)[0],
       profiles: result.config.profiles,
       broken: result.broken,
     };
@@ -261,23 +258,17 @@ function toSSHConfig(profileData: SSHProfileData): SSHConfig {
 
 /**
  * Resolve SSH configuration from tool arguments
- * 
- * Priority:
- * 1. Profile name in args.profile
- * 2. Default profile from SSH_PROFILES_FILE
- * 
+ *
+ * The profile is always named by the caller: every profile is a different machine,
+ * so there is nothing sensible to fall back to.
+ *
  * @param args Tool arguments containing profile
  * @returns SSH configuration
- * @throws Error if specified profile is not found
- * 
- * @example Using profile name
+ * @throws Error if no profile is named, or the named one is missing or broken
+ *
+ * @example
  * ```typescript
  * resolveSSHConfig({ profile: "production" })
- * ```
- * 
- * @example Using default profile
- * ```typescript
- * resolveSSHConfig({}) // Uses default from SSH_PROFILES_FILE
  * ```
  */
 export function resolveSSHConfig(args: {
@@ -285,11 +276,9 @@ export function resolveSSHConfig(args: {
 }): SSHConfig {
   const PROFILES = getProfiles(); // Use cached profiles with auto-reload
   
-  logger.debug(`[Profile Resolver] Resolving SSH config, requested profile: ${args.profile || 'default'}`);
+  logger.debug(`[Profile Resolver] Resolving SSH config, requested profile: ${args.profile || 'none given'}`);
   logger.debug(`[Profile Resolver] Available profiles: ${Object.keys(PROFILES.profiles).join(', ')}`);
-  logger.debug(`[Profile Resolver] Default profile: ${PROFILES.default}`);
-  
-  // Priority 1: Profile name specified
+
   if (args.profile) {
     logger.debug(`[Profile Resolver] Looking up profile: "${args.profile}"`);
     const profileData = PROFILES.profiles[args.profile];
@@ -361,84 +350,14 @@ export function resolveSSHConfig(args: {
     return sshConfig;
   }
   
-  // Priority 2: Default profile (check if suitable for SSH)
-  const defaultProfileName = PROFILES.default;
-  logger.debug(`[Profile Resolver] No profile specified, using default: "${defaultProfileName}"`);
-
-  // A broken default isn't substituted by anything: a neighboring profile is a
-  // different machine, and a command without an explicit profile would go there silently
-  const brokenDefault = PROFILES.broken.find((entry) => entry.name === defaultProfileName);
-  if (brokenDefault) {
-    logger.error(`[Profile Resolver] ❌ ${describeBrokenProfile(brokenDefault)}`);
-    throw new Error(
-      `Default ${describeBrokenProfile(brokenDefault)}. ` +
-      `Fix it in SSH_PROFILES_FILE or name another profile explicitly.`
-    );
-  }
-
-  const defaultProfileData = PROFILES.profiles[defaultProfileName];
-  
-  // If default profile is suitable for SSH - use it
-  if (defaultProfileData && defaultProfileData.host && defaultProfileData.username) {
-    logger.debug(`[Profile Resolver] Using default SSH profile: "${defaultProfileName}"`);
-    logger.debug(`[Profile Resolver] Default profile data: host=${defaultProfileData.host}, port=${defaultProfileData.port || 22}, username=${defaultProfileData.username}`);
-    
-    const expandedKeyPath = expandTilde(defaultProfileData.privateKeyPath);
-    if (defaultProfileData.privateKeyPath && expandedKeyPath !== defaultProfileData.privateKeyPath) {
-      logger.debug(`[Profile Resolver] Expanded privateKeyPath: ${defaultProfileData.privateKeyPath} → ${expandedKeyPath}`);
-    }
-    
-    const sshConfig = toSSHConfig(defaultProfileData);
-
-
-    logger.debug(`[Profile Resolver] Resolved SSH config from default profile:`, {
-      host: sshConfig.host,
-      port: sshConfig.port,
-      username: sshConfig.username,
-      privateKeyPath: sshConfig.privateKeyPath,
-      hasPassphrase: !!sshConfig.passphrase,
-      hasPassword: !!sshConfig.password,
-    });
-    
-    return sshConfig;
-  }
-  
-  // Priority 3: Search for first suitable profile (default not suitable for SSH)
-  logger.warn(`[Profile Resolver] ⚠️  Default profile "${defaultProfileName}" is not suitable for SSH (missing host or username)`);
-  logger.debug(`[Profile Resolver] Default profile data:`, defaultProfileData);
-  logger.debug(`[Profile Resolver] Searching for first valid SSH profile...`);
-  
-  for (const [profileName, profileData] of Object.entries(PROFILES.profiles)) {
-    if (profileData.host && profileData.username) {
-      logger.debug(`[Profile Resolver] Using first valid SSH profile: "${profileName}"`);
-      logger.debug(`[Profile Resolver] Profile data: host=${profileData.host}, port=${profileData.port || 22}, username=${profileData.username}`);
-      
-      const expandedKeyPath = expandTilde(profileData.privateKeyPath);
-      if (profileData.privateKeyPath && expandedKeyPath !== profileData.privateKeyPath) {
-        logger.debug(`[Profile Resolver] Expanded privateKeyPath: ${profileData.privateKeyPath} → ${expandedKeyPath}`);
-      }
-      
-      const sshConfig = toSSHConfig(profileData);
-
-
-      logger.debug(`[Profile Resolver] Resolved SSH config from first valid profile:`, {
-        host: sshConfig.host,
-        port: sshConfig.port,
-        username: sshConfig.username,
-        privateKeyPath: sshConfig.privateKeyPath,
-        hasPassphrase: !!sshConfig.passphrase,
-        hasPassword: !!sshConfig.password,
-      });
-      
-      return sshConfig;
-    }
-  }
-  
-  // No suitable profile found
-  logger.error(`[Profile Resolver] ❌ No valid SSH profile found`);
-  logger.error(`[Profile Resolver] Available profiles: ${Object.keys(PROFILES.profiles).join(', ')}`);
-  logger.error(`[Profile Resolver] All profiles must have "host" and "username" fields for SSH`);
-  throw new Error('No valid SSH profile found. Profiles must have "host" and "username" fields.');
+  // No profile named. Nothing is substituted for it: profiles are separate machines,
+  // and picking one on the caller's behalf would send the command to a server they never
+  // asked for.
+  // The list is never empty here: a file without a single usable profile fails to load
+  // at all, and getProfiles() throws before reaching this point.
+  const available = Object.keys(PROFILES.profiles);
+  logger.error(`[Profile Resolver] ❌ No profile specified`);
+  throw new Error(`No profile specified. Name one explicitly: ${available.join(', ')}`);
 }
 
 /**
@@ -448,14 +367,6 @@ export function resolveSSHConfig(args: {
 export function getAvailableProfiles(): string[] {
   const PROFILES = getProfiles();
   return Object.keys(PROFILES.profiles);
-}
-
-/**
- * Get default profile name
- */
-export function getDefaultProfile(): string {
-  const PROFILES = getProfiles();
-  return PROFILES.default;
 }
 
 /**

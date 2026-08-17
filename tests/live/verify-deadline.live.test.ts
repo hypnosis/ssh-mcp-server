@@ -23,7 +23,6 @@ const profilesPath = join(workDir, 'profiles.json');
 await writeFile(
   profilesPath,
   JSON.stringify({
-    default: LAB_SERVERS[0].name,
     profiles: Object.fromEntries(
       LAB_SERVERS.map((server) => [
         server.name,

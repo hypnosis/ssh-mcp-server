@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-08-17
+
+### Changed — the profile is always named (breaking)
+- There is no default profile any more, and the `default` field in the profiles file is
+  ignored. Every call names the server it talks to; a call without a name is refused and
+  the refusal lists the names to choose from. Picking one silently meant that the order of
+  entries in the file decided where a command went — and a command sent to the wrong
+  machine cannot be taken back.
+- Fields and profiles the server does not recognise are left alone instead of failing the
+  load, so a profiles file shared with other tools keeps working.
+
+### Changed — a connection test says what state it found
+- `ssh_monitor` action `test` reports one of four states as its first word: `ready`,
+  `limited`, `no-route`, `rejected`. A server that answers with a non-POSIX shell
+  (routers, appliances) is `limited` — a usable connection, not a failure, and no longer
+  reported as silence. Only `no-route` and `rejected` are errors, and each says which side
+  to look at: the network or the credentials.
+
+### Added — passwords live outside the profiles file
+- `secretsFile`, at the top level of the profiles file or per profile, points at a
+  separate JSON keyed by profile name, holding `password` and `passphrase`. The file must
+  be `chmod 600` or it is refused, the way `ssh` refuses a private key. A relative path is
+  resolved from the profiles file, not from the working directory. Secrets written inline
+  still work but log a warning. See `secrets.json.example`.
+
 ## [2.0.0] - 2026-08-17
 
 Transport moved from the in-process `ssh2` pool to the system OpenSSH client with

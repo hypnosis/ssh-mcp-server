@@ -7,6 +7,12 @@ import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { logger, hideFromLogs } from './logger.js';
 import {
+  readSecretsFile,
+  SECRETS_FILE_EXAMPLE,
+  type ProfileSecrets,
+  type SecretsFileResult,
+} from './secrets-file.js';
+import {
   STRICT_HOST_KEY_CHECKING_VALUES,
   type StrictHostKeyChecking,
 } from './ssh-config.js';
@@ -27,6 +33,13 @@ export interface BrokenProfile {
   value: string;
   /** Why the value doesn't work */
   reason: string;
+  /**
+   * What a correct value looks like, printed after the reason.
+   *
+   * The reader of a rejected profile is usually an agent with no way to go and look the
+   * format up, so the message carries it.
+   */
+  hint?: string;
 }
 
 /** Field value formatted for use in an error message */
@@ -41,7 +54,8 @@ function formatValue(value: unknown): string {
 
 /** One rejection line: profile, field, reason, and what was in the file */
 export function describeBrokenProfile(entry: BrokenProfile): string {
-  return `Profile "${entry.name}" has invalid ${entry.field}: ${entry.reason} (got ${entry.value})`;
+  const described = `Profile "${entry.name}" has invalid ${entry.field}: ${entry.reason} (got ${entry.value})`;
+  return entry.hint ? `${described}\n${entry.hint}` : described;
 }
 
 /** The broken field in a path-security entry, or null if it's fine */
@@ -118,8 +132,8 @@ function describePathSecurityProblem(value: unknown): PathSecurityProblem | null
  * Profiles configuration file structure
  */
 interface ProfilesConfig {
-  /** Default profile name to use if not specified */
-  default?: string;
+  /** Secrets file used by every profile that does not name its own */
+  secretsFile?: string;
   /** SSH profiles by name */
   profiles: Record<string, SSHProfileData>;
 }
@@ -140,6 +154,11 @@ export interface SSHProfileData {
   passphrase?: string;
   /** Password for authentication (not recommended for production) */
   password?: string;
+  /**
+   * Where this profile's password and passphrase are kept, instead of in this file.
+   * Overrides the file-level `secretsFile`. A relative path is taken from the profiles file.
+   */
+  secretsFile?: string;
   /** Host key checking policy: yes | accept-new | no (default: accept-new) */
   strictHostKeyChecking?: StrictHostKeyChecking;
   /** Ignore the user's ~/.ssh/config for this profile */
@@ -171,8 +190,8 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
   const broken: BrokenProfile[] = [];
 
   /** Reject a profile: the error is reported both as a string and as a parsed record */
-  const reject = (name: string, field: string, value: unknown, reason: string): void => {
-    const entry: BrokenProfile = { name, field, value: formatValue(value), reason };
+  const reject = (name: string, field: string, value: unknown, reason: string, hint?: string): void => {
+    const entry: BrokenProfile = { name, field, value: formatValue(value), reason, hint };
     logger.error(`[Profiles File] ❌ ${describeBrokenProfile(entry)}`);
     errors.push(describeBrokenProfile(entry));
     broken.push(entry);
@@ -217,11 +236,20 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
     const profileKeys = Object.keys(parsed.profiles);
     logger.debug(`[Profiles File] Found ${profileKeys.length} profiles in file: ${profileKeys.join(', ')}`);
     
-    if (parsed.default) {
-      logger.debug(`[Profiles File] Default profile specified: "${parsed.default}"`);
-    } else {
-      logger.debug(`[Profiles File] No default profile specified`);
-    }
+    const rootSecretsFile =
+      typeof parsed.secretsFile === 'string' ? parsed.secretsFile.trim() : undefined;
+
+    // One read per file, however many profiles point at it
+    const secretsCache = new Map<string, SecretsFileResult>();
+    const readSecretsCached = (secretsFile: string): SecretsFileResult => {
+      const cached = secretsCache.get(secretsFile);
+      if (cached) {
+        return cached;
+      }
+      const result = readSecretsFile(secretsFile, resolvedPath);
+      secretsCache.set(secretsFile, result);
+      return result;
+    };
 
     // Validate each profile
     const profiles: Record<string, SSHProfileData> = {};
@@ -303,6 +331,52 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
         logger.debug(`[Profiles File] Profile "${name}" has password authentication configured`);
       }
 
+      // A secret kept outside this file wins: the inline fields stay supported for
+      // compatibility, but this file gets copied and shown, and a password should not
+      // travel with it
+      const ownSecretsFile =
+        typeof profile.secretsFile === 'string' && profile.secretsFile.trim()
+          ? profile.secretsFile.trim()
+          : undefined;
+      const secretsFile = ownSecretsFile ?? rootSecretsFile;
+
+      if (secretsFile) {
+        const result = readSecretsCached(secretsFile);
+        if (!result.ok) {
+          reject(
+            name,
+            'secretsFile',
+            result.problem.path,
+            result.problem.reason,
+            `Expected format:\n${SECRETS_FILE_EXAMPLE}`
+          );
+          continue;
+        }
+
+        const secrets: ProfileSecrets | undefined = result.secrets[name];
+        if (secrets?.password) {
+          profileData.password = secrets.password;
+        }
+        if (secrets?.passphrase) {
+          profileData.passphrase = secrets.passphrase;
+        }
+
+        // Only worth saying when the profile named a file of its own: with a shared file,
+        // key-based profiles legitimately have no entry
+        if (!secrets && ownSecretsFile) {
+          logger.warn(
+            `[Profiles File] Profile "${name}" points at ${ownSecretsFile}, which has no entry named "${name}"`
+          );
+        }
+      }
+
+      if ((profileData.password || profileData.passphrase) && (profile.password || profile.passphrase)) {
+        logger.warn(
+          `[Profiles File] Profile "${name}" keeps a secret inline. Move it to a secrets file ` +
+          `(see "secretsFile") — this file is not the place for one.`
+        );
+      }
+
       // A typo in the host key checking policy must not pass silently:
       // a quiet fallback to the default would weaken protection unnoticed
       if (profile.strictHostKeyChecking !== undefined) {
@@ -355,51 +429,14 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       profiles,
     };
 
-    // Set default profile - check whether the specified default is suitable for SSH
-    if (parsed.default && typeof parsed.default === 'string') {
-      logger.debug(`[Profiles File] Checking default profile: "${parsed.default}"`);
-      if (profiles[parsed.default]) {
-        // The specified default is suitable for SSH
-        config.default = parsed.default;
-        logger.debug(`[Profiles File] Default profile "${parsed.default}" is valid for SSH`);
-      } else if (broken.some((entry) => entry.name === parsed.default)) {
-        // A broken default keeps its own name: falling back to a neighbor
-        // would send a command with no explicit profile to a different server
-        config.default = parsed.default;
-        logger.error(`[Profiles File] ❌ Default profile "${parsed.default}" is broken and stays unusable`);
-      } else {
-        // The specified default isn't suitable for SSH (e.g. mode: "local")
-        // Find the first suitable profile and make it the default
-        const firstValidProfile = Object.keys(profiles)[0];
-        if (firstValidProfile) {
-          logger.warn(`[Profiles File] ⚠️  Default profile "${parsed.default}" is not suitable for SSH`);
-          logger.info(`[Profiles File] Using first valid profile as default: "${firstValidProfile}"`);
-          config.default = firstValidProfile;
-        }
-        // If firstValidProfile is missing, the empty-profiles check above
-        // already caught it; nothing more to do here
-      }
-    } else {
-      // No default specified - use the first suitable profile
-      logger.debug(`[Profiles File] No default profile specified, using first valid profile`);
-      const firstValidProfile = Object.keys(profiles)[0];
-      if (firstValidProfile) {
-        config.default = firstValidProfile;
-        logger.debug(`[Profiles File] Set default to first valid profile: "${firstValidProfile}"`);
-      }
-    }
-
     logger.info(`[Profiles File] Loaded ${Object.keys(profiles).length} SSH profiles from ${resolvedPath}`);
-    if (config.default) {
-      logger.info(`[Profiles File] Default SSH profile: "${config.default}"`);
-    }
     if (skippedCount > 0) {
       logger.info(`[Profiles File] Skipped ${skippedCount} profiles (not suitable for SSH)`);
     }
 
     // Errors from broken profiles are reported even when valid neighbors
-    // survive: otherwise a profile disappears silently, and the default
-    // shifts to a different server
+    // survive: otherwise the profile disappears from the list silently, and its
+    // absence is only discovered by whoever asks for it by name
     return { config, errors, broken };
   } catch (error: any) {
     if (error.name === 'SyntaxError') {

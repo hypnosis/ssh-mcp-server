@@ -17,7 +17,6 @@ const {
   listSocketsMock,
   resolveConfigMock,
   getAvailableProfilesMock,
-  getDefaultProfileMock,
   getBrokenProfilesMock,
 } = vi.hoisted(() => ({
   statsMock: vi.fn(),
@@ -27,7 +26,6 @@ const {
   listSocketsMock: vi.fn(),
   resolveConfigMock: vi.fn(() => ({ host: 'example.com', username: 'deploy', port: 2222 })),
   getAvailableProfilesMock: vi.fn(() => ['production', 'staging']),
-  getDefaultProfileMock: vi.fn(() => 'production'),
   getBrokenProfilesMock: vi.fn(() => []),
 }));
 
@@ -41,7 +39,6 @@ vi.mock('../../src/runner/control-sockets.js', () => ({
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: resolveConfigMock,
   getAvailableProfiles: getAvailableProfilesMock,
-  getDefaultProfile: getDefaultProfileMock,
   getBrokenProfiles: getBrokenProfilesMock,
   reloadProfiles: () => undefined,
 }));
@@ -71,12 +68,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   resolveConfigMock.mockReturnValue({ host: 'example.com', username: 'deploy', port: 2222 });
   statsMock.mockResolvedValue(stats());
-  pingMock.mockResolvedValue({ ok: true, masterWasActive: true, latencyMs: 42 });
+  pingMock.mockResolvedValue({ state: 'ready', masterWasActive: true, latencyMs: 42 });
   closeMasterMock.mockResolvedValue('closed');
   listSocketsMock.mockResolvedValue([]);
   getRunnerMock.mockResolvedValue({ stats: statsMock, ping: pingMock, closeMaster: closeMasterMock });
   getAvailableProfilesMock.mockReturnValue(['production', 'staging']);
-  getDefaultProfileMock.mockReturnValue('production');
   getBrokenProfilesMock.mockReturnValue([]);
 });
 
@@ -90,7 +86,7 @@ describe('ssh_monitor stats', () => {
       stats({ sshVersion: 'OpenSSH_9.6p1', masterPid: 4242, controlPath: '/tmp/cm-prod' })
     );
 
-    const text = (await run({ action: 'stats' })).content[0].text as string;
+    const text = (await run({ action: 'stats', profile: 'production' })).content[0].text as string;
 
     expect(text).toContain('openssh');
     expect(text).toContain('OpenSSH_9.6p1');
@@ -107,13 +103,13 @@ describe('ssh_monitor stats', () => {
       })
     );
 
-    const text = (await run({ action: 'stats' })).content[0].text as string;
+    const text = (await run({ action: 'stats', profile: 'production' })).content[0].text as string;
 
     expect(text).toContain('ControlPersist requires OpenSSH 5.6+');
   });
 
   it('показывает счётчики команд и передач', async () => {
-    const text = (await run({ action: 'stats' })).content[0].text as string;
+    const text = (await run({ action: 'stats', profile: 'production' })).content[0].text as string;
 
     expect(text).toContain('12');
     expect(text).toContain('3');
@@ -122,7 +118,7 @@ describe('ssh_monitor stats', () => {
   it('последняя ошибка транспорта видна, если она была', async () => {
     statsMock.mockResolvedValue(stats({ lastError: 'connect ECONNREFUSED' }));
 
-    const text = (await run({ action: 'stats' })).content[0].text as string;
+    const text = (await run({ action: 'stats', profile: 'production' })).content[0].text as string;
 
     expect(text).toContain('ECONNREFUSED');
   });
@@ -139,17 +135,17 @@ describe('ssh_monitor test', () => {
   });
 
   it('переиспользованное соединение отмечается отдельно', async () => {
-    pingMock.mockResolvedValue({ ok: true, masterWasActive: false, latencyMs: 380 });
+    pingMock.mockResolvedValue({ state: 'ready', masterWasActive: false, latencyMs: 380 });
 
-    const text = (await run({ action: 'test' })).content[0].text as string;
+    const text = (await run({ action: 'test', profile: 'production' })).content[0].text as string;
 
     expect(text.toLowerCase()).toContain('new connection');
   });
 
   it('недоступный сервер — это ошибка, а не «✅»', async () => {
-    pingMock.mockResolvedValue({ ok: false, masterWasActive: false, latencyMs: 5000 });
+    pingMock.mockResolvedValue({ state: 'no-route', masterWasActive: false, latencyMs: 5000 });
 
-    const response = await run({ action: 'test' });
+    const response = await run({ action: 'test', profile: 'production' });
 
     expect(response.isError).toBe(true);
     expect(response.content[0].text as string).not.toContain('✅');
@@ -158,7 +154,7 @@ describe('ssh_monitor test', () => {
   it('сбой транспорта тоже подаётся как неудачная проверка', async () => {
     pingMock.mockRejectedValue(new Error('Authentication failed'));
 
-    const response = await run({ action: 'test' });
+    const response = await run({ action: 'test', profile: 'production' });
 
     expect(response.isError).toBe(true);
     expect(response.content[0].text as string).toContain('Authentication failed');
@@ -174,7 +170,7 @@ describe('ssh_monitor list', () => {
     expect(text.toLowerCase()).not.toContain('broken');
   });
 
-  it('сломанный профиль не по умолчанию назван вместе с причиной', async () => {
+  it('сломанный профиль назван вместе с причиной', async () => {
     getBrokenProfilesMock.mockReturnValue([broken({ name: 'typo-host' })]);
 
     const text = (await run({ action: 'list' })).content[0].text as string;
@@ -183,16 +179,6 @@ describe('ssh_monitor list', () => {
     expect(text).toContain(
       'Profile "typo-host" has invalid port: port must be a number between 1 and 65535 (got 70000)'
     );
-  });
-
-  it('сломанный профиль по умолчанию виден как таковой', async () => {
-    getDefaultProfileMock.mockReturnValue('production-typo');
-    getBrokenProfilesMock.mockReturnValue([broken({ name: 'production-typo' })]);
-
-    const text = (await run({ action: 'list' })).content[0].text as string;
-
-    expect(text).toContain('production-typo');
-    expect(text.toLowerCase()).toContain('default');
   });
 
   it('несколько сломанных профилей перечисляются все', async () => {
@@ -225,16 +211,17 @@ describe('ssh_monitor close', () => {
     expect(text).toContain('example.com:2222');
   });
 
-  it('без имени профиля закрывается соединение профиля по умолчанию', async () => {
-    const text = (await run({ action: 'close' })).content[0].text as string;
+  it('без имени профиля ничего не закрывается', async () => {
+    const response = await run({ action: 'close' });
 
-    expect(text).toContain('Shared Connection: production');
+    expect(response.isError).toBe(true);
+    expect(closeMasterMock).not.toHaveBeenCalled();
   });
 
   it('«закрывать было нечего» — это успех, а не ошибка', async () => {
     closeMasterMock.mockResolvedValue('nothing-to-close');
 
-    const response = await run({ action: 'close' });
+    const response = await run({ action: 'close', profile: 'production' });
 
     expect(response.isError).toBeUndefined();
     expect(response.content[0].text as string).toContain('idled out');
@@ -243,7 +230,7 @@ describe('ssh_monitor close', () => {
   it('без мультиплексирования объясняет, что закрывать нечего в принципе', async () => {
     closeMasterMock.mockResolvedValue('multiplexing-off');
 
-    const text = (await run({ action: 'close' })).content[0].text as string;
+    const text = (await run({ action: 'close', profile: 'production' })).content[0].text as string;
 
     expect(text).toContain('multiplexing is off');
   });
@@ -251,7 +238,7 @@ describe('ssh_monitor close', () => {
   it('сбой закрытия подаётся ошибкой', async () => {
     closeMasterMock.mockRejectedValue(new Error('ssh: command not found'));
 
-    const response = await run({ action: 'close' });
+    const response = await run({ action: 'close', profile: 'production' });
 
     expect(response.isError).toBe(true);
     expect(response.content[0].text as string).toContain('ssh: command not found');
@@ -260,7 +247,7 @@ describe('ssh_monitor close', () => {
   it('называет соединения, оставшиеся на машине, и срок их простоя', async () => {
     listSocketsMock.mockResolvedValue([socket(), socket({ path: '/tmp/cm/s-def' })]);
 
-    const text = (await run({ action: 'close' })).content[0].text as string;
+    const text = (await run({ action: 'close', profile: 'production' })).content[0].text as string;
 
     expect(text).toContain('2 live connection(s)');
     expect(text).toContain('600s');
@@ -269,7 +256,7 @@ describe('ssh_monitor close', () => {
   it('огрызки сокетов за живые соединения не считаются', async () => {
     listSocketsMock.mockResolvedValue([socket({ state: 'stale' }), socket({ state: 'unknown' })]);
 
-    const text = (await run({ action: 'close' })).content[0].text as string;
+    const text = (await run({ action: 'close', profile: 'production' })).content[0].text as string;
 
     expect(text).toContain('no live connections');
   });
@@ -277,7 +264,7 @@ describe('ssh_monitor close', () => {
   it('нечитаемый каталог не выдаётся за пустой и не рушит закрытие', async () => {
     listSocketsMock.mockRejectedValue(new Error('EACCES: permission denied'));
 
-    const response = await run({ action: 'close' });
+    const response = await run({ action: 'close', profile: 'production' });
 
     expect(response.isError).toBeUndefined();
     const text = response.content[0].text as string;

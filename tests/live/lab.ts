@@ -84,6 +84,16 @@ export function labPasswordConfig(server: LabServer, password = LAB_PASSWORD): S
   };
 }
 
+/**
+ * Профиль сервера с вендорской оболочкой.
+ *
+ * Вход проходит, а команды POSIX серверу неизвестны — так отвечают роутеры и
+ * встраиваемые устройства со своим CLI. Пользователя заводит scripts/lab-up.sh.
+ */
+export function labVendorConfig(server: LabServer): SSHConfig {
+  return { ...labConfig(server, 'vendorcli') };
+}
+
 /** Отвечает ли порт — дешёвая проба, чтобы обычный прогон не ждал таймаутов */
 function portOpen(port: number, timeoutMs = 300): Promise<boolean> {
   return new Promise((resolve) => {

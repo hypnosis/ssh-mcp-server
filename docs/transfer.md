@@ -67,7 +67,7 @@ Key choices:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `profile` | string | `"default"` | SSH profile name |
+| `profile` | string | **required** | SSH profile name |
 | `local_path` | string | **required** | Local file or directory path |
 | `remote_path` | string | **required** | Remote destination path |
 | `mode` | string | — | Octal file mode, e.g. `"644"` or `"755"` |
@@ -86,7 +86,7 @@ Returns a text block summarizing: `remote_path`, `bytes`, `sha256` (if verified)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `profile` | string | `"default"` | SSH profile name |
+| `profile` | string | **required** | SSH profile name |
 | `remote_path` | string | **required** | Remote source path |
 | `local_path` | string | **required** | Local destination path |
 | `recursive` | boolean | auto | Force directory mode. Auto-detected via remote `test -d` |

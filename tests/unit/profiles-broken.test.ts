@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { loadProfilesFile } from '../../src/utils/profiles-file.js';
-import { reloadProfiles, resolveSSHConfig, getDefaultProfile } from '../../src/utils/profile-resolver.js';
+import { reloadProfiles, resolveSSHConfig } from '../../src/utils/profile-resolver.js';
 
 const tempDirs: string[] = [];
 let previousProfilesFile: string | undefined;
@@ -35,9 +35,8 @@ function activate(content: Record<string, unknown>): string {
 }
 
 /** Файл с испорченным `production` и исправным `staging` */
-function fileWith(broken: Record<string, unknown>, defaultProfile = 'production'): Record<string, unknown> {
+function fileWith(broken: Record<string, unknown>): Record<string, unknown> {
   return {
-    default: defaultProfile,
     profiles: {
       production: { host: 'example.com', username: 'deploy', ...broken },
       staging: { host: 'staging.example.com', username: 'deploy' },
@@ -84,7 +83,6 @@ describe('загрузчик: испорченный профиль назван
 
   it('запись, которая вовсе не объект, тоже названа испорченной', () => {
     const path = writeProfiles({
-      default: 'staging',
       profiles: { production: 42, staging: { host: 'staging.example.com', username: 'deploy' } },
     });
 
@@ -96,7 +94,6 @@ describe('загрузчик: испорченный профиль назван
 
   it('пропущенный не-SSH профиль ошибкой не считается', () => {
     const path = writeProfiles({
-      default: 'staging',
       profiles: {
         docker: { mode: 'local' },
         noHost: { username: 'deploy' },
@@ -113,29 +110,16 @@ describe('загрузчик: испорченный профиль назван
 });
 
 describe('резолвер: исправный сосед переживает испорченный', () => {
-  it.each(BROKEN_FIELDS)('исправный профиль работает, когда испорчен default (%s)', (_name, broken) => {
-    activate(fileWith(broken, 'production'));
+  it.each(BROKEN_FIELDS)('исправный профиль работает, когда сосед испорчен (%s)', (_name, broken) => {
+    activate(fileWith(broken));
 
     expect(resolveSSHConfig({ profile: 'staging' }).host).toBe('staging.example.com');
-  });
-
-  it.each(BROKEN_FIELDS)('исправный профиль работает, когда испорчен не default (%s)', (_name, broken) => {
-    activate({
-      default: 'staging',
-      profiles: {
-        production: { host: 'example.com', username: 'deploy', ...broken },
-        staging: { host: 'staging.example.com', username: 'deploy' },
-      },
-    });
-
-    expect(resolveSSHConfig({ profile: 'staging' }).host).toBe('staging.example.com');
-    expect(resolveSSHConfig({}).host).toBe('staging.example.com');
   });
 });
 
 describe('резолвер: обращение к испорченному профилю называет причину', () => {
   it.each(BROKEN_FIELDS)('отказ по имени называет поле и значение (%s)', (_name, broken, field, value) => {
-    activate(fileWith(broken, 'staging'));
+    activate(fileWith(broken));
 
     let message = '';
     try {
@@ -153,58 +137,74 @@ describe('резолвер: обращение к испорченному пр�
   });
 });
 
-describe('резолвер: default не переезжает с испорченного профиля', () => {
-  it.each(BROKEN_FIELDS)('обращение без профиля отказывает, а не уходит к соседу (%s)', (_name, broken, field) => {
-    activate(fileWith(broken, 'production'));
+describe('резолвер: без имени профиля сервер не подставляется', () => {
+  it.each(BROKEN_FIELDS)('обращение без профиля отказывает, а не уходит к соседу (%s)', (_name, broken) => {
+    activate(fileWith(broken));
 
     let message = '';
     try {
       const config = resolveSSHConfig({});
-      throw new Error(`подставлен другой сервер: ${config.host}`);
+      throw new Error(`подставлен сервер: ${config.host}`);
     } catch (error: any) {
       message = error.message;
     }
 
-    expect(message).toMatch(/production/);
-    expect(message).toMatch(field);
+    expect(message).toMatch(/No profile specified/i);
     expect(message).not.toMatch(/staging\.example\.com/);
   });
 
-  it('имя default остаётся прежним, а не подменяется соседом', () => {
-    activate(fileWith({ port: 70000 }, 'production'));
-
-    expect(getDefaultProfile()).toBe('production');
-  });
-});
-
-describe('пропущенный профиль и испорченный ведут себя по-разному', () => {
-  it('default на не-SSH профиле переезжает к исправному', () => {
+  it('отказ называет имена, из которых можно выбрать', () => {
     activate({
-      default: 'docker',
       profiles: {
-        docker: { mode: 'local' },
         production: { host: 'example.com', username: 'deploy' },
-      },
-    });
-
-    expect(resolveSSHConfig({}).host).toBe('example.com');
-  });
-
-  it('default на испорченном профиле не переезжает', () => {
-    activate({
-      default: 'production',
-      profiles: {
-        production: { host: 'example.com', username: 'deploy', port: 70000 },
         staging: { host: 'staging.example.com', username: 'deploy' },
       },
     });
 
-    expect(() => resolveSSHConfig({})).toThrow(/production/);
+    let message = '';
+    try {
+      resolveSSHConfig({});
+    } catch (error: any) {
+      message = error.message;
+    }
+
+    // Имена перечислены через запятую, а не слиты в одно слово
+    expect(message).toContain('production, staging');
   });
 
-  it('пропущенный профиль по имени остаётся ненайденным', () => {
-    activate({
+  it('единственный пригодный профиль тоже не подставляется', () => {
+    activate({ profiles: { production: { host: 'example.com', username: 'deploy' } } });
+
+    expect(() => resolveSSHConfig({})).toThrow(/No profile specified/i);
+  });
+});
+
+describe('чужие поля и чужие профили загрузку не роняют', () => {
+  it('незнакомое поле в корне файла игнорируется', () => {
+    const path = writeProfiles({
       default: 'production',
+      dockerSocket: '/var/run/docker.sock',
+      profiles: { production: { host: 'example.com', username: 'deploy' } },
+    });
+
+    const { errors, config } = loadProfilesFile(path);
+
+    expect(errors).toEqual([]);
+    expect(Object.keys(config!.profiles)).toEqual(['production']);
+  });
+
+  it('незнакомое поле внутри профиля не мешает ему работать', () => {
+    activate({
+      profiles: {
+        production: { host: 'example.com', username: 'deploy', composeFile: './docker-compose.yml' },
+      },
+    });
+
+    expect(resolveSSHConfig({ profile: 'production' }).host).toBe('example.com');
+  });
+
+  it('профиль не для SSH по имени остаётся ненайденным', () => {
+    activate({
       profiles: {
         docker: { mode: 'local' },
         production: { host: 'example.com', username: 'deploy' },
@@ -224,7 +224,6 @@ describe('каждая испорченная запись попадает в �
 
     try {
       activate({
-        default: 'staging',
         profiles: {
           production: { host: 'example.com', username: 'deploy', port: 70000 },
           canary: { host: 'canary.example.com', username: 'deploy', strictHostKeyChecking: 'Yes' },
@@ -245,7 +244,6 @@ describe('каждая испорченная запись попадает в �
 describe('файл без единого исправного профиля отказывает целиком', () => {
   it('загрузка падает и называет причину', () => {
     const path = writeProfiles({
-      default: 'production',
       profiles: { production: { host: 'example.com', username: 'deploy', port: 70000 } },
     });
     process.env.SSH_PROFILES_FILE = path;

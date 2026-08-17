@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { logger } from './utils/logger.js';
 import { installProcessGuards } from './utils/process-guards.js';
-import { getAvailableProfiles, getDefaultProfile } from './utils/profile-resolver.js';
+import { getAvailableProfiles } from './utils/profile-resolver.js';
 import { createMcpServer } from './mcp-server.js';
 import { reportLeftoverConnections } from './runner/leftover-report.js';
 
@@ -37,10 +37,7 @@ async function main() {
   try {
     logger.debug(`[MCP Server] Loading SSH profiles...`);
     const profiles = getAvailableProfiles();
-    const defaultProfile = getDefaultProfile();
     logger.info(`[MCP Server] Loaded ${profiles.length} SSH profiles: ${profiles.join(', ')}`);
-    logger.info(`[MCP Server] Default profile: "${defaultProfile}"`);
-    logger.debug(`[MCP Server] Profile details:`, profiles.map(p => ({ name: p, default: p === defaultProfile })));
   } catch (error: any) {
     logger.error(`[MCP Server] ❌ Failed to load SSH profiles: ${error.message}`);
     logger.error(`[MCP Server] Please set SSH_PROFILES_FILE environment variable`);

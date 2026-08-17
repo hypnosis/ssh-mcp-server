@@ -22,7 +22,6 @@ vi.mock('../../src/managers/ssh-executor.js', () => ({
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: () => ({ host: 'example.com', username: 'deploy', port: 22 }),
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { AuditTool } = await import('../../src/tools/audit-tool.js');

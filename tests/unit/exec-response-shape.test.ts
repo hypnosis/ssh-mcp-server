@@ -37,7 +37,6 @@ const { resolveMock } = vi.hoisted(() => ({
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: resolveMock,
   getAvailableProfiles: () => ['production'],
-  getDefaultProfile: () => 'production',
 }));
 
 const { ExecTool } = await import('../../src/tools/exec-tool.js');

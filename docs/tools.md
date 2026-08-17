@@ -6,19 +6,19 @@ commands) — this file has the parameter tables and worked examples.
 
 ## Contents
 
-- [ssh_exec](#ssh_exec---execute-commands)
+- [`ssh_exec`](#ssh_exec---execute-commands)
 - [Background jobs (detach)](#background-jobs--a-command-that-outlives-the-call-v200)
-- [ssh_file_read](#ssh_file_read---read-files)
-- [ssh_file_write](#ssh_file_write---write-files)
-- [ssh_file_list](#ssh_file_list---list-files)
-- [ssh_log_tail](#ssh_log_tail---last-log-lines)
-- [ssh_log_search](#ssh_log_search---search-logs)
-- [ssh_snapshot](#ssh_snapshot---system-health-check)
-- [ssh_monitor](#ssh_monitor---monitoring--diagnostics)
+- [`ssh_file_read`](#ssh_file_read---read-files)
+- [`ssh_file_write`](#ssh_file_write---write-files)
+- [`ssh_file_list`](#ssh_file_list---list-files)
+- [`ssh_log_tail`](#ssh_log_tail---last-log-lines)
+- [`ssh_log_search`](#ssh_log_search---search-logs)
+- [`ssh_snapshot`](#ssh_snapshot---system-health-check)
+- [`ssh_monitor`](#ssh_monitor---monitoring--diagnostics)
 - [Transfer tools](#transfer-tools-v130)
 - [Audit tools](#audit-tools-v130)
 
-## ssh_exec - Execute Commands
+## `ssh_exec` - Execute Commands
 
 **⚠️ Important: Array Syntax**
 
@@ -137,7 +137,7 @@ was actually read, so an answer cut off at the transport buffer does not skip th
 `sudo` — a background job has nowhere to take a password from. Jobs that are no longer running
 are cleaned up by `ssh_job_list` seven days after they started; running ones are never touched.
 
-### ssh_file_read - Read Files
+### `ssh_file_read` - Read Files
 
 **Note:** For multiple files, use double quotes: `path: ["file1", "file2"]`
 
@@ -174,7 +174,7 @@ ssh_file_read({
 })
 ```
 
-### ssh_file_write - Write Files
+### `ssh_file_write` - Write Files
 
 ```typescript
 // Single file
@@ -247,7 +247,7 @@ ssh_file_write({
 
 > For files larger than ~1 MB, prefer `ssh_upload` — it streams chunks directly and avoids loading content into the LLM context.
 
-#### v1.3.0+ ssh_file_read — `binary: true`
+#### v1.3.0+ `ssh_file_read` — `binary: true`
 
 Reads through the transfer runner (`scp`, which rides SFTP on client 9.0+) and returns base64-encoded bytes, byte-for-byte safe (legacy `cat` over PTY corrupts binaries due to encoding/CR-LF translation).
 
@@ -259,7 +259,7 @@ ssh_file_read({
 })
 ```
 
-### ssh_file_list - List Files
+### `ssh_file_list` - List Files
 
 ```typescript
 // List directory
@@ -283,7 +283,7 @@ ssh_file_list({
 })
 ```
 
-### ssh_log_tail - Last Log Lines
+### `ssh_log_tail` - Last Log Lines
 
 **Note:** For multiple logs, use double quotes: `path: ["log1", "log2"]`
 
@@ -306,7 +306,7 @@ ssh_log_tail({
 })
 ```
 
-### ssh_log_search - Search Logs
+### `ssh_log_search` - Search Logs
 
 ```typescript
 // Search for errors
@@ -359,7 +359,7 @@ only — `/var/*/app.log` is refused — and at most 50 matching files are read,
 the answer when there were more. A path that exists under its own name (`a[1].log`) is read
 as itself.
 
-### ssh_snapshot - System Health Check
+### `ssh_snapshot` - System Health Check
 
 ```typescript
 // Full system snapshot
@@ -380,7 +380,7 @@ ssh_snapshot({
 // a reading that never came back.
 ```
 
-### ssh_monitor - Monitoring & Diagnostics
+### `ssh_monitor` - Monitoring & Diagnostics
 
 ```typescript
 // Get transport statistics

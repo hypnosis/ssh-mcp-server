@@ -1,10 +1,10 @@
 /**
  * Transfer Tool
- * SFTP-based binary-safe file/directory upload & download
+ * scp-based binary-safe file/directory upload & download
  * with sha256 verification and atomic rename semantics.
  *
  * - ssh_upload   — upload a file or directory; verify via sha256; atomic rename.
- * - ssh_download — download a file or directory via SFTP (binary-safe).
+ * - ssh_download — download a file or directory via scp (binary-safe).
  *
  * Heredoc / cat>file / base64-chunks are intentionally NOT used here.
  * For sudo writes into protected paths, the file travels to /tmp under the
@@ -156,7 +156,7 @@ export class TransferTool {
       {
         name: 'ssh_upload',
         description:
-          'Upload a local file or directory to remote server via SFTP (binary-safe, streaming). ' +
+          'Upload a local file or directory to remote server via scp (binary-safe, streaming). ' +
           'Default: atomic rename + sha256 verify. Use this instead of base64-chunked ssh_file_write for binaries or large files.',
         inputSchema: {
           type: 'object',
@@ -228,7 +228,7 @@ export class TransferTool {
       {
         name: 'ssh_download',
         description:
-          'Download a remote file or directory via SFTP (binary-safe, streaming) with optional sha256 verification.',
+          'Download a remote file or directory via scp (binary-safe, streaming) with optional sha256 verification.',
         inputSchema: {
           type: 'object',
           properties: {

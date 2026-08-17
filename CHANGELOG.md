@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2026-08-17
 
 Transport moved from the in-process `ssh2` pool to the system OpenSSH client with
-ControlMaster multiplexing. Sprints CORE_08 → CORE_11; full record with measurements in
+ControlMaster multiplexing. Sprints `CORE_08` → `CORE_11`; full record with measurements in
 `docs/sprints/planned/`. The bundled `ssh2` backend is gone, and with it the connection
 pool, so `SSH_MCP_BACKEND` no longer selects anything.
 
@@ -364,8 +364,8 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
 ### Documentation
 - README: expanded v1.3.0 tool documentation
   - `ssh_audit_baseline` — added flags table (`include`, `include_sudo_sections`, `compact`), output format description, subset-include example
-  - `ssh_disk_breakdown` — added sections table (df, du_path, docker, journald, var_log, cache) and defaults
-  - `ssh_service_status` — added sections table (status, is_enabled, show, log) and unit name validation note
+  - `ssh_disk_breakdown` — added sections table (df, `du_path`, docker, journald, `var_log`, cache) and defaults
+  - `ssh_service_status` — added sections table (status, `is_enabled`, show, log) and unit name validation note
   - Transfer section — added file-size guidance (when to use `ssh_file_write` vs `ssh_upload`)
   - `ssh_upload` / `ssh_download` — replaced inline parameter lists with full tables
   - Caveat extended for `recursive + sudo` workflow and symlink behavior on recursive uploads
@@ -387,16 +387,16 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
 
 **Audit Tools (Sprint 6) 🔍**
 - `ssh_audit_baseline` — single-batch baseline: hostname, disk, mem, net listeners, sshd config, services, docker, firewall, updates with auto-classification CRITICAL/WARNING/OK
-- `ssh_tls_check` — TLS expiry + SAN match + issuer chain + Let's Encrypt renew_hook detection
+- `ssh_tls_check` — TLS expiry + SAN match + issuer chain + Let's Encrypt `renew_hook` detection
 - `ssh_disk_breakdown` — top-N largest dirs + docker df + journald + cache breakdown
 - `ssh_service_status` — combined systemctl status + journalctl tail in one call
 
-**ssh_file_write extensions (back-compat)**
+**`ssh_file_write` extensions (back-compat)**
 - New per-file flags: `verify` (sha256 after write), `atomic` (.tmp + rename), `binary` (content as base64; uploaded via SFTP)
 - Routing: any of verify/atomic/binary OR size > 256KB → SFTP path; otherwise legacy heredoc fast path
 - sudo write: stage in /tmp + `sudo install` (avoids sftp under root)
 
-**ssh_file_read extensions (back-compat)**
+**`ssh_file_read` extensions (back-compat)**
 - New `binary: true` — reads via SFTP, returns base64 (binary-safe; legacy `cat` over PTY corrupts binaries)
 
 ### Changed
@@ -405,7 +405,7 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
 - Total tool count: 8 → 14
 
 ### Technical Details
-- New file: `src/tools/transfer-tool.ts` — TransferTool with ssh_upload, ssh_download
+- New file: `src/tools/transfer-tool.ts` — TransferTool with `ssh_upload`, `ssh_download`
 - New file: `src/tools/audit-tool.ts` — AuditTool with 4 audit primitives
 - New file: `src/utils/sha256.ts` — local + remote hashing helpers
 - New file: `src/utils/tmp-name.ts` — atomic temp/staging path generators
@@ -475,7 +475,7 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
   - Cache with TTL - Profiles cached for 60 seconds (configurable with `SSH_MCP_PROFILES_CACHE_TTL`)
   - Manual reload - `ssh_monitor(action="reload")` to force reload profiles
   - Config change detection - ConnectionPool detects profile config changes and reconnects automatically
-- **Monitoring Tool (ssh_monitor):**
+- **Monitoring Tool (`ssh_monitor`):**
   - stats - Get connection pool statistics (cache hit rate, active connections, metrics)
   - reload - Reload SSH profiles without server restart
   - test - Test connection to profile with timing metrics
@@ -522,7 +522,7 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
 - **Temporary network failures** - Now automatically retry instead of failing immediately
 - **Authentication errors** - No longer retry (fail fast with helpful message)
 - **Timeout errors** - Clear error messages with context about what failed
-- **No monitoring** - Added ssh_monitor tool for diagnostics and stats
+- **No monitoring** - Added `ssh_monitor` tool for diagnostics and stats
 - **No profile reload** - Profiles reload automatically or manually without server restart
 
 ### Technical Details
@@ -532,7 +532,7 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
 - New tests: `tests/unit/path-security.test.ts` - Comprehensive tests for tilde expansion and path validation
 - File watcher using Node.js `fs.watch()` for instant profile reload
 - Profile cache with TTL fallback if file watcher fails
-- Map<profileName, PooledConnection> for storing active connections
+- `Map<profileName, PooledConnection>` for storing active connections
 - Automatic cleanup of idle connections every 10 seconds
 - Thread-safe access to pool via async locks
 - Logging of all pool operations (cache hit/miss, reconnects, cleanup)
@@ -545,7 +545,7 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
 
 ### Documentation
 - Added Environment Variables section to README.md
-- Added ssh_monitor examples to README.md
+- Added `ssh_monitor` examples to README.md
 - Updated tool count from 7 to 8 commands
 - Documented profile reload behavior
 - Added Path Security section to README.md with configuration examples
@@ -558,12 +558,12 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
 ## [1.0.1] - 2026-01-12
 
 ### Added
-- Input validation for array parameters in all tools (ssh_exec, ssh_file_read, ssh_log_tail, ssh_log_search)
+- Input validation for array parameters in all tools (`ssh_exec`, `ssh_file_read`, `ssh_log_tail`, `ssh_log_search`)
 - Centralized array validator utility (`array-validator.ts`) for reusable validation logic
 - Clear error messages when using single quotes instead of double quotes in arrays
 - Improved description in `ssh_exec` tool schema with examples of correct syntax
 - Documentation about array syntax requirements in README.md
-- Array validator documentation (docs/ARRAY_VALIDATOR.md)
+- Array validator documentation (`docs/ARRAY_VALIDATOR.md`)
 
 ### Fixed
 - Fixed issue where array commands with single quotes (`['cmd1', 'cmd2']`) caused parsing errors
@@ -575,8 +575,8 @@ These ship with the release. Each is recorded in `docs/tech-debt/` with measurem
 
 ### Documentation
 - Added array syntax guidelines to README.md usage examples
-- Updated DEBUG_BATCH_EXEC.md with problem solution and explanation
-- Added ARRAY_VALIDATOR.md with validator API documentation
+- Updated `DEBUG_BATCH_EXEC.md` with problem solution and explanation
+- Added `ARRAY_VALIDATOR.md` with validator API documentation
 - Improved tool descriptions for AI assistants with explicit examples
 
 ## [1.0.0] - 2026-01-XX

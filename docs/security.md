@@ -39,7 +39,7 @@ back:
 - `mkfs`, `wipefs -a`, `lvremove`/`vgremove`/`pvremove`, `zfs destroy`, `btrfs subvolume delete`
 - `dd of=` pointing at a device
 - recursive deletion aimed at the root, a home or a system tree — see
-  [ssh_exec](tools.md#ssh_exec---execute-commands) in the tool reference
+  [`ssh_exec`](tools.md#ssh_exec---execute-commands) in the tool reference
 - reading an object after the same call destroyed it: `rm -rf A && cp -r A A.bak`
 
 **Warned about** — the container survives, the content changes:
@@ -136,8 +136,7 @@ Add `pathSecurity` to profiles for additional protection:
 }
 ```
 
-See the Quick Start section of the main README for the full `pathSecurity` profile example
-and option-by-option description.
+The block goes inside a profile in `SSH_PROFILES_FILE`, next to `host` and `username`.
 
 **How a path is judged.** Rules are never matched against the string you passed. The path is
 first brought to a canonical form — a leading `~` and relative paths are expanded against the

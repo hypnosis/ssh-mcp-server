@@ -5,7 +5,7 @@ Read-only audit primitives for SSH MCP Server, available since **v1.3.0**.
 Four tools, all built around the same idea: **collect a lot of evidence in one round-trip** instead of dragging a chatty agent across N separate `ssh_exec` calls.
 
 - `ssh_audit_baseline` — system / disk / mem / net / ssh / services / docker / firewall / updates
-- `ssh_tls_check` — TLS expiry + SAN + chain + Let's Encrypt renew_hook
+- `ssh_tls_check` — TLS expiry + SAN + chain + Let's Encrypt `renew_hook`
 - `ssh_disk_breakdown` — df + top-N du + docker df + journald + caches
 - `ssh_service_status` — systemctl + journalctl tail in one call
 
@@ -21,7 +21,7 @@ Before v1.3.0 the typical `server-auditor` agent sequence looked like this: one 
 
 ## Tools
 
-### ssh_audit_baseline
+### `ssh_audit_baseline`
 
 **Sections** (toggle via `include: [...]`):
 
@@ -78,7 +78,7 @@ columns are matched against the header, so `available` on a `free` that has no s
 | **WARNING** | > 50 upgradable apt packages |
 | **OK** | filesystem < 70% full (per mount) |
 
-### ssh_tls_check
+### `ssh_tls_check`
 
 Pipes `openssl s_client -connect <domain>:<port> -servername <domain> -showcerts` into `openssl x509 -noout -dates -ext subjectAltName -issuer`, parses:
 
@@ -102,9 +102,9 @@ Returns UNKNOWN/CRITICAL/WARNING flags + structured JSON — in the text, and as
 | **CRITICAL** | ≤ 7 days until expiry |
 | **CRITICAL** | SAN does not include the requested domain (only when the certificate was actually read) |
 | **WARNING** | ≤ 30 days until expiry |
-| **WARNING** | no Let's Encrypt deploy_hook configured (when `check_renew_hook: true`) |
+| **WARNING** | no Let's Encrypt `deploy_hook` configured (when `check_renew_hook: true`) |
 
-### ssh_disk_breakdown
+### `ssh_disk_breakdown`
 
 Single batched call collecting:
 
@@ -121,7 +121,7 @@ Defaults: `top_n: 20`, `paths: ["/"]`. `paths` is shell-quoted before interpolat
 separator that splits the batched output is internal: the answer carries titled sections,
 not markers.
 
-### ssh_service_status
+### `ssh_service_status`
 
 Single batched call collecting, for one systemd unit:
 

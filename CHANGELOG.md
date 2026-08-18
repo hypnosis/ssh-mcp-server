@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box that has no services in that sense at all.
 
 ### Fixed — a device that answers nothing is no longer reported as a healthy server
-- Measured on a home-router router, whose login shell is the vendor's own CLI: it runs none of
+- Measured on a consumer router, whose login shell is the vendor's own CLI: it runs none of
   the probe commands and replies neither the way systemd does nor the way a missing binary
   does. Every section came back empty, and empty was being read as fact.
 - `ssh_audit_baseline` no longer reports `0 running services, none failed` there: a system

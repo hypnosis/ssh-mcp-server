@@ -2,13 +2,15 @@ version: 2
 
 updates:
   # The runtime tree is one package deep — @modelcontextprotocol/sdk and what it
-  # pulls in. Everything else here is a build or test tool, so its updates are
-  # grouped into one pull request instead of arriving as a dozen.
+  # pulls in. That one arrives as its own pull request, because it ships to users.
+  # Everything else here is a build or test tool: those are collected into a single
+  # monthly pull request, majors included. Splitting them is what breaks the build —
+  # @stryker-mutator/vitest-runner pins its core to an exact version, so the two
+  # only ever install as a pair.
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
@@ -17,8 +19,16 @@ updates:
       dev-dependencies:
         dependency-type: development
         update-types:
+          - major
           - minor
           - patch
+    ignore:
+      # TypeScript 7 is the Go rewrite of the compiler, not a routine bump: it wants
+      # newer Node typings and has to be re-checked against the build and Stryker.
+      # That move is made by hand, on its own branch.
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   # The workflows pin actions by major version; this keeps those pins current
   - package-ecosystem: github-actions
@@ -27,3 +37,7 @@ updates:
       interval: monthly
     commit-message:
       prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2026-08-18
+
+### Changed — the one-line pitch says what the server is for
+- The description on npm, on GitHub and in the registry now reads the same, and it leads
+  with what a reader decides on: SSH that reaches both a cloud host and a BusyBox router,
+  and that refuses commands which destroy a machine. The client names stay in the second
+  sentence, where they still answer "will it work with mine?" without crowding the first.
+
 ## [2.0.2] - 2026-08-18
 
 ### Added — the server is listed in the official MCP Registry

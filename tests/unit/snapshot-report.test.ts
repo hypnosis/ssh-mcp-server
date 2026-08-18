@@ -127,14 +127,41 @@ describe('докер', () => {
   });
 });
 
+describe('вывод устройства', () => {
+  /** Роутер рисует стирание строки поверх собственного ответа */
+  it('стирание строки в отчёт не попадает', async () => {
+    respondWith([[/uptime -p/, `\u001B[Kup 3 days\u001B[K`]]);
+
+    const text = await snapshot();
+
+    expect(text).toContain('Uptime: 3 days');
+    expect(text).not.toContain('[K');
+  });
+});
+
 describe('сеть', () => {
-  it('нечитанное число соединений печатается нулём, а не «NaN»', async () => {
+  it('нечитанное число соединений нулём не печатается', async () => {
     respondWith([[/ss -tlnp/, '0.0.0.0:22']]);
 
     const text = await snapshot();
 
-    expect(text).toContain('Established connections: 0');
+    expect(text).toContain('Established connections: NOT CHECKED');
+    expect(text).not.toContain('Established connections: 0');
     expect(text).not.toContain('NaN');
+  });
+
+  /**
+   * Замерено на роутере home-router: его CLI не выполняет команду целиком, и
+   * ответ пуст — ни адресов, ни метки. Раньше это печаталось как «соединений
+   * 0» и пустой список портов, то есть как утверждение о машине.
+   */
+  it('молчание сервера портами не считается', async () => {
+    respondWith([[/ss -tlnp/, '']]);
+
+    const text = await snapshot();
+
+    expect(text).toContain('NOT CHECKED: neither ss nor netstat on the server');
+    expect(text).not.toContain('Established connections: 0');
   });
 
   it('число соединений печатается тем, что ответил сервер', async () => {

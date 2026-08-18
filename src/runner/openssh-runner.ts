@@ -8,6 +8,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import { stripTerminalControls } from '../utils/terminal-noise.js';
 import { buildRunnerEnv, ensureAskpassScript } from './askpass.js';
 import { classifySpawnOutcome, stripMuxNotices } from './error-classifier.js';
 import {
@@ -172,7 +173,7 @@ export class OpenSshRunner implements CommandRunner {
         masterWasActive,
         latencyMs: Date.now() - startedAt,
         exitCode: result.exitCode,
-        detail: (result.stderr || result.stdout).trim() || undefined,
+        detail: stripTerminalControls(result.stderr || result.stdout).trim() || undefined,
       };
     } catch (error) {
       const detail = (error as Error).message;

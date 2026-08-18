@@ -9,6 +9,19 @@ machines and none is assumed for you; a call without one is refused and the refu
 the names to choose from. Where the profiles and their secrets live, and what makes a
 profile broken, is in [security.md](security.md#profiles-the-machine-is-always-named).
 
+## What the server says before the first call
+
+On connect the server hands the client a map of the toolset, and the client puts it in the
+model's system prompt. It is not a description of the server: it says what each tool does
+that `ssh_exec` cannot — a round trip saved, an answer parsed, a write verified against
+sha256, a measurement marked as missing instead of returned as a blank. A model that sees
+only a list of eighteen names reaches for the one tool that runs anything, and loses all of
+that without noticing.
+
+Every tool is named in that map. A tool missing from it is a tool the model will not
+choose, so the map is checked against the declared list by a test rather than kept in step
+by hand.
+
 ## What each tool declares about itself
 
 Every tool carries the standard MCP annotations, so a client knows what a call does before

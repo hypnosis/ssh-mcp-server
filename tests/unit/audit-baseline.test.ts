@@ -168,6 +168,15 @@ describe('ssh_audit_baseline: пороги заполнения диска', () 
   });
 });
 
+describe('ssh_audit_baseline: вывод устройства', () => {
+  /** Роутер вставляет стирание строки между разделами и внутри значений */
+  it('стирание строки не приезжает частью значения', async () => {
+    const parsed = structure(await baseline({ hostname: `\u001B[Krouter-1\u001B[K` }));
+
+    expect(parsed.hostname).toBe('router-1');
+  });
+});
+
 describe('ssh_audit_baseline: разбор памяти', () => {
   it('доступное берётся из последней колонки, а не из третьей', async () => {
     const memory = structure(await baseline({ free: FREE_OUTPUT })).memory;
@@ -278,6 +287,8 @@ describe('ssh_audit_baseline: «проверить нечем» отделяет
     const ss = 'tcp   LISTEN 0      128    0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=700))';
     const unavailable = structure(
       await baseline({
+        hostname: 'web-1',
+        running_count: '12',
         df: DF_OUTPUT,
         listeners: ss,
         ufw: 'NO_UFW',
@@ -439,7 +450,7 @@ describe('ssh_audit_baseline: docker', () => {
 describe('ssh_audit_baseline: службы и обновления', () => {
   it('упавшие службы называются поимённо', async () => {
     const failed = 'nginx.service loaded failed failed A high performance web server';
-    const parsed = structure(await baseline({ failed }));
+    const parsed = structure(await baseline({ failed, running_count: '12' }));
 
     expect(parsed.services.failed).toEqual(['nginx.service']);
     expect(parsed.red_flags.warning).toContain('failed units: nginx.service');
@@ -447,7 +458,7 @@ describe('ssh_audit_baseline: службы и обновления', () => {
 
   it('несколько упавших служб перечисляются через запятую', async () => {
     const failed = ['nginx.service loaded failed failed Web server', 'redis.service loaded failed failed Redis'].join('\n');
-    const parsed = structure(await baseline({ failed }));
+    const parsed = structure(await baseline({ failed, running_count: '12' }));
 
     expect(parsed.services.failed).toEqual(['nginx.service', 'redis.service']);
     expect(parsed.red_flags.warning).toContain('failed units: nginx.service, redis.service');
@@ -696,31 +707,30 @@ describe('ssh_audit_baseline: системные поля', () => {
    * Раздел, которого в ответе нет, обязан остаться пустым: выдуманное значение
    * тут неотличимо от настоящего — агент прочитает его как факт о сервере.
    */
-  it('разделы, которых сервер не прислал, остаются пустыми', async () => {
+  /**
+   * Замерено на роутере home-router: его CLI не выполняет ни одной команды
+   * раздела, и все поля приходят пустыми. Ни одна служба и ни одного имени —
+   * это утверждение о машине, поэтому раздел, ничего не приславший, обязан
+   * попасть в «нечем проверить», а не разложиться нулями.
+   */
+  it('разделы, которых сервер не прислал, за факты не выдаются', async () => {
     const parsed = structure(await baseline({}));
 
-    expect(parsed).toMatchObject({
-      hostname: '',
-      uptime: '',
-      date_utc: '',
-      os: '',
-      kernel: '',
-      load: '',
-      disk: [],
-      services: { failed: [], running_count: 0 },
-      firewall: { ufw: { status: 'no_access' }, iptables: { status: 'no_access' } },
-      updates: { upgradable: 0, reboot_required: false },
-    });
+    expect(parsed.services, 'счёт служб без ответа сервера').toBeUndefined();
+    expect(parsed.unavailable).toContain('system (the section produced no output)');
+    expect(parsed.unavailable).toContain('services (the services section produced no output)');
+    expect(parsed.disk).toEqual([]);
     expect(parsed.net.listeners).toEqual([]);
-    expect(parsed.net.interfaces).toEqual([]);
   });
 
   it('пустой ответ целиком — это «нечем проверить», а не «всё в порядке»', async () => {
     const parsed = structure(await baseline({}));
 
     expect(parsed.unavailable).toEqual([
+      'system (the section produced no output)',
       'disk (df gave no output)',
       'listeners (neither ss nor netstat on the server)',
+      'services (the services section produced no output)',
       'firewall/ufw (installed, but its status is not readable — needs sudo?)',
       'firewall/iptables (installed, but its rules are not readable — needs sudo?)',
       'sshd config (sshd -T gave no output — run with include_sudo_sections: true)',

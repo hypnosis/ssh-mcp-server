@@ -121,6 +121,13 @@ Defaults: `top_n: 20`, `paths: ["/"]`. `paths` is shell-quoted before interpolat
 separator that splits the batched output is internal: the answer carries titled sections,
 not markers.
 
+The same sections arrive as `structuredContent` as well: `filesystems` from `df -hT` with
+the percentage as a number, `largest` per requested path, `var_log` and `cache` as
+size/path pairs, and `docker` / `journald` as `null` when the server has neither. A section
+that came back with nothing is listed in `unavailable`: `du` says the same nothing about an
+empty directory and about one it was not allowed to read, and neither is a report of no
+problems.
+
 ### `ssh_service_status`
 
 Single batched call collecting, for one systemd unit:
@@ -145,6 +152,12 @@ tail. Three outcomes are kept apart instead of mixing a raw systemctl message in
 
 The restart pause is asked for as `RestartUSec` — the name systemd prints. `RestartSec` is
 accepted on the command line but never returned, so that field used to be a permanent `?`.
+
+The same three outcomes arrive as `structuredContent` under `outcome`: `checked`,
+`no_systemd`, `no_unit`. Only `checked` carries values — `enabled`, `active_state`,
+`sub_state`, `restart`, `restart_after`; the other two leave them `null`. That matters most
+for a unit that does not exist: `systemctl show` still prints `ActiveState=inactive` for it,
+and passing that on would report a service as stopped when the machine never had it.
 
 ---
 

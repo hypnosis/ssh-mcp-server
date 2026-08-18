@@ -53,8 +53,9 @@ const ADVICE: Record<PingState, string> = {
   ready: '',
   limited:
     'Commands run, but the shell is not POSIX — the probe command "true" is unknown there. ' +
-    'Tools that assume POSIX utilities (file tools, ssh_audit_baseline) do not apply; plain ' +
-    'ssh_exec with the vendor\'s own commands does.',
+    'The file tools, ssh_snapshot, ssh_audit_baseline, ssh_tls_check, ssh_disk_breakdown ' +
+    'and ssh_service_status have nothing to work with on such a shell; plain ssh_exec with ' +
+    'the vendor\'s own commands does.',
   'no-route':
     'The server was never reached. Check the network, the host and the port — credentials are not the problem here.',
   rejected:

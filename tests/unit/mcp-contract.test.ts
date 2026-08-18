@@ -42,7 +42,12 @@ const PUBLISHED_TOOLS = [
  * клиент требует разбор от каждого ответа такого инструмента, поэтому снятая
  * схема — молчаливая смена контракта, а не мелкая правка объявления.
  */
-const TOOLS_WITH_OUTPUT_SCHEMA = ['ssh_audit_baseline', 'ssh_tls_check'];
+const TOOLS_WITH_OUTPUT_SCHEMA = [
+  'ssh_audit_baseline',
+  'ssh_disk_breakdown',
+  'ssh_service_status',
+  'ssh_tls_check',
+];
 
 const MISSING_PROFILES_FILE = '/nonexistent/ssh-mcp-contract-profiles.json';
 
@@ -68,6 +73,12 @@ afterAll(async () => {
   }
 });
 
+describe('Кто отвечает', () => {
+  it('называет себя именем пакета', () => {
+    expect(client.getServerVersion()?.name).toBe('ssh-mcp-server');
+  });
+});
+
 describe('Список инструментов', () => {
   it('отдаёт ровно те имена, что обещает пакет', async () => {
     const { tools } = await client.listTools();
@@ -90,6 +101,56 @@ describe('Список инструментов', () => {
       .sort();
 
     expect(withSchema).toEqual(TOOLS_WITH_OUTPUT_SCHEMA);
+  });
+});
+
+/**
+ * Схема ответа — обещание клиенту: он сверяет пришедшее с объявленным и на
+ * расхождении возвращает ошибку протокола вместо ответа. Поэтому здесь
+ * сторожатся сами обязательные поля, а не только факт объявления схемы.
+ */
+describe('Обещанные поля ответа', () => {
+  it('разбор службы обязан нести исход и все пять полей', async () => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === 'ssh_service_status')?.outputSchema as any;
+
+    expect(schema.required).toEqual([
+      'unit',
+      'outcome',
+      'enabled',
+      'active_state',
+      'sub_state',
+      'restart',
+      'restart_after',
+      'status_head',
+      'recent_log',
+    ]);
+    expect(schema.properties.outcome.enum).toEqual(['checked', 'no_systemd', 'no_unit']);
+  });
+
+  it('разбор диска обязан нести секции и список непроверенного', async () => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === 'ssh_disk_breakdown')?.outputSchema as any;
+
+    expect(schema.required).toEqual([
+      'filesystems',
+      'largest',
+      'var_log',
+      'cache',
+      'docker',
+      'journald',
+      'unavailable',
+    ]);
+    expect(schema.properties.filesystems.items.required).toEqual([
+      'filesystem',
+      'type',
+      'size',
+      'used',
+      'avail',
+      'pct',
+      'mount',
+    ]);
+    expect(schema.properties.docker.type).toEqual(['string', 'null']);
   });
 });
 

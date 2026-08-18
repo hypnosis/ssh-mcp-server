@@ -16,6 +16,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ssh_monitor` is the only tool with `openWorldHint` false: it touches the connection
   this process holds, not a remote machine.
 
+### Added — the server hands the model a map of its tools
+- On connect the server now sends `instructions`, and the client puts them in the model's
+  system prompt. Eighteen tools were reachable and two were used: `ssh_exec` runs anything,
+  so it was always the shortest path, and everything the specific tools exist for — batching
+  a list of files into one round trip, parsing the answer, verifying a write against sha256,
+  saying "could not check" instead of returning a blank — was lost without anyone noticing.
+  The map says exactly that, tool by tool, and every one of the eighteen is named in it.
+
+### Added — a disk breakdown and a service check answer in fields
+- `ssh_disk_breakdown` and `ssh_service_status` now return `structuredContent` alongside
+  their text, the way `ssh_audit_baseline` and `ssh_tls_check` already did. Half the audit
+  family answered in fields and half in prose, and a client could not tell which it would
+  get until the answer arrived.
+- A service is reported as measured only when systemd actually answered. `outcome` is
+  `checked`, `no_systemd` or `no_unit`, and the last two leave every field empty: asked
+  about a unit that does not exist, `systemctl show` still prints `ActiveState=inactive`,
+  and passing that on would report a stopped service on a machine that never had one.
+- A disk section that came back with nothing is named in `unavailable` instead of arriving
+  empty. `du` is equally silent about a directory that is empty and one it was not allowed
+  to read, and silence was being read as "no problems here".
+- A machine that answers none of the four sections is reported as unmeasured rather than
+  checked. A router's own CLI replies neither the way systemd does nor the way a missing
+  binary does, so a service on it used to come back as "found, properties unknown" — on a
+  box that has no services in that sense at all.
+
+### Fixed — a device that answers nothing is no longer reported as a healthy server
+- Measured on a home-router router, whose login shell is the vendor's own CLI: it runs none of
+  the probe commands and replies neither the way systemd does nor the way a missing binary
+  does. Every section came back empty, and empty was being read as fact.
+- `ssh_audit_baseline` no longer reports `0 running services, none failed` there: a system
+  or services section that produced no output is named in `unavailable` instead.
+- `ssh_snapshot` no longer prints `Established connections: 0` when nothing counted them.
+  A count that is not a number, and a listener probe that answered nothing at all, are both
+  reported as not checked.
+- Terminal drawing no longer travels into answers. A device CLI emits erase and colour
+  sequences with no terminal attached, and they arrived inside values — `load: [K[K`. They
+  are stripped where an answer is read; file contents keep their bytes, because an escape
+  sequence inside a file is data.
+- The advice for a `limited` connection names the tools that do not apply there instead of
+  saying "audit tools", which told the reader nothing about which call to avoid.
+
 ## [2.0.3] - 2026-08-18
 
 ### Changed — the one-line pitch says what the server is for

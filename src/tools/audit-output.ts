@@ -8,6 +8,7 @@
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { DuEntry } from '../utils/du-lines.js';
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
 
@@ -81,6 +82,54 @@ export interface TlsCheckResult {
   issuer: string | null;
   renew_hook_configured: boolean | null;
   renew_hook_evidence: string;
+}
+
+/**
+ * Disk usage broken down.
+ *
+ * A section that could not be measured is named in `unavailable` instead of
+ * arriving empty: an empty list of largest entries and a directory that was
+ * never read look identical, and one of them is a lack of data, not a lack of
+ * problems. `null` in `docker` or `journald` means the server has neither —
+ * that is an answer, not a gap.
+ */
+export interface DiskBreakdownResult {
+  filesystems: Array<{
+    filesystem: string;
+    type: string;
+    size: string;
+    used: string;
+    avail: string;
+    pct: number;
+    mount: string;
+  }>;
+  largest: Array<{ path: string; entries: DuEntry[] }>;
+  var_log: DuEntry[];
+  cache: DuEntry[];
+  docker: string | null;
+  journald: string | null;
+  unavailable: string[];
+}
+
+/**
+ * State of one service.
+ *
+ * `checked` is the only outcome where the fields below carry a measurement.
+ * `no_systemd` — there was nobody to ask on that server; `no_unit` — the
+ * server answered that no such service exists. Both leave the fields `null`,
+ * because a service that was not measured must not read as a service that is
+ * stopped.
+ */
+export interface ServiceStatusResult {
+  unit: string;
+  outcome: 'checked' | 'no_systemd' | 'no_unit';
+  enabled: string | null;
+  active_state: string | null;
+  sub_state: string | null;
+  restart: string | null;
+  restart_after: string | null;
+  status_head: string;
+  recent_log: string;
 }
 
 const STRING_LIST = { type: 'array', items: { type: 'string' } };
@@ -241,5 +290,84 @@ export const TLS_CHECK_OUTPUT_SCHEMA: OutputSchema = {
     'issuer',
     'renew_hook_configured',
     'renew_hook_evidence',
+  ],
+};
+
+const DU_ENTRIES = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: { size: { type: 'string' }, path: { type: 'string' } },
+    required: ['size', 'path'],
+  },
+};
+
+export const DISK_BREAKDOWN_OUTPUT_SCHEMA: OutputSchema = {
+  type: 'object',
+  properties: {
+    filesystems: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          filesystem: { type: 'string' },
+          type: { type: 'string' },
+          size: { type: 'string' },
+          used: { type: 'string' },
+          avail: { type: 'string' },
+          pct: { type: 'number' },
+          mount: { type: 'string' },
+        },
+        required: ['filesystem', 'type', 'size', 'used', 'avail', 'pct', 'mount'],
+      },
+    },
+    largest: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { path: { type: 'string' }, entries: DU_ENTRIES },
+        required: ['path', 'entries'],
+      },
+    },
+    var_log: DU_ENTRIES,
+    cache: DU_ENTRIES,
+    docker: { type: ['string', 'null'] },
+    journald: { type: ['string', 'null'] },
+    unavailable: STRING_LIST,
+  },
+  required: [
+    'filesystems',
+    'largest',
+    'var_log',
+    'cache',
+    'docker',
+    'journald',
+    'unavailable',
+  ],
+};
+
+export const SERVICE_STATUS_OUTPUT_SCHEMA: OutputSchema = {
+  type: 'object',
+  properties: {
+    unit: { type: 'string' },
+    outcome: { type: 'string', enum: ['checked', 'no_systemd', 'no_unit'] },
+    enabled: { type: ['string', 'null'] },
+    active_state: { type: ['string', 'null'] },
+    sub_state: { type: ['string', 'null'] },
+    restart: { type: ['string', 'null'] },
+    restart_after: { type: ['string', 'null'] },
+    status_head: { type: 'string' },
+    recent_log: { type: 'string' },
+  },
+  required: [
+    'unit',
+    'outcome',
+    'enabled',
+    'active_state',
+    'sub_state',
+    'restart',
+    'restart_after',
+    'status_head',
+    'recent_log',
   ],
 };

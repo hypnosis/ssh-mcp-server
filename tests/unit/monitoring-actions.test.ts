@@ -255,8 +255,18 @@ describe('ssh_monitor test называет состояние первым сл
     // Совет объясняет, чем такой сервер отличается: оболочка не POSIX,
     // файловые инструменты не годятся, а ssh_exec с командами вендора — годится
     expect(text).toContain('not POSIX');
-    expect(text).toContain('ssh_audit_baseline');
     expect(text).toContain('ssh_exec');
+    // Инструменты названы поимённо: «инструменты аудита» ничего не говорят
+    // тому, кто выбирает, чем сейчас пользоваться
+    for (const tool of [
+      'ssh_snapshot',
+      'ssh_audit_baseline',
+      'ssh_tls_check',
+      'ssh_disk_breakdown',
+      'ssh_service_status',
+    ]) {
+      expect(text, `совет не называет ${tool}`).toContain(tool);
+    }
   });
 
   it.each([

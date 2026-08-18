@@ -20,7 +20,12 @@ import { LAB_CONTROL_DIR, LAB_KEY, LAB_REQUIRED, LAB_SERVERS, labUnavailableReas
 const LIVE_TIMEOUT_MS = 120_000;
 
 /** Инструменты, чей ответ обязан приезжать разобранным */
-const STRUCTURED_TOOLS = ['ssh_audit_baseline', 'ssh_tls_check'];
+const STRUCTURED_TOOLS = [
+  'ssh_audit_baseline',
+  'ssh_disk_breakdown',
+  'ssh_service_status',
+  'ssh_tls_check',
+];
 
 const unavailable = await labUnavailableReason();
 const workDir = await mkdtemp(join(tmpdir(), 'structured-live-'));
@@ -117,6 +122,39 @@ if (unavailable && LAB_REQUIRED) {
         const text = (result.content as any[])[0].text as string;
         const fromText = JSON.parse(text.split('--- raw JSON ---')[1]);
         expect(fromText).toEqual(result.structuredContent);
+      });
+
+      it('разбор диска приезжает полями, а не текстом', async () => {
+        const result = (await client.callTool({
+          name: 'ssh_disk_breakdown',
+          arguments: { profile: server.name, top_n: 5 },
+        })) as CallToolResult;
+
+        const parsed = result.structuredContent as any;
+        expect(parsed, 'разбор диска пришёл без полей').toBeDefined();
+        expect(parsed.filesystems.length, 'корень обязан быть в списке томов').toBeGreaterThan(0);
+        expect(typeof parsed.filesystems[0].pct).toBe('number');
+        expect(parsed.largest[0].path).toBe('/');
+        expect(Array.isArray(parsed.unavailable)).toBe(true);
+      });
+
+      /**
+       * Контейнеры живут без systemd, поэтому здесь проверяется главный исход
+       * третьего рода: службу не измерили — и поля пустые, а не «остановлена».
+       */
+      it('служба без systemd приезжает пометкой, а не состоянием', async () => {
+        const result = (await client.callTool({
+          name: 'ssh_service_status',
+          arguments: { profile: server.name, unit: 'sshd' },
+        })) as CallToolResult;
+
+        expect(result.isError, 'нечем проверить — это не провал').toBeFalsy();
+        const parsed = result.structuredContent as any;
+        expect(parsed.unit).toBe('sshd');
+        expect(parsed.outcome).toBe('no_systemd');
+        expect(parsed.active_state).toBeNull();
+        expect(parsed.sub_state).toBeNull();
+        expect(parsed.enabled).toBeNull();
       });
 
       /**

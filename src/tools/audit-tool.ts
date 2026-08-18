@@ -15,6 +15,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { stripTerminalControls } from '../utils/terminal-noise.js';
 import { READS_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
@@ -22,11 +23,16 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
 import { parseDfTable } from '../utils/df-table.js';
+import { parseDuLines, type DuEntry } from '../utils/du-lines.js';
 import {
   BASELINE_OUTPUT_SCHEMA,
   TLS_CHECK_OUTPUT_SCHEMA,
   type BaselineResult,
   type TlsCheckResult,
+  DISK_BREAKDOWN_OUTPUT_SCHEMA,
+  SERVICE_STATUS_OUTPUT_SCHEMA,
+  type DiskBreakdownResult,
+  type ServiceStatusResult,
 } from './audit-output.js';
 
 /** ssh_audit_baseline arguments, matching its inputSchema */
@@ -146,6 +152,7 @@ export class AuditTool {
             },
           },
         },
+        outputSchema: DISK_BREAKDOWN_OUTPUT_SCHEMA,
       },
       {
         name: 'ssh_service_status',
@@ -162,6 +169,7 @@ export class AuditTool {
           },
           required: ['unit'],
         },
+        outputSchema: SERVICE_STATUS_OUTPUT_SCHEMA,
       },
     ];
   }
@@ -342,6 +350,9 @@ export class AuditTool {
   }
 
   private splitSections(stdout: string, sep: string): Map<string, string> {
+    // Every audit answer is read rather than stored, and a device CLI mixes
+    // its own erase sequences into the output between sections
+    stdout = stripTerminalControls(stdout);
     const out = new Map<string, string>();
     const re = new RegExp(`${sep}([a-z0-9_]+)${sep}\\n?`, 'g');
     let lastKey: string | null = null;
@@ -382,6 +393,15 @@ export class AuditTool {
       result.os = (s.get('os') || '').trim();
       result.kernel = (s.get('kernel') || '').trim();
       result.load = (s.get('load') || '').trim();
+
+      // A shell that runs none of these — a router's own CLI — leaves every
+      // field empty, and empty strings read as a machine with no name and no
+      // kernel rather than as a section that never ran
+      const answered = [
+        result.hostname, result.uptime, result.date_utc,
+        result.os, result.kernel, result.load,
+      ].some(Boolean);
+      if (!answered) unavailable.push('system (the section produced no output)');
     }
 
     if (include.has('disk')) {
@@ -980,7 +1000,62 @@ export class AuditTool {
       })
       .join('\n\n');
 
-    return { content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${body}` }] };
+    const result = this.buildDiskBreakdownResult(sections, requestedPaths);
+
+    return {
+      content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${body}` }],
+      structuredContent: result,
+    };
+  }
+
+  /**
+   * The same sections as fields.
+   *
+   * A section with nothing in it is named in `unavailable` rather than left
+   * empty: `du` says nothing both about a directory that is empty and about
+   * one it was not allowed to read, and the difference is not ours to guess.
+   */
+  private buildDiskBreakdownResult(
+    sections: Map<string, string>,
+    requestedPaths: string[]
+  ): DiskBreakdownResult {
+    const unavailable: string[] = [];
+
+    const entriesOf = (key: string, title: string): DuEntry[] => {
+      const { entries } = parseDuLines(sections.get(key) || '');
+      if (entries.length === 0) unavailable.push(title);
+      return entries;
+    };
+
+    const filesystems = parseDfTable(sections.get('df') || '').rows;
+    if (filesystems.length === 0) unavailable.push('filesystems');
+
+    const largest = requestedPaths.map((path, index) => ({
+      path,
+      entries: entriesOf(`du_${index}`, `largest entries under ${path}`),
+    }));
+
+    // Silence is not the same as "not installed": the section that never came
+    // back is named in `unavailable`, so an unread answer cannot pass for a
+    // server without docker
+    const named = (key: string, absent: string, title: string): string | null => {
+      const section = (sections.get(key) || '').trim();
+      if (!section) {
+        unavailable.push(title);
+        return null;
+      }
+      return section === absent ? null : section;
+    };
+
+    return {
+      filesystems,
+      largest,
+      var_log: entriesOf('var_log', '/var/log'),
+      cache: entriesOf('cache', '$HOME/.cache'),
+      docker: named('docker', 'NO_DOCKER', 'docker'),
+      journald: named('journald', 'NO_JOURNALD', 'journald'),
+      unavailable,
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -1023,7 +1098,16 @@ export class AuditTool {
     };
     // A service that was not asked about and a service that does not exist
     // are different answers, and raw systemctl text in the `enabled` field is neither
-    const noSystemd = AuditTool.NO_SYSTEMD.test(out.is_enabled) || AuditTool.NO_SYSTEMD.test(out.status_head);
+    // A shell that is not POSIX — a router's own CLI — answers neither the way
+    // systemd does nor the way a missing binary does: it says nothing our
+    // sections can hold. Silence from both of them is "nothing answered", and
+    // calling that a measurement would report a service on a box that has none
+    const answeredNothing =
+      !out.is_enabled && !out.status_head && Object.keys(out.props).length === 0;
+    const noSystemd =
+      answeredNothing ||
+      AuditTool.NO_SYSTEMD.test(out.is_enabled) ||
+      AuditTool.NO_SYSTEMD.test(out.status_head);
     const unknownUnit = !noSystemd && AuditTool.NO_UNIT.test(out.is_enabled);
     const enabled = noSystemd
       ? 'NOT CHECKED'
@@ -1048,7 +1132,24 @@ export class AuditTool {
       `restart: ${restart}\n\n` +
       `--- status ---\n${out.status_head}\n\n` +
       `--- last ${lines} log lines ---\n${out.recent_log}`;
-    return { content: [{ type: 'text', text }] };
+
+    // Only a service that was actually measured carries values: an unasked
+    // machine and a missing unit leave the fields empty, because a stopped
+    // service and an unmeasured one must not look the same
+    const measured = !noSystemd && !unknownUnit;
+    const result: ServiceStatusResult = {
+      unit,
+      outcome: noSystemd ? 'no_systemd' : unknownUnit ? 'no_unit' : 'checked',
+      enabled: measured && /^[a-z-]+$/.test(out.is_enabled) ? out.is_enabled : null,
+      active_state: measured ? out.props.ActiveState || null : null,
+      sub_state: measured ? out.props.SubState || null : null,
+      restart: measured ? out.props.Restart || null : null,
+      restart_after: measured ? out.props.RestartUSec || null : null,
+      status_head: out.status_head,
+      recent_log: out.recent_log,
+    };
+
+    return { content: [{ type: 'text', text }], structuredContent: result };
   }
 
   /**
@@ -1062,6 +1163,12 @@ export class AuditTool {
   private static servicesUnavailable(failed: string, running: string): string | undefined {
     if (failed === 'NO_SYSTEMCTL' || running === 'NO_SYSTEMCTL') {
       return 'no systemctl on the server';
+    }
+    // The count always prints something on a POSIX shell — a number, a marker
+    // or systemd's own complaint. Nothing at all means the section never ran,
+    // and calling that "no services running" states a fact about the machine
+    if (!running) {
+      return 'the services section produced no output';
     }
     if (AuditTool.NO_SYSTEMD.test(failed) || AuditTool.NO_SYSTEMD.test(running)) {
       return 'systemd did not answer on this server';

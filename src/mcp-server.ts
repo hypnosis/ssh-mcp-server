@@ -21,6 +21,7 @@ import { SnapshotTool } from './tools/snapshot-tool.js';
 import { MonitoringTool } from './tools/monitoring-tool.js';
 import { TransferTool } from './tools/transfer-tool.js';
 import { AuditTool } from './tools/audit-tool.js';
+import { SERVER_INSTRUCTIONS } from './tools/instructions.js';
 
 /** A class of tools and its call handler */
 interface ToolProvider {
@@ -72,6 +73,7 @@ export function createMcpServer(version: string): McpServerBundle {
       capabilities: {
         tools: {},
       },
+      instructions: SERVER_INSTRUCTIONS,
     }
   );
 

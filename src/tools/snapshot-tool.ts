@@ -4,6 +4,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { stripTerminalControls } from '../utils/terminal-noise.js';
 import { READS_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
@@ -143,7 +144,9 @@ export class SnapshotTool {
           return options.fallback ?? '';
         }
 
-        return result.stdout.trim();
+        // The snapshot is read, not stored: a device CLI draws over its own
+        // answer, and the erase sequence would arrive as `[K` inside a number
+        return stripTerminalControls(result.stdout).trim();
       } catch (error: any) {
         // A failed read is an empty value, not an empty snapshot: if the
         // channel drops twice in a row, the whole report would otherwise get
@@ -404,7 +407,7 @@ export class SnapshotTool {
    */
   private async getNetwork(
     config: any,
-      ): Promise<{ checked: boolean; listening: Array<{ port: string; service: string }>; connections: number }> {
+      ): Promise<{ checked: boolean; listening: Array<{ port: string; service: string }>; connections: number | null }> {
     // A marker is required: the pipeline ends on `sort`, so ss being absent
     // would give an empty list with exit code 0 — "nothing is listening"
     // instead of "there was nothing to check with" — and the netstat fallback would never get called
@@ -415,8 +418,12 @@ export class SnapshotTool {
         'else echo NO_NET_TOOL; fi',
     );
 
-    if (portsOutput.trim() === 'NO_NET_TOOL') {
-      return { checked: false, listening: [], connections: 0 };
+    // Silence is a third answer, not an empty list: the command prints either
+    // addresses or the marker, so a shell that ran neither — a router's own
+    // CLI — leaves nothing behind, and zero listeners would be a claim about
+    // the machine
+    if (!portsOutput.trim() || portsOutput.trim() === 'NO_NET_TOOL') {
+      return { checked: false, listening: [], connections: null };
     }
 
     // The port is split off at the last colon, not the first: an IPv6
@@ -437,7 +444,15 @@ export class SnapshotTool {
         'else netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l; fi',
     );
 
-    return { checked: true, listening: ports, connections: parseInt(connectionsOutput) || 0 };
+    // `wc -l` always prints a number, zero included. Anything else means the
+    // count never happened, and it is reported as unknown rather than as none
+    const counted = parseInt(connectionsOutput.trim(), 10);
+
+    return {
+      checked: true,
+      listening: ports,
+      connections: Number.isNaN(counted) ? null : counted,
+    };
   }
   
   /**
@@ -578,7 +593,8 @@ export class SnapshotTool {
     if (!snapshot.network.checked) {
       output += '  NOT CHECKED: neither ss nor netstat on the server\n';
     } else {
-      output += `  Established connections: ${snapshot.network.connections}\n`;
+      const connections = snapshot.network.connections;
+      output += `  Established connections: ${connections === null ? 'NOT CHECKED' : connections}\n`;
       output += `  Listening ports:\n`;
       snapshot.network.listening.forEach((p: any) => {
         output += `    ${p.port.padEnd(6)} ${p.service}\n`;

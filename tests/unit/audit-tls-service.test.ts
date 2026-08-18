@@ -50,6 +50,28 @@ async function answer(
   return response.content[0].text;
 }
 
+/** Полный ответ инструмента: и содержимое, и разбор */
+async function respond(
+  name: string,
+  args: Record<string, unknown>,
+  stdout: string
+): Promise<any> {
+  executeMock.mockResolvedValue({ stdout, stderr: '', exitCode: 0, truncated: false });
+
+  return new AuditTool().handleCall({
+    params: { name, arguments: args },
+  } as CallToolRequest);
+}
+
+/** Разбор, который инструмент кладёт рядом с текстом */
+async function parsed(
+  name: string,
+  args: Record<string, unknown>,
+  stdout: string
+): Promise<any> {
+  return (await respond(name, args, stdout)).structuredContent;
+}
+
 function structure(text: string): any {
   return JSON.parse(text.slice(text.indexOf('{')));
 }
@@ -292,10 +314,148 @@ describe('ssh_service_status', () => {
   });
 
   it('неизвестные свойства не выдаются за значение', async () => {
-    const text = await svc({ show: '' });
+    const text = await svc({ show: 'LoadState=loaded' });
 
     expect(text).toContain('active:  ?/?');
     expect(text).toContain('restart: NOT CHECKED');
+  });
+
+  /**
+   * Замерено на роутере home-router: его CLI не понимает ни одной команды секции,
+   * и все они приходят пустыми. Раньше это печаталось как `active: ?/?` —
+   * то есть служба считалась найденной, а неизвестными только её свойства.
+   */
+  it('молчание всех секций читается как непроверенное', async () => {
+    const text = await svc({});
+
+    expect(text).toContain('NOT CHECKED: systemd did not answer on this server');
+    expect(text).not.toContain('active:  ?/?');
+  });
+
+  /**
+   * Три исхода не смешиваются и в разборе: измеренная служба несёт значения,
+   * неизмеренная — пустоту. Остановленная служба и неспрошенная машина обязаны
+   * выглядеть по-разному, иначе агент доложит о простое, которого не было.
+   */
+  it('измеренная служба приезжает разбором со значениями', async () => {
+    const show = ['Restart=on-failure', 'RestartUSec=5s', 'ActiveState=active', 'SubState=running'].join('\n');
+    const result = await parsed(
+      'ssh_service_status',
+      { unit: 'nginx.service' },
+      serverAnswer(SVC_SEP, { show, is_enabled: 'enabled' })
+    );
+
+    expect(result.outcome).toBe('checked');
+    expect(result.enabled).toBe('enabled');
+    expect(result.active_state).toBe('active');
+    expect(result.sub_state).toBe('running');
+    expect(result.restart).toBe('on-failure');
+    expect(result.restart_after).toBe('5s');
+  });
+
+  it('машина без systemd приезжает пометкой, а не состоянием', async () => {
+    const result = await parsed(
+      'ssh_service_status',
+      { unit: 'nginx.service' },
+      serverAnswer(SVC_SEP, { is_enabled: 'System has not been booted with systemd' })
+    );
+
+    expect(result.outcome).toBe('no_systemd');
+    expect(result.enabled).toBeNull();
+    expect(result.active_state).toBeNull();
+    expect(result.sub_state).toBeNull();
+    expect(result.restart).toBeNull();
+    expect(result.restart_after).toBeNull();
+  });
+
+  /**
+   * systemd на несуществующий юнит всё равно печатает `ActiveState=inactive`
+   * и `SubState=dead`. Взять эти значения — доложить о простое службы,
+   * которой на машине нет.
+   */
+  /**
+   * Роутер отвечает своей CLI: ни одна секция не наполняется, а сообщение об
+   * ошибке не похоже ни на systemd, ни на пропавшую команду. Замерено на
+   * office-router: раньше такой ответ приезжал как `checked`, то есть служба
+   * считалась измеренной на машине, где мерить было нечем.
+   */
+  it('молчание всех секций измерением не считается', async () => {
+    const result = await parsed('ssh_service_status', { unit: 'ssh' }, '');
+
+    expect(result.outcome).toBe('no_systemd');
+    expect(result.enabled).toBeNull();
+    expect(result.active_state).toBeNull();
+    expect(result.status_head).toBe('');
+  });
+
+  /**
+   * Молчанием считается только полное. Ответила хотя бы одна секция — машина
+   * отвечает, и записывать её в «нечем проверить» нельзя: пара «автозапуск и
+   * состояние» проверяется каждым элементом отдельно.
+   */
+  it('ответ одного лишь автозапуска молчанием не считается', async () => {
+    const result = await parsed('ssh_service_status', { unit: 'ssh' }, serverAnswer(SVC_SEP, { is_enabled: 'enabled' }));
+
+    expect(result.outcome).toBe('checked');
+    expect(result.enabled).toBe('enabled');
+  });
+
+  it('ответ одного лишь статуса молчанием не считается', async () => {
+    const result = await parsed(
+      'ssh_service_status',
+      { unit: 'ssh' },
+      serverAnswer(SVC_SEP, { status: '● ssh.service - OpenBSD Secure Shell server' })
+    );
+
+    expect(result.outcome).toBe('checked');
+    expect(result.status_head).toContain('OpenBSD Secure Shell');
+  });
+
+  it('несуществующая служба не выдаётся за остановленную', async () => {
+    const result = await parsed(
+      'ssh_service_status',
+      { unit: 'nginx.service' },
+      serverAnswer(SVC_SEP, {
+        is_enabled: 'Failed to get unit file state: No such file or directory',
+        show: 'LoadState=not-found\nActiveState=inactive\nSubState=dead',
+      })
+    );
+
+    expect(result.outcome).toBe('no_unit');
+    expect(result.enabled).toBeNull();
+    expect(result.active_state).toBeNull();
+    expect(result.sub_state).toBeNull();
+  });
+
+  /**
+   * Разбор добавлен рядом с текстом, а не вместо него: клиент, который читает
+   * содержимое, обязан получить его помеченным как текст.
+   */
+  it('ответ несёт и текст, и разбор', async () => {
+    const response = await respond(
+      'ssh_service_status',
+      { unit: 'nginx.service' },
+      serverAnswer(SVC_SEP, { show: 'ActiveState=active', is_enabled: 'enabled' })
+    );
+
+    expect(response.content[0].type).toBe('text');
+    expect(response.content[0].text).toContain('=== ssh_service_status nginx.service ===');
+    expect(response.structuredContent.active_state).toBe('active');
+  });
+
+  it('многословный ответ про автозапуск значением не считается', async () => {
+    const result = await parsed(
+      'ssh_service_status',
+      { unit: 'nginx.service' },
+      serverAnswer(SVC_SEP, {
+        is_enabled: 'enabled\nWarning: the unit file changed on disk',
+        show: 'ActiveState=active\nSubState=running',
+      })
+    );
+
+    expect(result.outcome).toBe('checked');
+    expect(result.enabled).toBeNull();
+    expect(result.active_state).toBe('active');
   });
 
   it.each([['nginx; touch /tmp/pwned'], ['$(id)'], ['unit name']])(
@@ -425,6 +585,86 @@ describe('ssh_disk_breakdown', () => {
 
     expect(text).toContain('--- docker ---\nnot installed');
     expect(text).not.toContain('NO_DOCKER');
+  });
+
+  /**
+   * Секция без единой записи попадает в список «проверить нечем»: `du` молчит
+   * и о пустом каталоге, и о том, куда его не пустили, и выдать это молчание
+   * за отсутствие проблем нельзя.
+   */
+  it('разбор называет секции, которые нечем было проверить', async () => {
+    const stdout = [
+      '__SSH_MCP_DISK_SEP__df__SSH_MCP_DISK_SEP__',
+      'Filesystem Type Size Used Avail Use% Mounted on',
+      '/dev/sda1 ext4 40G 12G 26G 32% /',
+      '__SSH_MCP_DISK_SEP__du_0__SSH_MCP_DISK_SEP__',
+      '4.0G\t/var/lib',
+      '__SSH_MCP_DISK_SEP__docker__SSH_MCP_DISK_SEP__',
+      'NO_DOCKER',
+      '__SSH_MCP_DISK_SEP__journald__SSH_MCP_DISK_SEP__',
+      'Archived and active journals take up 120.0M',
+    ].join('\n');
+    const result = await parsed('ssh_disk_breakdown', {}, stdout);
+
+    expect(result.filesystems).toEqual([
+      {
+        filesystem: '/dev/sda1',
+        type: 'ext4',
+        size: '40G',
+        used: '12G',
+        avail: '26G',
+        pct: 32,
+        mount: '/',
+      },
+    ]);
+    expect(result.largest).toEqual([{ path: '/', entries: [{ size: '4.0G', path: '/var/lib' }] }]);
+    expect(result.docker).toBeNull();
+    expect(result.journald).toContain('120.0M');
+    expect(result.unavailable).toEqual(['/var/log', '$HOME/.cache']);
+  });
+
+  it('ответ несёт и текст, и разбор', async () => {
+    const stdout = '__SSH_MCP_DISK_SEP__df__SSH_MCP_DISK_SEP__\nFilesystem Type Size Used Avail Use% Mounted on';
+    const response = await respond('ssh_disk_breakdown', {}, stdout);
+
+    expect(response.content[0].type).toBe('text');
+    expect(response.content[0].text).toContain('=== ssh_disk_breakdown ===');
+    expect(response.structuredContent.unavailable).toContain('docker');
+  });
+
+  it('разбор раскладывает журналы и кэш по своим спискам', async () => {
+    const stdout = [
+      '__SSH_MCP_DISK_SEP__var_log__SSH_MCP_DISK_SEP__',
+      '120M\t/var/log/journal',
+      '__SSH_MCP_DISK_SEP__cache__SSH_MCP_DISK_SEP__',
+      '8.0M\t/root/.cache/pip',
+      '__SSH_MCP_DISK_SEP__journald__SSH_MCP_DISK_SEP__',
+      'NO_JOURNALD',
+    ].join('\n');
+    const result = await parsed('ssh_disk_breakdown', {}, stdout);
+
+    expect(result.var_log).toEqual([{ size: '120M', path: '/var/log/journal' }]);
+    expect(result.cache).toEqual([{ size: '8.0M', path: '/root/.cache/pip' }]);
+    expect(result.journald).toBeNull();
+    expect(result.unavailable).not.toContain('/var/log');
+    expect(result.unavailable).not.toContain('$HOME/.cache');
+  });
+
+  it('молчание про docker не выдаётся за машину без docker', async () => {
+    const stdout = '__SSH_MCP_DISK_SEP__df__SSH_MCP_DISK_SEP__\nFilesystem Type Size Used Avail Use% Mounted on';
+    const result = await parsed('ssh_disk_breakdown', {}, stdout);
+
+    expect(result.docker).toBeNull();
+    expect(result.unavailable).toContain('docker');
+    expect(result.unavailable).toContain('journald');
+  });
+
+  it('пустая таблица томов не выдаётся за машину без дисков', async () => {
+    const result = await parsed('ssh_disk_breakdown', {}, '');
+
+    expect(result.filesystems).toEqual([]);
+    expect(result.unavailable).toContain('filesystems');
+    expect(result.unavailable).toContain('largest entries under /');
   });
 
   it('каждый запрошенный путь получает свой раздел', async () => {

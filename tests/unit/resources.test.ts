@@ -113,6 +113,22 @@ describe('Ресурсы объявлены', () => {
     }
   });
 
+  /**
+   * Тип содержимого решает, разбирать ответ или читать глазами, и назван он
+   * дважды: в списке и в самом ответе. Разойдись эти два места — клиент возьмёт
+   * за JSON текст и наоборот.
+   */
+  it.each([
+    [CURRENT, 'application/json'],
+    [EXAMPLE, 'text/markdown'],
+  ])('%s назван своим типом и в списке, и в ответе', async (uri, mimeType) => {
+    const { resources } = await client.listResources();
+    const { contents } = await client.readResource({ uri });
+
+    expect(resources.find((resource) => resource.uri === uri)?.mimeType).toBe(mimeType);
+    expect(contents[0].mimeType).toBe(mimeType);
+  });
+
   it('незнакомый адрес получает отказ, а не пустоту', async () => {
     await expect(client.readResource({ uri: 'ssh://profiles/nope' })).rejects.toThrow(
       /Unknown resource/

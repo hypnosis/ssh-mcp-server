@@ -450,7 +450,16 @@ export class FileTools {
     // Single file - simple result
     if (files.length === 1) {
       const { file, target } = files[0];
-      const written = await this.writeFileRouted(sshConfig, file, target);
+      let written: Awaited<ReturnType<FileTools['writeFileRouted']>>;
+      try {
+        written = await this.writeFileRouted(sshConfig, file, target);
+      } catch (error: any) {
+        // One file answers with the same summary a batch does: the outcome of
+        // the only file would otherwise be readable from the text alone
+        const failure = toolFailure(error);
+        failure.structuredContent = filesSummary([failedFile(target.path, error.message)]);
+        return failure;
+      }
 
       // The path printed is where the file actually ended up: with `~` it
       // differs from what was requested, and the user needs to see the real address

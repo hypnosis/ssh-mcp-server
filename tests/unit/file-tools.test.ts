@@ -1276,6 +1276,47 @@ describe('сводка записи', () => {
     expect(summary.files[1].reason).toContain('No space left');
     expect(summary.files[1].bytes).toBeNull();
   });
+
+  /**
+   * Сверять нечего там, где ничего не легло: исход `verified` у неуехавшего
+   * файла прочитался бы как «данные на месте и совпали».
+   */
+  it('файл, который не встал, сверенным не считается', async () => {
+    overrides = [[/^cat > .*b\.js/, { exitCode: 1, stderr: 'cat: write error: No space left' }]];
+
+    const summary = await summaryOf({
+      files: [
+        { path: '/srv/a.js', content: 'a', verify: true },
+        { path: '/srv/b.js', content: 'b', verify: true },
+      ],
+    });
+
+    expect(summary.files[1]).toMatchObject({ written: false, verified: 'skipped' });
+  });
+
+  /**
+   * Одиночная запись и пачка отвечают одинаково: провал единственного файла
+   * раньше приходил одним текстом, и исход приходилось вычитывать из прозы.
+   */
+  it('провал единственного файла тоже приходит полями, а не одним текстом', async () => {
+    overrides = [[/^cat > .*a\.js/, { exitCode: 1, stderr: 'cat: write error: No space left' }]];
+
+    const response = await new FileTools().handleCall(
+      call('ssh_file_write', { files: { path: '/srv/a.js', content: 'a', verify: true } })
+    );
+    const summary = response.structuredContent as FilesSummary;
+
+    expect(response.isError).toBe(true);
+    expect(summary.files).toHaveLength(1);
+    expect(summary.files[0]).toMatchObject({
+      path: '/srv/a.js',
+      written: false,
+      verified: 'skipped',
+      bytes: null,
+    });
+    expect(summary.files[0].reason).toContain('No space left');
+    expect(summary.legend['files[].verified=skipped']).toContain('no comparison ran');
+  });
 });
 
 /**
@@ -1303,6 +1344,12 @@ describe('легенда записи', () => {
 
     expect(legend['files[].verified=unavailable']).toContain('nothing to work with');
     expect(legend['files[].verified=skipped']).toBeUndefined();
+  });
+
+  it('несделанная сверка объясняет своё слово', async () => {
+    const legend = await legendOf({ files: { path: '/srv/a.js', content: 'a' } });
+
+    expect(legend['files[].verified=skipped']).toContain('no comparison ran');
   });
 
   it('ключ называет поле внутри списка, а не голое слово', async () => {

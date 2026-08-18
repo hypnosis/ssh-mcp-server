@@ -185,6 +185,17 @@ describe('Обещанные поля ответа', () => {
   });
 
   /**
+   * Действие выбирает вызывающий, и список — часть обещания наравне с
+   * состоянием: пропавшее имя читается как «такого действия нет».
+   */
+  it('сводка связи обещает все пять действий', async () => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === 'ssh_monitor')?.outputSchema as any;
+
+    expect(schema.properties.action.enum).toEqual(['stats', 'reload', 'test', 'list', 'close']);
+  });
+
+  /**
    * Легенда обещана схемой, иначе клиент отбракует ответ с ней как лишнее
    * поле, а не расшифрует слово.
    */
@@ -239,6 +250,13 @@ describe('Обещанные поля ответа', () => {
     const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
 
     expect(schema.required).toEqual(['jobs', 'legend']);
+    expect(schema.properties.jobs.items.required).toEqual([
+      'id',
+      'state',
+      'exit_code',
+      'pid',
+      'started_at',
+    ]);
     expect(schema.properties.jobs.items.properties.state.enum).toEqual([
       'running',
       'finished',

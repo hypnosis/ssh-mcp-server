@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { PingResult } from '../../src/runner/types.js';
 import type { MonitorSummary } from '../../src/tools/monitor-output.js';
+import { legendFor } from '../../src/tools/legend.js';
 
 const { pingMock, statsMock, closeMasterMock, getRunnerMock, resolveConfigMock } = vi.hoisted(() => ({
   pingMock: vi.fn(),
@@ -211,5 +212,27 @@ describe('сводка ssh_monitor: легенда', () => {
     const summary = await summaryOf(args);
 
     expect(summary.legend).toEqual({});
+  });
+});
+
+/**
+ * Сборщик легенды: он один на все инструменты, поэтому пустое значение
+ * проверяется прямо на нём, а не через тот инструмент, где оно случилось.
+ *
+ * Непроверенная связь приходит состоянием `null`, и расшифровки у пустоты нет:
+ * ключ `state=null` объяснял бы читателю несуществующее слово.
+ */
+describe('сборщик легенды: пустое значение', () => {
+  const meanings = { ready: 'logged in, commands run' };
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+  ])('%s не заводит ключа', (_name, empty) => {
+    const legend = legendFor('state', meanings, ['ready', empty as never]);
+
+    // ключи, а не toEqual: пустое значение под ключом сравнение пропускает молча
+    expect(Object.keys(legend)).toEqual(['state=ready']);
+    expect(legend['state=ready']).toBe(meanings.ready);
   });
 });

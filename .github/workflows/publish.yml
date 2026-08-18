@@ -59,8 +59,16 @@ jobs:
         run: |
           TAG_VERSION="${{ steps.version.outputs.version }}"
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          SERVER_VERSION=$(node -p "require('./server.json').version")
+          PACKAGE_ENTRY_VERSION=$(node -p "require('./server.json').packages[0].version")
           if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
             echo "Error: Tag version ($TAG_VERSION) does not match package.json version ($PACKAGE_VERSION)"
+            exit 1
+          fi
+          # server.json carries the version twice — the server and the npm package it
+          # points at — and the registry rejects the pair when either one drifts.
+          if [ "$TAG_VERSION" != "$SERVER_VERSION" ] || [ "$TAG_VERSION" != "$PACKAGE_ENTRY_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) does not match server.json ($SERVER_VERSION / $PACKAGE_ENTRY_VERSION)"
             exit 1
           fi
           echo "Version match confirmed: $TAG_VERSION"
@@ -88,6 +96,20 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       
+      # The registry stores metadata only: it reads mcpName straight from the package
+      # that npm now serves, so this has to come after the publish above. The identity
+      # is the same OIDC token that signs the provenance — nothing to store as a secret.
+      # Runs unconditionally: when npm went through and the registry did not, re-running
+      # the tag is the repair, and a duplicate listing fails loudly rather than silently.
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Publish to MCP Registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
       - name: Skip publish (already exists)
         if: steps.check_version.outputs.already_published == 'true'
         run: echo "✅ Version ${{ steps.version.outputs.version }} already published, skipping"

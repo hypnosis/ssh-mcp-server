@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-08-18
+
+### Added — the server is listed in the official MCP Registry
+- `server.json` describes the server for the registry at `registry.modelcontextprotocol.io`,
+  and `mcpName` in `package.json` is what proves the npm package and the listing are the
+  same thing. Clients that read the registry can now find and install the server without
+  being handed a config by hand.
+- The release workflow publishes the listing right after npm, signing in with the same
+  short-lived GitHub token that already signs the provenance — no secret is stored for it.
+  The version is checked against `server.json` before anything is published, because the
+  registry refuses a listing whose version does not match the package it points at.
+
 ## [2.0.1] - 2026-08-18
 
 ### Changed — the profile is always named (breaking)

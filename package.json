@@ -1,6 +1,7 @@
 {
   "name": "@hypnosis/ssh-mcp-server",
-  "version": "2.0.1",
+  "version": "2.0.2",
+  "mcpName": "io.github.hypnosis/ssh-mcp-server",
   "description": "Run commands, move files, tail logs and audit live servers over SSH from an AI coding agent — Claude Code, Codex, Gemini CLI, Hermes, or any MCP client. Uses the system OpenSSH client, keys and config.",
   "type": "module",
   "main": "./dist/index.js",

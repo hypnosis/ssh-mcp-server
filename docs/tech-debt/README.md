@@ -31,6 +31,7 @@
 | TD-19 | Предупреждения ловят слово, а не команду | ✅ закрыт | [archive/pattern-warnings-match-substring_19.md](archive/pattern-warnings-match-substring_19.md) |
 | TD-20 | Половина ответов разобрана, половина — текст | 🔹 отложено | [structured-answers-missing_20.md](structured-answers-missing_20.md) |
 | TD-21 | Готовые сценарии живут в голове, а не в сервере | 🔹 отложено | [scenarios-not-slash-commands_21.md](scenarios-not-slash-commands_21.md) |
+| TD-22 | Про видеокарту сервер не спрашивают | 🔹 отложено | [gpu-not-measured_22.md](gpu-not-measured_22.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.
 

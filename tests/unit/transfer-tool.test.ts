@@ -54,6 +54,8 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
   getAvailableProfiles: () => ['production'],
 }));
 
+import type { FilesSummary } from '../../src/tools/transfer-output.js';
+
 const { TransferTool } = await import('../../src/tools/transfer-tool.js');
 const { listTreeFiles } = await import('../../src/utils/local-tree.js');
 const { UNKNOWN_PASSPORT } = await import('../../src/runner/passport.js');
@@ -1646,5 +1648,90 @@ describe('ssh_upload: владелец без sudo', () => {
     );
 
     expect(text).not.toContain('owner was NOT applied');
+  });
+});
+
+/**
+ * Сводка рядом с текстом передачи.
+ *
+ * Три исхода сверки в тексте различаются хвостом строки, а «не просили
+ * проверять» не отличается ничем — и читается как проверка, которая прошла.
+ * Полем они названы словами, поэтому здесь сторожатся сами слова.
+ */
+describe('сводка передачи', () => {
+  async function summaryOf(name: string, args: Record<string, unknown>): Promise<FilesSummary> {
+    const response = await new TransferTool().handleCall(call(name, args));
+    return response.structuredContent as FilesSummary;
+  }
+
+  const upload = (args: Record<string, unknown> = {}) =>
+    summaryOf('ssh_upload', { local_path: localFile, remote_path: '/srv/app.js', ...args });
+
+  const download = (args: Record<string, unknown> = {}) =>
+    summaryOf('ssh_download', {
+      remote_path: '/srv/app.js',
+      local_path: join(localDir, 'pulled.js'),
+      ...args,
+    });
+
+  it('сверенная передача названа словом, а не хвостом строки', async () => {
+    const summary = await upload({ verify: true });
+
+    expect(summary.files).toEqual([
+      { path: '/srv/app.js', written: true, verified: 'verified', reason: null, bytes: 6 },
+    ]);
+  });
+
+  it('никто не просил сверять — это отдельный исход, а не сверка, которая прошла', async () => {
+    const [file] = (await upload({ verify: false })).files;
+
+    expect(file).toMatchObject({ verified: 'skipped', reason: null, written: true });
+  });
+
+  /** Успех с пометкой: файл встал на место, а сверять его было нечем */
+  it('сверять было нечем — исход назван и причина при нём', async () => {
+    passportMock.mockResolvedValue(fullPassport({ sha256: 'none' }));
+
+    const [file] = (await upload({ verify: true })).files;
+
+    expect(file.verified).toBe('unavailable');
+    expect(file.reason).toContain('neither sha256sum nor openssl');
+    expect(file.written).toBe(true);
+  });
+
+  it('каталог приходит одной записью со своим путём и общим размером', async () => {
+    const [file] = (await upload({ local_path: localDir, remote_path: '/srv/app', recursive: true, verify: false })).files;
+
+    expect(file.path).toBe('/srv/app');
+    expect(file.bytes).toBeGreaterThan(0);
+  });
+
+  it('скачанный файл назван тем путём, с которого его взяли', async () => {
+    putFile('/srv/app.js', 'payload');
+    downloadMock.mockImplementation(async (_source: string, target: string) => {
+      writeFileSync(target, 'payload', 'utf8');
+    });
+
+    const [file] = (await download({ verify: false })).files;
+
+    expect(file).toMatchObject({ path: '/srv/app.js', written: true, bytes: 7 });
+  });
+
+  /** Размер скачанного дерева никто не считал — и в сводке об этом сказано пустотой */
+  it('скачанный каталог приходит без выдуманного размера', async () => {
+    putFile('/srv/app/one.js', 'a');
+    downloadMock.mockImplementation(async (_source: string, target: string) => {
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, 'one.js'), 'a', 'utf8');
+    });
+
+    const [file] = (await download({
+      remote_path: '/srv/app',
+      local_path: join(localDir, 'pulled'),
+      recursive: true,
+      verify: false,
+    })).files;
+
+    expect(file).toMatchObject({ path: '/srv/app', bytes: null, written: true });
   });
 });

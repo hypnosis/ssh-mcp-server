@@ -136,9 +136,14 @@ export function looksDamagedAsText(text: string): boolean {
   return text.includes('�');
 }
 
+/** Whether the code is the guard's report that it killed the command, not the command's own answer */
+export function killedByTimeoutGuard(exitCode: number): boolean {
+  return TIMEOUT_GUARD_EXIT_CODES.includes(exitCode);
+}
+
 /** Hint for the exit code, when the bare number alone would mislead */
 export function exitCodeHint(exitCode: number): string {
-  if (TIMEOUT_GUARD_EXIT_CODES.includes(exitCode)) {
+  if (killedByTimeoutGuard(exitCode)) {
     return ' (killed by the timeout guard on the server — it ran past the allowed time)';
   }
   return '';

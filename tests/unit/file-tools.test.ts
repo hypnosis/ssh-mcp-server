@@ -55,6 +55,8 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
   getAvailableProfiles: () => ['production'],
 }));
 
+import type { FilesSummary } from '../../src/tools/transfer-output.js';
+
 const { FileTools } = await import('../../src/tools/file-tools.js');
 const { UNKNOWN_PASSPORT } = await import('../../src/runner/passport.js');
 
@@ -931,9 +933,11 @@ describe('форма ответа', () => {
     expect(await responseOf(call('ssh_file_read', { path: '/etc/hosts', binary: true }))).toEqual({
       content: [textPart],
     });
+    // У записи рядом с текстом едет сводка — её сторожит exec-соседний файл;
+    // здесь важно, что текстовый кусок на месте и тип у него не пустой
     expect(
       await responseOf(call('ssh_file_write', { files: { path: '/srv/a.js', content: 'a' } }))
-    ).toEqual({ content: [textPart] });
+    ).toEqual({ content: [textPart], structuredContent: expect.any(Object) });
     expect(
       await responseOf(
         call('ssh_file_write', {
@@ -943,7 +947,7 @@ describe('форма ответа', () => {
           ],
         })
       )
-    ).toEqual({ content: [textPart] });
+    ).toEqual({ content: [textPart], structuredContent: expect.any(Object) });
     expect(await responseOf(call('ssh_file_list', { path: '/etc' }))).toEqual({
       content: [textPart],
     });
@@ -1200,5 +1204,76 @@ describe('ssh_file_read: испорченный текст не выдаётся
     expect(await read({ path: '/srv/app.bin', binary: true })).toBe(
       Buffer.from([0x00, 0xff, 0xfe, 0x7f, 0x10]).toString('base64')
     );
+  });
+});
+
+/**
+ * Сводка рядом с текстом записи.
+ *
+ * Исход сверки уезжает в текст хвостом строки, а «не просили проверять» —
+ * вообще ничем: отсутствие проверки выглядит как проверка, которая прошла.
+ * Полем каждый исход назван словом, и здесь сторожатся сами слова.
+ */
+describe('сводка записи', () => {
+  async function summaryOf(args: Record<string, unknown>): Promise<FilesSummary> {
+    const response = await new FileTools().handleCall(call('ssh_file_write', args));
+    return response.structuredContent as FilesSummary;
+  }
+
+  it('сверенная запись названа словом', async () => {
+    const summary = await summaryOf({ files: { path: '/srv/a.js', content: 'run();', verify: true } });
+
+    expect(summary.files).toEqual([
+      { path: '/srv/a.js', written: true, verified: 'verified', reason: null, bytes: 6 },
+    ]);
+  });
+
+  it('никто не просил сверять — это свой исход, а не сверка, которая прошла', async () => {
+    const [file] = (await summaryOf({ files: { path: '/srv/a.js', content: 'run();' } })).files;
+
+    expect(file).toMatchObject({ verified: 'skipped', reason: null, written: true });
+  });
+
+  it('сверять было нечем — исход назван, причина при нём, файл на месте', async () => {
+    passportMock.mockResolvedValue(fullPassport({ sha256: 'none' }));
+
+    const [file] = (await summaryOf({
+      files: { path: '/srv/a.js', content: 'run();', verify: true },
+    })).files;
+
+    expect(file.verified).toBe('unavailable');
+    expect(file.reason).toBeTruthy();
+    expect(file.written).toBe(true);
+  });
+
+  it('форма одна и та же: один файл — тоже список', async () => {
+    const summary = await summaryOf({ files: { path: '/srv/a.js', content: 'a' } });
+
+    expect(summary.files).toHaveLength(1);
+  });
+
+  it('двоичное содержимое считается после раскодирования, а не по длине base64', async () => {
+    const [file] = (await summaryOf({
+      files: { path: '/srv/a.bin', content: Buffer.from('run();').toString('base64'), binary: true },
+    })).files;
+
+    expect(file.bytes).toBe(6);
+  });
+
+  /** Провал одного файла из пачки — это то, ради чего сводку и читают */
+  it('в пачке видно, какой файл не встал и на чём', async () => {
+    overrides = [[/^cat > .*b\.js/, { exitCode: 1, stderr: 'cat: write error: No space left' }]];
+
+    const summary = await summaryOf({
+      files: [
+        { path: '/srv/a.js', content: 'a' },
+        { path: '/srv/b.js', content: 'b' },
+      ],
+    });
+
+    expect(summary.files[0]).toMatchObject({ path: '/srv/a.js', written: true, bytes: 1 });
+    expect(summary.files[1].written).toBe(false);
+    expect(summary.files[1].reason).toContain('No space left');
+    expect(summary.files[1].bytes).toBeNull();
   });
 });

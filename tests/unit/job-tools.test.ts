@@ -30,6 +30,8 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
   getAvailableProfiles: () => ['production'],
 }));
 
+import type { JobsSummary } from '../../src/tools/job-output.js';
+
 const { JobTools } = await import('../../src/tools/job-tools.js');
 const { UNKNOWN_PASSPORT } = await import('../../src/runner/passport.js');
 
@@ -344,5 +346,87 @@ describe('ssh_job_kill', () => {
 
     expect(text).toContain('did not answer');
     expect(text).not.toContain('sent to its process group');
+  });
+});
+
+/**
+ * Сводка рядом с текстом ответа о задаче.
+ *
+ * Состояний четыре, и различать `lost` (работа пропала, кода нет) от `missing`
+ * (такой задачи на сервере нет) приходилось по формулировке фразы. Полем они
+ * названы теми же словами, что и в коде.
+ */
+describe('сводка задач', () => {
+  async function summaryOf(name: string, args: Record<string, unknown> = {}): Promise<JobsSummary> {
+    const response = await new JobTools().handleCall(call(name, { id: JOB_ID, ...args }));
+    return response.structuredContent as JobsSummary;
+  }
+
+  it.each([
+    ['running', 'SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=0'],
+    ['finished', 'SSH_MCP_JOB alive=0 pid=4242 code=3 started=1755250000 size=0'],
+    ['lost', 'SSH_MCP_JOB alive=0 pid=4242 code= started=1755250000 size=0'],
+    ['missing', 'SSH_MCP_JOB state=missing'],
+  ])('состояние %s приходит полем, а не фразой', async (state, stdout) => {
+    serverAnswers(stdout);
+
+    expect((await summaryOf('ssh_job_status')).jobs[0].state).toBe(state);
+  });
+
+  it('код есть у завершившейся задачи', async () => {
+    serverAnswers('SSH_MCP_JOB alive=0 pid=4242 code=3 started=1755250000 size=0');
+
+    expect((await summaryOf('ssh_job_status')).jobs[0].exit_code).toBe(3);
+  });
+
+  /** У потерянной работы кода нет вовсе — ноль на его месте был бы выдумкой */
+  it.each([
+    ['lost', 'SSH_MCP_JOB alive=0 pid=4242 code= started=1755250000 size=0'],
+    ['running', 'SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=0'],
+  ])('у состояния %s кода нет', async (_state, stdout) => {
+    serverAnswers(stdout);
+
+    expect((await summaryOf('ssh_job_status')).jobs[0].exit_code).toBeNull();
+  });
+
+  it('идентификатор, pid и время старта доезжают как есть', async () => {
+    serverAnswers('SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=0');
+
+    expect((await summaryOf('ssh_job_status')).jobs[0]).toMatchObject({
+      id: JOB_ID,
+      pid: 4242,
+      started_at: 1755250000,
+    });
+  });
+
+  it('неизвестный pid приходит пустотой, а не нулём', async () => {
+    serverAnswers('SSH_MCP_JOB state=missing');
+
+    expect((await summaryOf('ssh_job_status')).jobs[0].pid).toBeNull();
+  });
+
+  it('форма одна и та же: у одной задачи — тоже список', async () => {
+    serverAnswers('SSH_MCP_JOB alive=1 pid=1 code= started=1 size=0');
+
+    expect((await summaryOf('ssh_job_status')).jobs).toHaveLength(1);
+  });
+
+  it('список задач приходит записью на каждую, в порядке ответа сервера', async () => {
+    serverAnswers(
+      'SSH_MCP_JOB id=aaa alive=1 code= started=1755250000 size=12\n' +
+        'SSH_MCP_JOB id=bbb alive=0 code=0 started=1755240000 size=3\n'
+    );
+
+    const { jobs } = await summaryOf('ssh_job_list');
+
+    expect(jobs.map((job) => job.id)).toEqual(['aaa', 'bbb']);
+    expect(jobs.map((job) => job.state)).toEqual(['running', 'finished']);
+    expect(jobs.map((job) => job.exit_code)).toEqual([null, 0]);
+  });
+
+  it('пустой сервер отвечает пустым списком, а не отсутствием сводки', async () => {
+    serverAnswers('');
+
+    expect((await summaryOf('ssh_job_list')).jobs).toEqual([]);
   });
 });

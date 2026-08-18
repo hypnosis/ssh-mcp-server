@@ -13,6 +13,17 @@ import { validateArrayParameter, createValidationErrorResponse } from '../utils/
 import { requireTextList } from '../utils/tool-args.js';
 import { exitCodeHint, TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
 import {
+  blockedCommand,
+  EXEC_OUTPUT_SCHEMA,
+  executedCommand,
+  notRunCommand,
+  startedCommand,
+  stoppedCommand,
+  type CommandSummary,
+  type ExecSummary,
+} from './exec-output.js';
+import { SSHTimeoutError } from '../runner/errors.js';
+import {
   blockedMessage,
   CONFIRMATION_MARKER,
   findRemovalTargets,
@@ -24,6 +35,15 @@ import { resolveRemovalTargets } from '../managers/removal-guard.js';
 import { buildStartCommand, createJobId, jobPaths, parseJobStart } from '../utils/job-command.js';
 import { shellQuote } from '../utils/shell-arg.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
+
+/** Output of one command, as the batch answer prints it */
+interface CommandRun {
+  command: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  truncated: boolean;
+}
 
 /** ssh_exec arguments, matching its inputSchema */
 interface ExecArgs {
@@ -59,12 +79,11 @@ const SQL_PATTERNS = [
  * call, `chmod` inside a path or a string is a mention, and we stay silent about that.
  */
 function checkDangerousCommand(command: string): string | null {
-  const warning = (message: string) => `⚠️  DANGEROUS COMMAND: ${message}`;
   const invocations = parseInvocations(command);
 
   for (const { name, args } of invocations) {
     if (name === 'chmod' && args.some((argument) => unquote(argument) === '777'))
-      return warning('chmod 777 detected (security risk)');
+      return 'chmod 777 detected (security risk)';
 
     // Wiping every container at once: the containers themselves get
     // recreated, so this is a warning, not a refusal — data volumes outlive them
@@ -74,7 +93,7 @@ function checkDangerousCommand(command: string): string | null {
       args.includes('-f') &&
       /\$\(docker\s+ps/.test(args.join(' '))
     )
-      return warning('docker rm all containers detected');
+      return 'docker rm all containers detected';
   }
 
   // The query is searched for across the whole command, but only if a DB
@@ -82,10 +101,15 @@ function checkDangerousCommand(command: string): string | null {
   // while a conversation that merely mentions a query stays unflagged
   if (invocations.some(({ name }) => DB_CLIENTS.includes(name))) {
     for (const { pattern, message } of SQL_PATTERNS)
-      if (pattern.test(command)) return warning(message);
+      if (pattern.test(command)) return message;
   }
 
   return null;
+}
+
+/** The warning as the text shows it: the verdict, and the command it speaks about */
+function warningBlock(command: string, message: string): string {
+  return `⚠️  DANGEROUS COMMAND: ${message}\nCommand: ${command.substring(0, 100)}`;
 }
 
 /**
@@ -167,7 +191,8 @@ export class ExecTool {
             type: 'number',
             description:
               `Timeout in milliseconds. Default: ${DEFAULT_TIMEOUT_MS} ` +
-              `(${DEFAULT_TIMEOUT_MS / 1000} seconds)`,
+              `(${DEFAULT_TIMEOUT_MS / 1000} seconds). ` +
+              'For a list of commands it counts per command, not for the whole list.',
             default: DEFAULT_TIMEOUT_MS,
           },
           detach: {
@@ -182,6 +207,7 @@ export class ExecTool {
         },
         required: ['command'],
       },
+      outputSchema: EXEC_OUTPUT_SCHEMA,
     };
   }
   
@@ -212,6 +238,18 @@ export class ExecTool {
       const detach = args.detach === true;
       if (detach) assertDetachable(args, commands);
 
+      // A warning is settled by the text alone, so it is collected before the
+      // guard goes to the server: the summary of a refused call names the
+      // warning next to the command it speaks about
+      const warnings = commands.map((command) => checkDangerousCommand(command));
+      const warningText = commands
+        .map((command, index) => {
+          const message = warnings[index];
+          return message === null ? '' : warningBlock(command, message);
+        })
+        .filter((block) => block !== '')
+        .join('\n\n');
+
       // Deleting the root, the home directory or a system tree is stopped
       // BEFORE the first command is sent — and the whole call is stopped with
       // it. Checking along the way is not an option: half the batch would
@@ -219,55 +257,82 @@ export class ExecTool {
       const refusal = await this.refuseDestructive(commands, sshConfig, args.sudo);
       if (refusal) {
         // The refusal is flagged the same way as any other: whoever reads the
-        // flag rather than the text would otherwise take a blocked wipe for a completed one
-        return { content: [{ type: 'text', text: refusal }], isError: true };
-      }
+        // flag rather than the text would otherwise take a blocked wipe for a
+        // completed one. The summary names the refused command and says that
+        // none of the others ran either — not even those standing before it
+        const summary: ExecSummary = {
+          commands: commands.map((command, index) =>
+            index === refusal.index
+              ? blockedCommand(command, refusal.reason, warnings[index])
+              : notRunCommand(command, warnings[index])
+          ),
+          job_id: null,
+        };
 
-      // Check for dangerous commands
-      const warnings: string[] = [];
-      for (const cmd of commands) {
-        const warning = checkDangerousCommand(cmd);
-        if (warning) {
-          warnings.push(`${warning}\nCommand: ${cmd.substring(0, 100)}`);
-        }
+        return {
+          content: [{ type: 'text', text: blockedMessage(commands[refusal.index], refusal.reason) }],
+          isError: true,
+          structuredContent: summary,
+        };
       }
 
       // Starting the job happens after the deletion guard: a root wipe cancels
       // the whole call, and there is no reason to set up a job directory for it
       if (detach) {
-        return await this.startJob(sshConfig, commands[0], args.cwd, warnings);
+        return await this.startJob(sshConfig, commands[0], args.cwd, {
+          message: warnings[0],
+          text: warningText,
+        });
       }
 
+      const runs: CommandRun[] = [];
+
+      for (const command of commands) {
+        try {
+          const result = await this.executor.execute(sshConfig, command, {
+            sudo: args.sudo || false,
+            cwd: args.cwd,
+            // Zero here means "no deadline was named": the layer below will supply the shared default
+            timeout: args.timeout || undefined,
+            signal,
+          });
+
+          runs.push({ command, ...result });
+        } catch (error) {
+          // What already ran does not vanish with the failure: the server's
+          // state has changed, and the answer has to say how far the call got
+          return this.interruptedAnswer(error, commands, warnings, runs);
+        }
+      }
+
+      const summary: ExecSummary = {
+        commands: runs.map((run, index) => executedCommand(run.command, run, warnings[index])),
+        job_id: null,
+      };
+
       // Single command - return simple result
-      if (commands.length === 1) {
-        const result = await this.executor.execute(sshConfig, commands[0], {
-          sudo: args.sudo || false,
-          cwd: args.cwd,
-          // Zero here means "no deadline was named": the layer below will supply the shared default
-          timeout: args.timeout || undefined,
-          signal,
-        });
-        
+      if (runs.length === 1) {
+        const run = runs[0];
         let output = '';
-        
+
         // Add warnings
-        if (warnings.length > 0) {
-          output += warnings.join('\n\n') + '\n\n';
+        if (warningText) {
+          output += warningText + '\n\n';
         }
-        
+
         // Add stdout
-        if (result.stdout) {
-          output += result.stdout;
+        if (run.stdout) {
+          output += run.stdout;
         }
-        
+
         // Add stderr if present
-        if (result.stderr) {
-          output += `\n\nSTDERR:\n${result.stderr}`;
+        if (run.stderr) {
+          output += `\n\nSTDERR:\n${run.stderr}`;
         }
-        
+
         // Add exit code if not 0
-        if (result.exitCode !== 0) {
-          output += `\n\nExit code: ${result.exitCode}${exitCodeHint(result.exitCode)}`;
+        if (run.exitCode !== 0) {
+          output += `\n\nExit code: ${run.exitCode}${exitCodeHint(run.exitCode)}`;
         }
 
         return {
@@ -276,80 +341,83 @@ export class ExecTool {
               type: 'text',
               text: withTruncationNote(
                 output || '(command executed successfully, no output)',
-                result.truncated
+                run.truncated
               ),
             },
           ],
+          structuredContent: summary,
         };
       }
-      
-      // Multiple commands - return structured result
-      const results: Array<{
-        command: string;
-        stdout: string;
-        stderr: string;
-        exitCode: number;
-        truncated: boolean;
-      }> = [];
-      
-      for (const cmd of commands) {
-        const result = await this.executor.execute(sshConfig, cmd, {
-          sudo: args.sudo || false,
-          cwd: args.cwd,
-          // Zero here means "no deadline was named": the layer below will supply the shared default
-          timeout: args.timeout || undefined,
-          signal,
-        });
-        
-        results.push({
-          command: cmd,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          exitCode: result.exitCode,
-          truncated: result.truncated,
-        });
-      }
-      
+
       // Format output
       let output = '';
-      
+
       // Add warnings
-      if (warnings.length > 0) {
-        output += warnings.join('\n\n') + '\n\n';
+      if (warningText) {
+        output += warningText + '\n\n';
         output += '═'.repeat(60) + '\n\n';
       }
-      
-      output += `Executed ${results.length} commands:\n\n`;
-      
-      for (let i = 0; i < results.length; i++) {
-        const result = results[i];
-        output += `[${ i + 1}/${results.length}] ${result.command}\n`;
-        output += '─'.repeat(60) + '\n';
-        
-        if (result.stdout) {
-          output += result.stdout + '\n';
-        }
-        
-        if (result.stderr) {
-          output += `STDERR: ${result.stderr}\n`;
-        }
-        
-        output += `Exit code: ${result.exitCode}${exitCodeHint(result.exitCode)}\n`;
 
-        if (result.truncated) {
+      output += `Executed ${runs.length} commands:\n\n`;
+
+      for (let i = 0; i < runs.length; i++) {
+        const run = runs[i];
+        output += `[${ i + 1}/${runs.length}] ${run.command}\n`;
+        output += '─'.repeat(60) + '\n';
+
+        if (run.stdout) {
+          output += run.stdout + '\n';
+        }
+
+        if (run.stderr) {
+          output += `STDERR: ${run.stderr}\n`;
+        }
+
+        output += `Exit code: ${run.exitCode}${exitCodeHint(run.exitCode)}\n`;
+
+        if (run.truncated) {
           output += `${TRUNCATED_OUTPUT_NOTE}\n`;
         }
 
         output += '\n';
       }
-      
+
       return {
         content: [{ type: 'text', text: output }],
+        structuredContent: summary,
       };
     } catch (error: any) {
       logger.error('ssh_exec failed:', error);
       return toolFailure(error);
     }
+  }
+
+  /**
+   * The answer to a call that ended before every command reported back.
+   *
+   * A timeout leaves the command alive on the server — we stopped waiting, it
+   * did not stop; a cancelled call and a dropped connection end the same way.
+   * Whatever stood after it was never sent.
+   */
+  private interruptedAnswer(
+    error: unknown,
+    commands: string[],
+    warnings: Array<string | null>,
+    runs: CommandRun[]
+  ): ToolResult {
+    logger.error('ssh_exec failed:', error);
+    const cause = error instanceof SSHTimeoutError ? 'timeout' : 'interrupted';
+
+    const summarize = (command: string, index: number): CommandSummary => {
+      if (index < runs.length) return executedCommand(command, runs[index], warnings[index]);
+      if (index === runs.length) return stoppedCommand(command, warnings[index], cause);
+      return notRunCommand(command, warnings[index]);
+    };
+
+    return {
+      ...toolFailure(error),
+      structuredContent: { commands: commands.map(summarize), job_id: null } satisfies ExecSummary,
+    };
   }
 
   /**
@@ -363,7 +431,7 @@ export class ExecTool {
     config: SSHConfig,
     command: string,
     cwd: string | undefined,
-    warnings: string[]
+    warning: { message: string | null; text: string }
   ): Promise<ToolResult> {
     const passport = await this.executor.passport(config);
     const id = createJobId();
@@ -383,7 +451,7 @@ export class ExecTool {
     );
 
     const pid = parseJobStart(started.stdout);
-    const head = warnings.length > 0 ? `${warnings.join('\n\n')}\n\n` : '';
+    const head = warning.text ? `${warning.text}\n\n` : '';
 
     return {
       content: [
@@ -396,6 +464,10 @@ export class ExecTool {
             '\nFollow it with ssh_job_status and ssh_job_output, stop it with ssh_job_kill.',
         },
       ],
+      structuredContent: {
+        commands: [startedCommand(jobCommand, warning.message)],
+        job_id: id,
+      } satisfies ExecSummary,
     };
   }
 
@@ -404,25 +476,25 @@ export class ExecTool {
    *
    * Parsing the text settles almost everything at once and without the
    * network; one request goes to the server, and only for what the text
-   * cannot show — where a symlink leads. Returns the refusal text, or null if
-   * it is safe to proceed.
+   * cannot show — where a symlink leads. Returns which command was refused
+   * and why, or null if it is safe to proceed.
    */
   private async refuseDestructive(
     commands: string[],
     config: SSHConfig,
     sudo?: boolean
-  ): Promise<string | null> {
+  ): Promise<{ index: number; reason: string } | null> {
     // The passport is only needed for the home directory, and that is only
     // needed where a deletion appears at all. An ordinary command should not
     // pay for a check that does not concern it — so the home directory is fetched lazily.
     let home: string | null = null;
 
-    for (const command of commands) {
+    for (const [index, command] of commands.entries()) {
       // Text-based parsing runs first: it does not concern paths, so an
       // earlier branch keyed on deletion targets would let it slip past along with the command
       const irreversible = inspectIrreversible(command);
       if (irreversible.blocked) {
-        return blockedMessage(command, irreversible.reason!);
+        return { index, reason: irreversible.reason! };
       }
 
       if (findRemovalTargets(command).length === 0) continue;
@@ -430,7 +502,7 @@ export class ExecTool {
 
       const verdict = inspectCommand(command, home);
       if (verdict.blocked) {
-        return blockedMessage(command, verdict.reason!);
+        return { index, reason: verdict.reason! };
       }
 
       if (verdict.needsResolution.length > 0) {
@@ -441,7 +513,7 @@ export class ExecTool {
           { sudo }
         );
         if (resolution.blocked) {
-          return blockedMessage(command, resolution.reason!);
+          return { index, reason: resolution.reason! };
         }
       }
     }

@@ -10,6 +10,7 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { READS_REMOTE, WRITES_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
+import { jobEntry, JOBS_OUTPUT_SCHEMA, type JobsSummary } from './job-output.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
@@ -105,13 +106,15 @@ export class JobTools {
         annotations: { title: 'Check a background job', ...READS_REMOTE },
         description:
           'State of a background job started by ssh_exec with detach: true. ' +
-          'Reports one of three outcomes: running, finished (with its exit code), or lost — ' +
-          'not running and without an exit code, which means it was signalled or the server restarted.',
+          'Reports one of four outcomes: running, finished (with its exit code), lost — ' +
+          'not running and without an exit code, which means it was signalled or the server restarted — ' +
+          'or missing, when the server has no such job at all.',
         inputSchema: {
           type: 'object',
           properties: { profile, id },
           required: ['id'],
         },
+        outputSchema: JOBS_OUTPUT_SCHEMA,
       },
       {
         name: 'ssh_job_output',
@@ -143,6 +146,7 @@ export class JobTools {
           type: 'object',
           properties: { profile },
         },
+        outputSchema: JOBS_OUTPUT_SCHEMA,
       },
       {
         name: 'ssh_job_kill',
@@ -213,7 +217,12 @@ export class JobTools {
       signal,
     });
 
-    return { content: [{ type: 'text', text: this.describeStatus(id, parseJobStatus(result.stdout)) }] };
+    const status = parseJobStatus(result.stdout);
+
+    return {
+      content: [{ type: 'text', text: this.describeStatus(id, status) }],
+      structuredContent: { jobs: [jobEntry(id, status)] } satisfies JobsSummary,
+    };
   }
 
   /** Status response: the outcome on the first line, details below it */
@@ -311,7 +320,12 @@ export class JobTools {
       );
     }
 
-    return { content: [{ type: 'text', text: withTruncationNote(lines.join('\n'), result.truncated) }] };
+    return {
+      content: [{ type: 'text', text: withTruncationNote(lines.join('\n'), result.truncated) }],
+      structuredContent: {
+        jobs: listing.jobs.map((job) => jobEntry(job.id, job)),
+      } satisfies JobsSummary,
+    };
   }
 
   private async handleKill(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {

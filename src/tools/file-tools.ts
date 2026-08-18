@@ -11,6 +11,12 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { logger } from '../utils/logger.js';
 import { batchOutcome, toolFailure, type ToolResult } from '../utils/tool-result.js';
+import {
+  failedFile,
+  FILES_OUTPUT_SCHEMA,
+  writtenFile,
+  type FilesSummary,
+} from './transfer-output.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
@@ -204,6 +210,7 @@ export class FileTools {
           },
           required: ['files'],
         },
+        outputSchema: FILES_OUTPUT_SCHEMA,
       },
       
       // ssh_file_list
@@ -456,6 +463,9 @@ export class FileTools {
             text: `File written successfully: ${written.path}${verificationNote(written.verification)}${notes}`,
           },
         ],
+        structuredContent: {
+          files: [writtenFile(written.path, written.verification, this.contentBytes(file))],
+        } satisfies FilesSummary,
       };
     }
 
@@ -477,9 +487,7 @@ export class FileTools {
           success: true,
           warnings: written.warnings,
           verification: written.verification,
-          bytesWritten: file.binary
-            ? Buffer.from(file.content || '', 'base64').length
-            : Buffer.byteLength(file.content, 'utf8'),
+          bytesWritten: this.contentBytes(file),
         });
       } catch (error: any) {
         results.push({
@@ -507,7 +515,31 @@ export class FileTools {
       }
     }
 
-    return batchOutcome('Write', results.filter((r) => r.success).length, results.length, output);
+    const answer = batchOutcome(
+      'Write',
+      results.filter((r) => r.success).length,
+      results.length,
+      output
+    );
+
+    // Even a call where nothing landed carries the summary: which file failed
+    // and on what is the answer the caller acts on
+    answer.structuredContent = {
+      files: results.map((result) =>
+        result.success && result.verification
+          ? writtenFile(result.path, result.verification, result.bytesWritten)
+          : failedFile(result.path, result.error ?? 'write failed')
+      ),
+    } satisfies FilesSummary;
+
+    return answer;
+  }
+
+  /** Size of what the caller asked to write: base64 is counted after decoding */
+  private contentBytes(file: { content?: string; binary?: boolean }): number {
+    return file.binary
+      ? Buffer.from(file.content || '', 'base64').length
+      : Buffer.byteLength(file.content || '', 'utf8');
   }
   
   /**

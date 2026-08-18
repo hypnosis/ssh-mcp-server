@@ -22,6 +22,7 @@ import {
 import { describeBrokenProfile } from '../utils/profiles-file.js';
 import { logger } from '../utils/logger.js';
 import type { PingResult, PingState } from '../runner/types.js';
+import { actionSummary, MONITOR_OUTPUT_SCHEMA, pingSummary } from './monitor-output.js';
 import type { ToolResult } from '../utils/tool-result.js';
 
 /** ssh_monitor arguments, matching its inputSchema */
@@ -101,7 +102,8 @@ export class MonitoringTool {
           }
         },
         required: ['action']
-      }
+      },
+      outputSchema: MONITOR_OUTPUT_SCHEMA,
     };
   }
   
@@ -187,7 +189,8 @@ export class MonitoringTool {
     }
 
     return {
-      content: [{ type: 'text', text: output }]
+      content: [{ type: 'text', text: output }],
+      structuredContent: actionSummary('stats', profile),
     };
   }
   
@@ -212,7 +215,8 @@ export class MonitoringTool {
       }
       
       return {
-        content: [{ type: 'text', text: output }]
+        content: [{ type: 'text', text: output }],
+        structuredContent: actionSummary('reload', null),
       };
       
     } catch (error: any) {
@@ -257,6 +261,9 @@ export class MonitoringTool {
         // Only a state the caller has to act on is an error. `limited` is a usable
         // connection, and calling it a failure sends the reader fixing nothing.
         isError: result.state === 'no-route' || result.state === 'rejected',
+        // The unreachable states carry the summary too: a server that refused
+        // the login is a measurement, and the caller acts on it
+        structuredContent: pingSummary(profile, result),
       };
 
     } catch (error: any) {
@@ -297,7 +304,8 @@ export class MonitoringTool {
     output += `\n${await this.describeLeftovers()}`;
 
     return {
-      content: [{ type: 'text', text: output }]
+      content: [{ type: 'text', text: output }],
+      structuredContent: actionSummary('close', profile),
     };
   }
 
@@ -347,7 +355,8 @@ export class MonitoringTool {
     output += broken.length > 0 ? `, ${broken.length} broken\n` : '\n';
 
     return {
-      content: [{ type: 'text', text: output }]
+      content: [{ type: 'text', text: output }],
+      structuredContent: actionSummary('list', null),
     };
   }
 }

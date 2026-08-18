@@ -8,6 +8,7 @@ import { stripTerminalControls } from '../utils/terminal-noise.js';
 import { READS_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
+import { snapshotSummary, SNAPSHOT_OUTPUT_SCHEMA } from './snapshot-output.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { parseDfTable, dedupeByDevice } from '../utils/df-table.js';
@@ -44,6 +45,7 @@ export class SnapshotTool {
           },
         },
       },
+      outputSchema: SNAPSHOT_OUTPUT_SCHEMA,
     };
   }
   
@@ -99,6 +101,7 @@ export class SnapshotTool {
       
       return {
         content: [{ type: 'text', text: output }],
+        structuredContent: snapshotSummary({ cpu, memory, disk, docker, network }),
       };
     } catch (error: any) {
       logger.error('ssh_snapshot failed:', error);

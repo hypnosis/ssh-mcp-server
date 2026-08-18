@@ -45,8 +45,16 @@ const PUBLISHED_TOOLS = [
 const TOOLS_WITH_OUTPUT_SCHEMA = [
   'ssh_audit_baseline',
   'ssh_disk_breakdown',
+  'ssh_download',
+  'ssh_exec',
+  'ssh_file_write',
+  'ssh_job_list',
+  'ssh_job_status',
+  'ssh_monitor',
   'ssh_service_status',
+  'ssh_snapshot',
   'ssh_tls_check',
+  'ssh_upload',
 ];
 
 const MISSING_PROFILES_FILE = '/nonexistent/ssh-mcp-contract-profiles.json';
@@ -126,6 +134,106 @@ describe('Обещанные поля ответа', () => {
       'recent_log',
     ]);
     expect(schema.properties.outcome.enum).toEqual(['checked', 'no_systemd', 'no_unit']);
+  });
+
+  it('сводка команд обязана нести список команд и место под задачу', async () => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === 'ssh_exec')?.outputSchema as any;
+
+    expect(schema.required).toEqual(['commands', 'job_id']);
+    expect(schema.properties.commands.items.required).toEqual([
+      'command',
+      'exit_code',
+      'truncated',
+      'timed_out',
+      'blocked',
+      'blocked_reason',
+      'not_run',
+      'warning',
+    ]);
+  });
+
+  /**
+   * Ноль это факт о команде, `null` — признание, что кода нет вовсе. Схема,
+   * запрещающая `null`, превратила бы честный ответ об оборванном вызове
+   * в ошибку протокола.
+   */
+  it('код команды объявлен и числом, и пустотой', async () => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === 'ssh_exec')?.outputSchema as any;
+
+    expect(schema.properties.commands.items.properties.exit_code.type).toEqual(['number', 'null']);
+  });
+
+  /**
+   * Состояние решает, чем на этой машине вообще можно пользоваться, поэтому
+   * список его значений — часть обещания, а не подробность реализации.
+   */
+  it('сводка связи обязана нести состояние и все четыре поля', async () => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === 'ssh_monitor')?.outputSchema as any;
+
+    expect(schema.required).toEqual(['action', 'profile', 'state', 'latency_ms', 'exit_code']);
+    expect(schema.properties.state.enum).toEqual(['ready', 'limited', 'no-route', 'rejected', null]);
+  });
+
+  /**
+   * «Не просили проверять» и «проверили, сошлось» в тексте различаются
+   * пустотой в конце строки. Три исхода обещаны полем, поэтому их набор
+   * сторожится у всех трёх инструментов сразу.
+   */
+  it.each([['ssh_file_write'], ['ssh_upload'], ['ssh_download']])(
+    '%s обещает исход сверки одним из трёх слов',
+    async (name) => {
+      const { tools } = await client.listTools();
+      const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
+
+      expect(schema.required).toEqual(['files']);
+      expect(schema.properties.files.items.required).toEqual([
+        'path',
+        'written',
+        'verified',
+        'reason',
+        'bytes',
+      ]);
+      expect(schema.properties.files.items.properties.verified.enum).toEqual([
+        'verified',
+        'unavailable',
+        'skipped',
+      ]);
+    }
+  );
+
+  /**
+   * Исходов четыре, и описание инструмента раньше обещало три. Набор значений
+   * стережётся здесь, чтобы обещание и код расходились не молча.
+   */
+  it.each([['ssh_job_status'], ['ssh_job_list']])('%s обещает четыре состояния задачи', async (name) => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
+
+    expect(schema.required).toEqual(['jobs']);
+    expect(schema.properties.jobs.items.properties.state.enum).toEqual([
+      'running',
+      'finished',
+      'lost',
+      'missing',
+    ]);
+  });
+
+  it('шапка снимка обязана нести числа и список непроверенного', async () => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === 'ssh_snapshot')?.outputSchema as any;
+
+    expect(schema.required).toEqual([
+      'disk_pct',
+      'mem_pct',
+      'cpu_pct',
+      'load',
+      'containers',
+      'ports',
+      'unavailable',
+    ]);
   });
 
   it('разбор диска обязан нести секции и список непроверенного', async () => {

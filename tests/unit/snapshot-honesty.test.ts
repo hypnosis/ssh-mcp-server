@@ -30,6 +30,8 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
   getAvailableProfiles: () => ['production'],
 }));
 
+import type { SnapshotSummary } from '../../src/tools/snapshot-output.js';
+
 const { SnapshotTool } = await import('../../src/tools/snapshot-tool.js');
 
 /** Дословная сводка procps: доля простоя стоит перед `id` */
@@ -506,5 +508,76 @@ describe('ssh_snapshot: служба, о которой не спросили', 
     const text = await snapshot();
 
     expect(text).toMatch(/nginx\s+\?\s+NOT CHECKED/);
+  });
+});
+
+/**
+ * Шапка снимка: те же «проверить нечем», но полем.
+ *
+ * Обзор читается целиком, а решение принимается по нескольким числам. Ноль на
+ * месте непроверенного здесь опаснее всего: «0 портов слушает» выглядит как
+ * машина, на которой всё в порядке.
+ */
+describe('ssh_snapshot: шапка решений', () => {
+  async function summary(): Promise<SnapshotSummary> {
+    const response = await new SnapshotTool().handleCall({
+      params: { name: 'ssh_snapshot', arguments: {} },
+    } as CallToolRequest);
+
+    return response.structuredContent as SnapshotSummary;
+  }
+
+  it('числа снимаются с тех же ответов, что и текст', async () => {
+    respondWith([
+      [/nproc/, '4'],
+      [/loadavg/, '0.15 0.22 0.19 1/512 30412'],
+      [/^top -bn1/, TOP_PROCPS],
+      [/free -h/, 'Mem:           7.7Gi       2.8Gi       3.2Gi'],
+      [/df -hT/, 'Filesystem Type Size Used Avail Use% Mounted on\n/dev/sda1 ext4 40G 17G 21G 43% /'],
+      [/ss -tlnp/, '0.0.0.0:22\n127.0.0.1:5432'],
+    ]);
+
+    const header = await summary();
+
+    expect(header).toMatchObject({ disk_pct: 43, cpu_pct: 4.9, load: '0.15 0.22 0.19', ports: 2 });
+    expect(header.mem_pct).toBeGreaterThan(0);
+  });
+
+  /** Тот самый случай роутера: мерить нечем, и это не ноль */
+  it('без ss и netstat порты приходят пустотой и названы в списке непроверенного', async () => {
+    respondWith([[/ss -tlnp/, 'NO_NET_TOOL']]);
+
+    const header = await summary();
+
+    expect(header.ports).toBeNull();
+    expect(header.unavailable).toContain('ports');
+  });
+
+  it('машина без единого измерения не выдаёт нулей', async () => {
+    respondWith([]);
+
+    const header = await summary();
+
+    expect(header).toMatchObject({ disk_pct: null, cpu_pct: null, mem_pct: null, load: null });
+    expect(header.unavailable).toEqual(['disk_pct', 'mem_pct', 'cpu_pct', 'load', 'ports']);
+  });
+
+  it('самый заполненный раздел решает: в шапке стоит он, а не первый попавшийся', async () => {
+    respondWith([
+      [
+        /df -hT/,
+        'Filesystem Type Size Used Avail Use% Mounted on\n' +
+          '/dev/sda1 ext4 40G 17G 21G 43% /\n' +
+          '/dev/sdb1 ext4 40G 38G 2G 95% /data',
+      ],
+    ]);
+
+    expect((await summary()).disk_pct).toBe(95);
+  });
+
+  it('докера нет — счётчика контейнеров нет, а не ноль контейнеров', async () => {
+    respondWith([]);
+
+    expect((await summary()).containers).toBeNull();
   });
 });

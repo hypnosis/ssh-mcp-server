@@ -13,6 +13,22 @@
 
 export const SERVER_INSTRUCTIONS = `SSH access to remote machines. Every call names a profile; there is no default.
 
+Profiles hold the credentials — key, passphrase or password — and the server reads
+them itself. Never ask anyone for a secret and never put one in a call: name the
+profile. ssh_monitor action:list names the profiles you may name, and a call made
+without one is refused with the same list. Two profiles can point at the same
+address and differ only by name.
+
+Two resources answer questions about the setup instead of guesswork:
+ssh://profiles/current is what is configured here — name, host, port, user and
+whether the login uses a key or a password, secrets never included — and
+ssh://profiles/example is the shape of the profiles file. Read them before
+inventing a format or asking someone for one.
+
+Answers carry fields beside the text, not instead of it: every tool that declares an
+output schema puts the outcome in structuredContent, and the legend there explains
+the words it uses. Read the fields; the text holds the detail.
+
 On a machine you have not touched yet, start with ssh_monitor action:test: it
 names the state before anything else runs against it.
 

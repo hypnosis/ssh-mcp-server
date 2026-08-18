@@ -10,10 +10,18 @@
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { legendFor, LEGEND_SCHEMA, type Legend } from './legend.js';
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
 
 export type VerifiedOutcome = 'verified' | 'unavailable' | 'skipped';
+
+/** What each verification outcome says about the copy that was left behind */
+const VERIFIED_MEANING: Record<VerifiedOutcome, string> = {
+  verified: 'sha256 was compared after the write and matched',
+  unavailable: 'the check had nothing to work with, and reason says what was missing',
+  skipped: 'no comparison ran: none was asked for, or nothing landed to compare',
+};
 
 export interface FileSummary {
   /** Where the data went on the server, after the tilde and the rules were applied */
@@ -32,6 +40,19 @@ export interface FileSummary {
 /** The answer of one call that wrote or transferred data */
 export interface FilesSummary {
   files: FileSummary[];
+  legend: Legend;
+}
+
+/**
+ * The answer, legend included. Building it here is what keeps a batch of
+ * twenty files from carrying twenty copies of the same sentence — and keeps
+ * a single file from arriving without one.
+ */
+export function filesSummary(files: FileSummary[]): FilesSummary {
+  return {
+    files,
+    legend: legendFor('files[].verified', VERIFIED_MEANING, files.map((file) => file.verified)),
+  };
 }
 
 /** A file that landed, with the verification outcome as ssh_file_write words it */
@@ -94,6 +115,7 @@ export const FILES_OUTPUT_SCHEMA: OutputSchema = {
         required: ['path', 'written', 'verified', 'reason', 'bytes'],
       },
     },
+    legend: LEGEND_SCHEMA,
   },
-  required: ['files'],
+  required: ['files', 'legend'],
 };

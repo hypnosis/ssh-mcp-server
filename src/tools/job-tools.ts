@@ -10,7 +10,7 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { READS_REMOTE, WRITES_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
-import { jobEntry, JOBS_OUTPUT_SCHEMA, type JobsSummary } from './job-output.js';
+import { jobEntry, jobsSummary, JOBS_OUTPUT_SCHEMA } from './job-output.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
@@ -221,7 +221,7 @@ export class JobTools {
 
     return {
       content: [{ type: 'text', text: this.describeStatus(id, status) }],
-      structuredContent: { jobs: [jobEntry(id, status)] } satisfies JobsSummary,
+      structuredContent: jobsSummary([jobEntry(id, status)]),
     };
   }
 
@@ -322,9 +322,7 @@ export class JobTools {
 
     return {
       content: [{ type: 'text', text: withTruncationNote(lines.join('\n'), result.truncated) }],
-      structuredContent: {
-        jobs: listing.jobs.map((job) => jobEntry(job.id, job)),
-      } satisfies JobsSummary,
+      structuredContent: jobsSummary(listing.jobs.map((job) => jobEntry(job.id, job))),
     };
   }
 

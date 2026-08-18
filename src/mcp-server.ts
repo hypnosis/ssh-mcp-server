@@ -7,7 +7,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
   type CallToolRequest,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
@@ -22,6 +24,7 @@ import { MonitoringTool } from './tools/monitoring-tool.js';
 import { TransferTool } from './tools/transfer-tool.js';
 import { AuditTool } from './tools/audit-tool.js';
 import { SERVER_INSTRUCTIONS } from './tools/instructions.js';
+import { RESOURCES, readResource } from './tools/resources.js';
 
 /** A class of tools and its call handler */
 interface ToolProvider {
@@ -72,10 +75,22 @@ export function createMcpServer(version: string): McpServerBundle {
     {
       capabilities: {
         tools: {},
+        resources: {},
       },
       instructions: SERVER_INSTRUCTIONS,
     }
   );
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    return { resources: RESOURCES };
+  });
+
+  // The profiles are read on every request rather than captured once: the file
+  // is watched and reloaded, and a stale list would name machines that are gone
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    logger.debug('ReadResource request:', request.params.uri);
+    return { contents: [readResource(request.params.uri)] };
+  });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     logger.debug(`ListTools request received, returning ${tools.length} tools`);

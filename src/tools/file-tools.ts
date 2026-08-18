@@ -14,8 +14,8 @@ import { batchOutcome, toolFailure, type ToolResult } from '../utils/tool-result
 import {
   failedFile,
   FILES_OUTPUT_SCHEMA,
+  filesSummary,
   writtenFile,
-  type FilesSummary,
 } from './transfer-output.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
@@ -463,9 +463,9 @@ export class FileTools {
             text: `File written successfully: ${written.path}${verificationNote(written.verification)}${notes}`,
           },
         ],
-        structuredContent: {
-          files: [writtenFile(written.path, written.verification, this.contentBytes(file))],
-        } satisfies FilesSummary,
+        structuredContent: filesSummary([
+          writtenFile(written.path, written.verification, this.contentBytes(file)),
+        ]),
       };
     }
 
@@ -524,13 +524,13 @@ export class FileTools {
 
     // Even a call where nothing landed carries the summary: which file failed
     // and on what is the answer the caller acts on
-    answer.structuredContent = {
-      files: results.map((result) =>
+    answer.structuredContent = filesSummary(
+      results.map((result) =>
         result.success && result.verification
           ? writtenFile(result.path, result.verification, result.bytesWritten)
           : failedFile(result.path, result.error ?? 'write failed')
-      ),
-    } satisfies FilesSummary;
+      )
+    );
 
     return answer;
   }

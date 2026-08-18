@@ -55,3 +55,48 @@ describe('server instructions', () => {
     expect(text).toContain('ssh_exec is for what has no tool of its own');
   });
 });
+
+/**
+ * Карта отвечает и на вопросы, которые агент иначе задаёт человеку: где вход,
+ * откуда взять имена машин и как читать ответ.
+ *
+ * Повод — живой случай: агент пошёл просить пароль у владельца, потому что в
+ * карте не было сказано ни что вход уже лежит в профиле, ни что список имён
+ * можно спросить у сервера.
+ */
+describe('карта о самой настройке', () => {
+  it('запрещает выпрашивать секрет — вход уже в профиле', () => {
+    const text = client.getInstructions() ?? '';
+
+    expect(text).toContain('Never ask anyone for a secret');
+    expect(text).toContain('key, passphrase or password');
+  });
+
+  it('называет, у кого спросить имена профилей', () => {
+    expect(client.getInstructions()).toContain('ssh_monitor action:list');
+  });
+
+  /**
+   * Два роутера на одном адресе различаются только именем профиля. Перенос
+   * строки внутри фразы — форматирование, поэтому сторожится смысл, а не вёрстка.
+   */
+  it('предупреждает, что адрес не различает машины', () => {
+    expect(client.getInstructions()?.replace(/\s+/g, ' ')).toContain(
+      'point at the same address and differ only by name'
+    );
+  });
+
+  it.each([['ssh://profiles/current'], ['ssh://profiles/example']])(
+    'называет ресурс %s, иначе агент его не откроет',
+    (uri) => {
+      expect(client.getInstructions()).toContain(uri);
+    }
+  );
+
+  it('велит читать поля ответа, а не разбирать текст', () => {
+    const text = client.getInstructions() ?? '';
+
+    expect(text).toContain('structuredContent');
+    expect(text).toContain('legend');
+  });
+});

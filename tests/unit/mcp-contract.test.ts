@@ -173,8 +173,34 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_monitor')?.outputSchema as any;
 
-    expect(schema.required).toEqual(['action', 'profile', 'state', 'latency_ms', 'exit_code']);
+    expect(schema.required).toEqual([
+      'action',
+      'profile',
+      'state',
+      'latency_ms',
+      'exit_code',
+      'legend',
+    ]);
     expect(schema.properties.state.enum).toEqual(['ready', 'limited', 'no-route', 'rejected', null]);
+  });
+
+  /**
+   * Легенда обещана схемой, иначе клиент отбракует ответ с ней как лишнее
+   * поле, а не расшифрует слово.
+   */
+  it.each([
+    ['ssh_monitor'],
+    ['ssh_job_status'],
+    ['ssh_job_list'],
+    ['ssh_file_write'],
+    ['ssh_upload'],
+    ['ssh_download'],
+  ])('%s объявляет легенду словарём строк', async (name) => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
+
+    expect(schema.properties.legend.type).toBe('object');
+    expect(schema.properties.legend.additionalProperties).toEqual({ type: 'string' });
   });
 
   /**
@@ -188,7 +214,7 @@ describe('Обещанные поля ответа', () => {
       const { tools } = await client.listTools();
       const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
 
-      expect(schema.required).toEqual(['files']);
+      expect(schema.required).toEqual(['files', 'legend']);
       expect(schema.properties.files.items.required).toEqual([
         'path',
         'written',
@@ -212,7 +238,7 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
 
-    expect(schema.required).toEqual(['jobs']);
+    expect(schema.required).toEqual(['jobs', 'legend']);
     expect(schema.properties.jobs.items.properties.state.enum).toEqual([
       'running',
       'finished',

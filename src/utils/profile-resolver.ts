@@ -370,6 +370,47 @@ export function getAvailableProfiles(): string[] {
 }
 
 /**
+ * One profile as it may be shown to anyone: what it connects to, never what it
+ * logs in with.
+ *
+ * The key path is left out along with the secret itself — it names a file on
+ * this machine, and knowing where the key lives helps no caller work.
+ */
+export interface ProfileDescription {
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  /** Which way the login goes: by key, by password, or left to the user's ssh config */
+  auth: 'key' | 'password' | 'ssh-config';
+}
+
+/** How this profile logs in, without saying what with */
+function authOf(profileData: SSHProfileData): ProfileDescription['auth'] {
+  if (profileData.privateKeyPath) return 'key';
+  if (profileData.password || profileData.secretsFile) return 'password';
+  return 'ssh-config';
+}
+
+/**
+ * The configured profiles, described without a single secret.
+ *
+ * Answers the question an agent otherwise puts to a person: which machines are
+ * there, and how does one get in.
+ */
+export function describeProfiles(): ProfileDescription[] {
+  const PROFILES = getProfiles();
+
+  return Object.entries(PROFILES.profiles).map(([name, profileData]) => ({
+    name,
+    host: profileData.host!,
+    port: profileData.port || 22,
+    username: profileData.username!,
+    auth: authOf(profileData),
+  }));
+}
+
+/**
  * Profiles rejected by the loader on the last file load
  */
 export function getBrokenProfiles(): BrokenProfile[] {

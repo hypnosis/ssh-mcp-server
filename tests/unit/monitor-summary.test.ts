@@ -153,3 +153,63 @@ describe('сводка ssh_monitor: где её не бывает', () => {
     expect(response.structuredContent).toBeUndefined();
   });
 });
+
+/**
+ * Легенда: слово состояния расшифровывается в самом ответе.
+ *
+ * Объявление инструмента читается один раз и задолго до ответа, поэтому
+ * «limited» доезжало до читателя голым словом — гадать, мало прав это,
+ * медленно или квота.
+ */
+describe('сводка ssh_monitor: легенда', () => {
+  it.each([
+    ['ready', 'commands run'],
+    ['limited', 'not POSIX'],
+    ['no-route', 'never reached'],
+    ['rejected', 'refused the login'],
+  ])('%s объясняется в ответе, а не в объявлении инструмента', async (state, meaning) => {
+    pingMock.mockResolvedValue(ping({ state: state as PingResult['state'] }));
+
+    const summary = await summaryOf({ action: 'test', profile: 'production' });
+
+    expect(summary.legend[`state=${state}`]).toContain(meaning);
+  });
+
+  /**
+   * Ключ называет поле перед значением: одно слово может встретиться в разных
+   * полях, и тогда расшифровки затрут друг друга.
+   */
+  it('ключ легенды называет поле, а не одно голое значение', async () => {
+    pingMock.mockResolvedValue(ping({ state: 'limited' }));
+
+    expect(Object.keys((await summaryOf({ action: 'test', profile: 'production' })).legend)).toEqual([
+      'state=limited',
+    ]);
+  });
+
+  it('объясняется только пришедшее состояние, а не весь список разом', async () => {
+    pingMock.mockResolvedValue(ping({ state: 'ready' }));
+
+    const legend = (await summaryOf({ action: 'test', profile: 'production' })).legend;
+
+    expect(legend['state=ready']).toBeTruthy();
+    for (const other of ['state=limited', 'state=no-route', 'state=rejected']) {
+      expect(legend[other], `лишняя расшифровка ${other}`).toBeUndefined();
+    }
+  });
+
+  /**
+   * Пустая легенда — та же форма, что и полная: пропажа поля заставила бы
+   * читателя проверять его наличие вместо чтения.
+   */
+  it.each([
+    ['stats', { action: 'stats', profile: 'production' }],
+    ['reload', { action: 'reload' }],
+    ['list', { action: 'list' }],
+    ['close', { action: 'close', profile: 'production' }],
+  ])('%s приносит пустую легенду, а не отсутствие поля', async (_action, args) => {
+    const summary = await summaryOf(args);
+
+    expect(summary.legend).toEqual({});
+  });
+});

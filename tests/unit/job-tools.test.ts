@@ -430,3 +430,56 @@ describe('сводка задач', () => {
     expect((await summaryOf('ssh_job_list')).jobs).toEqual([]);
   });
 });
+
+/**
+ * Легенда: слова состояний расшифрованы в самом ответе.
+ *
+ * `lost` и `missing` различаются последствиями, а на вид — ничем; читатель
+ * ответа не обязан помнить объявление инструмента, чтобы их развести.
+ */
+describe('легенда задач', () => {
+  async function legendOf(name: string, args: Record<string, unknown> = {}): Promise<JobsSummary['legend']> {
+    const response = await new JobTools().handleCall(call(name, { id: JOB_ID, ...args }));
+    return (response.structuredContent as JobsSummary).legend;
+  }
+
+  it.each([
+    ['running', 'SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=0', 'still running'],
+    ['finished', 'SSH_MCP_JOB alive=0 pid=4242 code=3 started=1755250000 size=0', 'reported its exit code'],
+    ['lost', 'SSH_MCP_JOB alive=0 pid=4242 code= started=1755250000 size=0', 'left no exit code'],
+    ['missing', 'SSH_MCP_JOB state=missing', 'knows no job'],
+  ])('%s объясняется словами, а не оставляется на догадку', async (state, stdout, meaning) => {
+    serverAnswers(stdout);
+
+    expect((await legendOf('ssh_job_status'))[`jobs[].state=${state}`]).toContain(meaning);
+  });
+
+  it('ключ называет поле внутри списка, а не голое слово', async () => {
+    serverAnswers('SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=0');
+
+    expect(Object.keys(await legendOf('ssh_job_status'))).toEqual(['jobs[].state=running']);
+  });
+
+  /**
+   * Тридцать задач в двух состояниях — две расшифровки, а не тридцать: иначе
+   * легенда растёт вместе со списком и перестаёт читаться.
+   */
+  it('повторяющееся состояние объясняется один раз', async () => {
+    serverAnswers(
+      'SSH_MCP_JOB id=aaa alive=1 code= started=1755250000 size=0\n' +
+        'SSH_MCP_JOB id=bbb alive=1 code= started=1755240000 size=0\n' +
+        'SSH_MCP_JOB id=ccc alive=0 code=0 started=1755230000 size=0\n'
+    );
+
+    expect(Object.keys(await legendOf('ssh_job_list')).sort()).toEqual([
+      'jobs[].state=finished',
+      'jobs[].state=running',
+    ]);
+  });
+
+  it('пустой список задач приносит пустую легенду, а не отсутствие поля', async () => {
+    serverAnswers('');
+
+    expect(await legendOf('ssh_job_list')).toEqual({});
+  });
+});

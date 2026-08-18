@@ -1735,3 +1735,53 @@ describe('сводка передачи', () => {
     expect(file).toMatchObject({ path: '/srv/app', bytes: null, written: true });
   });
 });
+
+/**
+ * Легенда: слова сверки расшифрованы там же, где стоят.
+ *
+ * Разница между «сверять было нечем» и «сверять не просили» решает, считать
+ * ли уехавшее проверенным, и словом сама по себе не выражается.
+ */
+describe('легенда передачи', () => {
+  async function legendOf(name: string, args: Record<string, unknown>): Promise<FilesSummary['legend']> {
+    const response = await new TransferTool().handleCall(call(name, args));
+    return (response.structuredContent as FilesSummary).legend;
+  }
+
+  const uploadLegend = (args: Record<string, unknown> = {}) =>
+    legendOf('ssh_upload', { local_path: localFile, remote_path: '/srv/app.js', ...args });
+
+  it('сверенная передача объясняет своё слово', async () => {
+    expect((await uploadLegend({ verify: true }))['files[].verified=verified']).toContain('sha256');
+  });
+
+  it('несостоявшаяся сверка объясняется отдельно от несделанной', async () => {
+    passportMock.mockResolvedValue(fullPassport({ sha256: 'none' }));
+
+    const legend = await uploadLegend({ verify: true });
+
+    expect(legend['files[].verified=unavailable']).toContain('nothing to work with');
+    expect(legend['files[].verified=skipped']).toBeUndefined();
+  });
+
+  it('ключ называет поле внутри списка, а не голое слово', async () => {
+    expect(Object.keys(await uploadLegend({ verify: false }))).toEqual([
+      'files[].verified=skipped',
+    ]);
+  });
+
+  it('скачивание объясняет свой исход теми же словами, что и отправка', async () => {
+    putFile('/srv/app.js', 'payload');
+    downloadMock.mockImplementation(async (_source: string, target: string) => {
+      writeFileSync(target, 'payload', 'utf8');
+    });
+
+    const legend = await legendOf('ssh_download', {
+      remote_path: '/srv/app.js',
+      local_path: join(localDir, 'pulled.js'),
+      verify: false,
+    });
+
+    expect(Object.keys(legend)).toEqual(['files[].verified=skipped']);
+  });
+});

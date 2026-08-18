@@ -1277,3 +1277,53 @@ describe('сводка записи', () => {
     expect(summary.files[1].bytes).toBeNull();
   });
 });
+
+/**
+ * Легенда: слова сверки расшифрованы в самом ответе.
+ *
+ * `unavailable` и `skipped` решают, можно ли считать записанное проверенным,
+ * а на вид отличаются одной буквой.
+ */
+describe('легенда записи', () => {
+  async function legendOf(args: Record<string, unknown>): Promise<FilesSummary['legend']> {
+    const response = await new FileTools().handleCall(call('ssh_file_write', args));
+    return (response.structuredContent as FilesSummary).legend;
+  }
+
+  it('сверенная запись объясняет своё слово', async () => {
+    const legend = await legendOf({ files: { path: '/srv/a.js', content: 'run();', verify: true } });
+
+    expect(legend['files[].verified=verified']).toContain('sha256');
+  });
+
+  it('несостоявшаяся сверка объясняется отдельно от несделанной', async () => {
+    passportMock.mockResolvedValue(fullPassport({ sha256: 'none' }));
+
+    const legend = await legendOf({ files: { path: '/srv/a.js', content: 'run();', verify: true } });
+
+    expect(legend['files[].verified=unavailable']).toContain('nothing to work with');
+    expect(legend['files[].verified=skipped']).toBeUndefined();
+  });
+
+  it('ключ называет поле внутри списка, а не голое слово', async () => {
+    expect(Object.keys(await legendOf({ files: { path: '/srv/a.js', content: 'a' } }))).toEqual([
+      'files[].verified=skipped',
+    ]);
+  });
+
+  /** Пачка из трёх файлов с одним исходом — одна расшифровка, а не три */
+  it('повторяющийся исход объясняется один раз', async () => {
+    const legend = await legendOf({
+      files: [
+        { path: '/srv/a.js', content: 'a' },
+        { path: '/srv/b.js', content: 'b' },
+        { path: '/srv/c.js', content: 'c', verify: true },
+      ],
+    });
+
+    expect(Object.keys(legend).sort()).toEqual([
+      'files[].verified=skipped',
+      'files[].verified=verified',
+    ]);
+  });
+});

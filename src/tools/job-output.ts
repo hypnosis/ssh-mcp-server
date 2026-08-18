@@ -9,8 +9,17 @@
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { JobState } from '../utils/job-command.js';
+import { legendFor, LEGEND_SCHEMA, type Legend } from './legend.js';
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
+
+/** What each state says about the job */
+const STATE_MEANING: Record<JobState, string> = {
+  running: 'started and still running, so there is no exit code yet',
+  finished: 'the job ended and reported its exit code',
+  lost: 'the job is gone and left no exit code behind',
+  missing: 'the server knows no job under this id',
+};
 
 export interface JobEntry {
   id: string;
@@ -25,6 +34,15 @@ export interface JobEntry {
 /** The answer of one call about jobs */
 export interface JobsSummary {
   jobs: JobEntry[];
+  legend: Legend;
+}
+
+/**
+ * The answer, legend included: a list of thirty jobs in four states costs
+ * four explanations, and the caller cannot end up with a state nobody named.
+ */
+export function jobsSummary(jobs: JobEntry[]): JobsSummary {
+  return { jobs, legend: legendFor('jobs[].state', STATE_MEANING, jobs.map((job) => job.state)) };
 }
 
 /** One job, as its own status line words it */
@@ -58,6 +76,7 @@ export const JOBS_OUTPUT_SCHEMA: OutputSchema = {
         required: ['id', 'state', 'exit_code', 'pid', 'started_at'],
       },
     },
+    legend: LEGEND_SCHEMA,
   },
-  required: ['jobs'],
+  required: ['jobs', 'legend'],
 };

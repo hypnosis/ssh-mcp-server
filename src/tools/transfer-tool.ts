@@ -31,7 +31,7 @@ import { resolveRemotePath } from '../managers/path-guard.js';
 import { buildSudoStagingPath } from '../utils/tmp-name.js';
 import { shellMode, shellOwner, shellQuote } from '../utils/shell-arg.js';
 import { requireText } from '../utils/tool-args.js';
-import { FILES_OUTPUT_SCHEMA, transferredFile, type FilesSummary } from './transfer-output.js';
+import { FILES_OUTPUT_SCHEMA, filesSummary, transferredFile } from './transfer-output.js';
 
 interface UploadFileResult {
   remote_path: string;
@@ -346,9 +346,7 @@ export class TransferTool {
             text: this.formatUploadResult(result, true, target.warnings),
           },
         ],
-        structuredContent: {
-          files: [transferredFile(result.remote_path, result, result.bytes)],
-        } satisfies FilesSummary,
+        structuredContent: filesSummary([transferredFile(result.remote_path, result, result.bytes)]),
       };
     }
 
@@ -369,9 +367,7 @@ export class TransferTool {
       content: [
         { type: 'text', text: this.formatUploadResult(result, false, target.warnings) },
       ],
-      structuredContent: {
-        files: [transferredFile(result.remote_path, result, result.bytes)],
-      } satisfies FilesSummary,
+      structuredContent: filesSummary([transferredFile(result.remote_path, result, result.bytes)]),
     };
   }
 
@@ -794,9 +790,7 @@ export class TransferTool {
               formatWarnings([...source.warnings, ...result.warnings]),
           },
         ],
-        structuredContent: {
-          files: [transferredFile(source.path, result, null)],
-        } satisfies FilesSummary,
+        structuredContent: filesSummary([transferredFile(source.path, result, null)]),
       };
     }
 
@@ -821,9 +815,7 @@ export class TransferTool {
             formatWarnings([...source.warnings, ...file.warnings]),
         },
       ],
-      structuredContent: {
-        files: [transferredFile(source.path, file, file.bytes)],
-      } satisfies FilesSummary,
+      structuredContent: filesSummary([transferredFile(source.path, file, file.bytes)]),
     };
   }
 

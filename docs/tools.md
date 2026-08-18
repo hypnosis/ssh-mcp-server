@@ -9,6 +9,38 @@ machines and none is assumed for you; a call without one is refused and the refu
 the names to choose from. Where the profiles and their secrets live, and what makes a
 profile broken, is in [security.md](security.md#profiles-the-machine-is-always-named).
 
+## What each tool declares about itself
+
+Every tool carries the standard MCP annotations, so a client knows what a call does before
+it makes it — and can ask you first when it matters. `openWorldHint` is true wherever a
+remote machine answers: which one depends on the profile.
+
+| Tool | Reads only | Can destroy | Same call twice is safe |
+|---|---|---|---|
+| `ssh_audit_baseline` | yes | — | — |
+| `ssh_disk_breakdown` | yes | — | — |
+| `ssh_file_list` | yes | — | — |
+| `ssh_file_read` | yes | — | — |
+| `ssh_job_list` | yes | — | — |
+| `ssh_job_output` | yes | — | — |
+| `ssh_job_status` | yes | — | — |
+| `ssh_log_search` | yes | — | — |
+| `ssh_log_tail` | yes | — | — |
+| `ssh_service_status` | yes | — | — |
+| `ssh_snapshot` | yes | — | — |
+| `ssh_tls_check` | yes | — | — |
+| `ssh_download` | no | yes | yes |
+| `ssh_file_write` | no | yes | yes |
+| `ssh_job_kill` | no | yes | yes |
+| `ssh_upload` | no | yes | yes |
+| `ssh_exec` | no | yes | **no** |
+| `ssh_monitor` | no | no | yes |
+
+`ssh_exec` is the one tool whose effect cannot be known in advance: it runs whatever it is
+handed, so it promises nothing about a repeat. `ssh_download` writes to your own disk
+rather than the server's. `ssh_monitor` touches neither — only the connection this process
+holds, which is why it is the only tool with `openWorldHint` false.
+
 ## Contents
 
 - [`ssh_exec`](#ssh_exec---execute-commands)

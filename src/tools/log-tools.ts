@@ -4,6 +4,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { READS_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -60,6 +61,7 @@ export class LogTools {
       // ssh_log_tail
       {
         name: 'ssh_log_tail',
+        annotations: { title: 'Tail a log file', ...READS_REMOTE },
         description: 'Get last N lines from log file(s). Supports single log or multiple logs.',
         inputSchema: {
           type: 'object',
@@ -93,6 +95,7 @@ export class LogTools {
       // ssh_log_search
       {
         name: 'ssh_log_search',
+        annotations: { title: 'Search log files', ...READS_REMOTE },
         description: 'Search for pattern in log file(s) using grep. Supports single log or multiple logs.',
         inputSchema: {
           type: 'object',

@@ -200,6 +200,13 @@ Done — the assistant can now reach your servers. Ask it to run `ssh_monitor({ 
 
 18 tools. Full parameters and examples live in **[docs/tools.md](docs/tools.md)**.
 
+**Every tool tells the client what it will do to your machine** — before the call, not
+after. Reading a log and wiping a directory do not look alike to an assistant: each tool
+carries the standard MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
+`openWorldHint`), so a client can run the harmless ones quietly and stop to ask you about
+the rest. The full table is in
+[docs/tools.md](docs/tools.md#what-each-tool-declares-about-itself).
+
 **Commands and files**
 
 | Tool | What it does |

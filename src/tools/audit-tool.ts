@@ -15,6 +15,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { READS_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -76,6 +77,7 @@ export class AuditTool {
     return [
       {
         name: 'ssh_audit_baseline',
+        annotations: { title: 'Audit a server', ...READS_REMOTE },
         description:
           'Read-only baseline server audit in a single batched call: system, disk, memory, network listeners, sshd config, systemd services, docker, firewall, available updates. Returns structured JSON plus a CRITICAL/WARNING/OK red-flags shortlist.',
         inputSchema: {
@@ -104,6 +106,7 @@ export class AuditTool {
       },
       {
         name: 'ssh_tls_check',
+        annotations: { title: 'Check a TLS certificate', ...READS_REMOTE },
         description:
           'Check TLS certificate for a domain: expiry date, SAN includes hostname, issuer chain, and whether a deploy renew hook is configured (Let\'s Encrypt).',
         inputSchema: {
@@ -127,6 +130,7 @@ export class AuditTool {
       },
       {
         name: 'ssh_disk_breakdown',
+        annotations: { title: 'Break down disk usage', ...READS_REMOTE },
         description:
           'Disk usage breakdown: df by mount, top-N largest dirs under given paths, docker disk, journald disk, common cache dirs.',
         inputSchema: {
@@ -145,6 +149,7 @@ export class AuditTool {
       },
       {
         name: 'ssh_service_status',
+        annotations: { title: 'Check a service', ...READS_REMOTE },
         description:
           'Combined systemctl status + journalctl tail for a unit, in one batched call.',
         inputSchema: {

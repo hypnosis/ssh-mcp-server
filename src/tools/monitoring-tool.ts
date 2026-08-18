@@ -10,6 +10,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { MANAGES_CONNECTION } from './annotations.js';
 import { idleWindowSec, listControlSockets } from '../runner/control-sockets.js';
 import { getRunner } from '../runner/get-runner.js';
 import {
@@ -83,6 +84,7 @@ export class MonitoringTool {
   getTool(): Tool {
     return {
       name: 'ssh_monitor',
+      annotations: { title: 'Manage connections', ...MANAGES_CONNECTION },
       description: 'Monitor SSH connections and server status. Get stats, reload profiles, test connections, list profiles, close a shared connection.',
       inputSchema: {
         type: 'object',

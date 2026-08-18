@@ -4,6 +4,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { RUNS_COMMANDS } from './annotations.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -131,6 +132,7 @@ export class ExecTool {
   getTool(): Tool {
     return {
       name: 'ssh_exec',
+      annotations: { title: 'Run commands', ...RUNS_COMMANDS },
       description:
         'Execute command(s) on remote server via SSH. Supports single command or batch execution. ' +
         'SAFETY: a recursive delete is refused before anything runs when its target is the filesystem root, ' +

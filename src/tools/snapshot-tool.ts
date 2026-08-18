@@ -4,6 +4,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { READS_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -31,6 +32,7 @@ export class SnapshotTool {
   getTool(): Tool {
     return {
       name: 'ssh_snapshot',
+      annotations: { title: 'Snapshot system health', ...READS_REMOTE },
       description: 'Get comprehensive system health snapshot including services, resources, docker, network, and recent errors',
       inputSchema: {
         type: 'object',

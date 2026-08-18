@@ -8,6 +8,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { READS_REMOTE, WRITES_REMOTE } from './annotations.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -101,6 +102,7 @@ export class JobTools {
     return [
       {
         name: 'ssh_job_status',
+        annotations: { title: 'Check a background job', ...READS_REMOTE },
         description:
           'State of a background job started by ssh_exec with detach: true. ' +
           'Reports one of three outcomes: running, finished (with its exit code), or lost — ' +
@@ -113,6 +115,7 @@ export class JobTools {
       },
       {
         name: 'ssh_job_output',
+        annotations: { title: 'Read job output', ...READS_REMOTE },
         description:
           'Output of a background job (stdout and stderr together) starting at a byte offset. ' +
           'The answer names the offset to continue from, so repeated reads never overlap and never skip.',
@@ -132,6 +135,7 @@ export class JobTools {
       },
       {
         name: 'ssh_job_list',
+        annotations: { title: 'List background jobs', ...READS_REMOTE },
         description:
           'Background jobs on the server. Directories of jobs that are no longer running and ' +
           `older than ${JOB_TTL_SEC / 86400} days are removed along the way.`,
@@ -142,6 +146,7 @@ export class JobTools {
       },
       {
         name: 'ssh_job_kill',
+        annotations: { title: 'Stop a background job', ...WRITES_REMOTE },
         description:
           'Stop a background job: the signal goes to its whole process group, so its children ' +
           'stop too. A job that is already gone is reported, not refused.',

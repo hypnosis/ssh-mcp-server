@@ -13,6 +13,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { WRITES_REMOTE } from './annotations.js';
 import { stat } from 'fs/promises';
 import { join, posix as posixPath } from 'path';
 import { logger } from '../utils/logger.js';
@@ -155,6 +156,7 @@ export class TransferTool {
     return [
       {
         name: 'ssh_upload',
+        annotations: { title: 'Upload to a server', ...WRITES_REMOTE },
         description:
           'Upload a local file or directory to remote server via scp (binary-safe, streaming). ' +
           'Default: atomic rename + sha256 verify. Use this instead of base64-chunked ssh_file_write for binaries or large files.',
@@ -227,6 +229,7 @@ export class TransferTool {
       },
       {
         name: 'ssh_download',
+        annotations: { title: 'Download from a server', ...WRITES_REMOTE },
         description:
           'Download a remote file or directory via scp (binary-safe, streaming) with optional sha256 verification.',
         inputSchema: {

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — every tool says what it does before it is called
+- All 18 tools now carry the standard MCP annotations: `readOnlyHint`, `destructiveHint`,
+  `idempotentHint` and `openWorldHint`. Reading a log and wiping a directory used to look
+  identical to a client, which left the decision to ask the person to guesswork. Twelve
+  tools are read-only, five change something, and `ssh_exec` is the one that promises
+  nothing about a repeat, because it runs whatever it is handed.
+- `ssh_monitor` is the only tool with `openWorldHint` false: it touches the connection
+  this process holds, not a remote machine.
+
 ## [2.0.3] - 2026-08-18
 
 ### Changed — the one-line pitch says what the server is for

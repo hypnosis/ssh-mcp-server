@@ -4,6 +4,7 @@
  */
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { READS_REMOTE, WRITES_REMOTE } from './annotations.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
@@ -96,6 +97,7 @@ export class FileTools {
       // ssh_file_read
       {
         name: 'ssh_file_read',
+        annotations: { title: 'Read a remote file', ...READS_REMOTE },
         description:
           'Read file(s) from remote server. Supports single file or batch reading. ' +
           'For binaries use binary=true (reads via scp, returns base64). ' +
@@ -139,6 +141,7 @@ export class FileTools {
       // ssh_file_write
       {
         name: 'ssh_file_write',
+        annotations: { title: 'Write a remote file', ...WRITES_REMOTE },
         description:
           'Write file(s) to remote server. Supports single file or batch writing. ' +
           'Optional flags per file: verify (sha256 after write), atomic (ignored — the write always ' +
@@ -206,6 +209,7 @@ export class FileTools {
       // ssh_file_list
       {
         name: 'ssh_file_list',
+        annotations: { title: 'List a remote directory', ...READS_REMOTE },
         description: 'List files in directory on remote server',
         inputSchema: {
           type: 'object',

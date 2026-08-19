@@ -82,8 +82,8 @@ describe('ssh_exec: объявление инструмента', () => {
     expect(new ExecTool().getTool().name).toBe('ssh_exec');
   });
 
-  it('без команды звать нечего — она единственная обязательная', () => {
-    expect(new ExecTool().getTool().inputSchema.required).toEqual(['command']);
+  it('без машины и без команды звать нечего — обе обязательны', () => {
+    expect(new ExecTool().getTool().inputSchema.required).toEqual(['profile', 'command']);
   });
 
   it('команда объявлена и строкой, и списком строк', () => {

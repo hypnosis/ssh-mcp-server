@@ -87,18 +87,32 @@ export class MonitoringTool {
     return {
       name: 'ssh_monitor',
       annotations: { title: 'Manage connections', ...MANAGES_CONNECTION },
-      description: 'Monitor SSH connections and server status. Get stats, reload profiles, test connections, list profiles, close a shared connection.',
+      description:
+        'When: questions about the connection rather than about the machine.\n' +
+        'action: list names the machines you are allowed to name — the only place those names ' +
+        'come from, and never a reason to ask anyone for a password or a key, because the login ' +
+        'is already stored here.\n' +
+        'action: test says what a machine is before any real work is aimed at it: ready, limited ' +
+        '(the login works but the shell is not POSIX — a device with its own CLI), no-route (never ' +
+        'reached) or rejected (reached, login refused). A failed command would not tell those ' +
+        'four apart.\n' +
+        'action: stats and close are about the shared connection — what it is doing, and hanging ' +
+        'it up now instead of waiting for it to idle out. action: reload re-reads the profiles ' +
+        'file after it has been edited.\n' +
+        'Not for: anything the machine itself has to answer — ssh_exec and the tools around it.',
       inputSchema: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
             enum: ['stats', 'reload', 'test', 'list', 'close'],
-            description: 'Action to perform: stats (transport state), reload (reload profiles), test (test connection), list (list profiles), close (close the shared connection now instead of waiting for it to idle out)'
+            description: 'Which of the five to do.'
           },
           profile: {
             type: 'string',
-            description: 'Profile name. Required for stats, test and close: each profile is a different server, so none is assumed.'
+            description:
+              'Which machine. Required for stats, test and close — each profile is a different ' +
+              'server, so none is assumed. list and reload take none.'
           }
         },
         required: ['action']

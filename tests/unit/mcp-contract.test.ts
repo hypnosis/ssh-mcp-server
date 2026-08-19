@@ -50,6 +50,7 @@ const TOOLS_WITH_OUTPUT_SCHEMA = [
   'ssh_file_write',
   'ssh_job_list',
   'ssh_job_status',
+  'ssh_log_search',
   'ssh_monitor',
   'ssh_service_status',
   'ssh_snapshot',
@@ -276,6 +277,8 @@ describe('Обещанные поля ответа', () => {
       'load',
       'containers',
       'ports',
+      'services_running',
+      'recent_errors',
       'unavailable',
     ]);
   });

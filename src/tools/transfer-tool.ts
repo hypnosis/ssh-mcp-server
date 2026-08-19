@@ -14,6 +14,7 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { WRITES_REMOTE } from './annotations.js';
+import { PROFILE_PARAM_DESCRIPTION } from './params.js';
 import { stat } from 'fs/promises';
 import { join, posix as posixPath } from 'path';
 import { logger } from '../utils/logger.js';
@@ -31,6 +32,7 @@ import { resolveRemotePath } from '../managers/path-guard.js';
 import { buildSudoStagingPath } from '../utils/tmp-name.js';
 import { shellMode, shellOwner, shellQuote } from '../utils/shell-arg.js';
 import { requireText } from '../utils/tool-args.js';
+import type { SSHConfig } from '../utils/ssh-config.js';
 import { FILES_OUTPUT_SCHEMA, filesSummary, transferredFile } from './transfer-output.js';
 
 interface UploadFileResult {
@@ -143,8 +145,37 @@ interface DownloadArgs {
   local_path?: unknown;
   recursive?: boolean;
   verify?: boolean;
+  sudo?: boolean;
   timeout?: unknown;
 }
+
+/**
+ * Wording both directions share.
+ *
+ * Upload and download answer the same three questions — is the copy checked,
+ * how long may it run, what about a directory — and a second copy of the
+ * answer drifts from the first.
+ */
+const VERIFY_PARAM = {
+  type: 'boolean',
+  description:
+    'Compare sha256 on both sides afterwards — every file of a directory, not just the total. A ' +
+    'machine with no sha256 tool answers "nothing to check with": a delivered file, not a broken ' +
+    'one. Default: true.',
+  default: true,
+} as const;
+
+const RECURSIVE_PARAM = {
+  type: 'boolean',
+  description: 'Only to force it — a directory is recognised as one without being told.',
+} as const;
+
+const TIMEOUT_PARAM = {
+  type: 'number',
+  description:
+    'Milliseconds before giving up. There is no ceiling by default: unlike ssh_exec, a transfer runs ' +
+    'as long as it takes, and a stalled connection is dropped by the transport itself.',
+} as const;
 
 export class TransferTool {
   private executor: SSHExecutor;
@@ -159,73 +190,62 @@ export class TransferTool {
         name: 'ssh_upload',
         annotations: { title: 'Upload to a server', ...WRITES_REMOTE },
         description:
-          'Upload a local file or directory to remote server via scp (binary-safe, streaming). ' +
-          'Default: atomic rename + sha256 verify. Use this instead of base64-chunked ssh_file_write for binaries or large files.',
+          'When: moving bytes onto a machine — a binary, an archive, a built directory, anything ' +
+          'already sitting on local disk. The bytes go over the transport and never pass through this ' +
+          'conversation, so size costs nothing here. Landing follows the same rule as a write: beside ' +
+          'the target first, into place by rename, and by default the sha256 of every file is compared ' +
+          'afterwards.\n' +
+          'A directory arrives as its contents at remote_path, not as a folder inside it, and it is ' +
+          'replaced whole or not at all.\n' +
+          'Not for: content that exists only as text here and nowhere on disk — ssh_file_write. Never ' +
+          'hand bytes to ssh_exec as base64: the output limit cuts it silently and the file lands broken.',
         inputSchema: {
           type: 'object',
           properties: {
-            profile: { type: 'string', description: 'SSH profile name' },
+            profile: { type: 'string', description: PROFILE_PARAM_DESCRIPTION },
             local_path: {
               type: 'string',
-              description: 'Local file or directory path',
+              description: 'What to send: a file or a whole directory on this machine.',
             },
             remote_path: {
               type: 'string',
-              description: 'Remote destination path on the server',
+              description: 'Where it goes on the server.',
             },
             mode: {
               type: 'string',
-              description: 'Octal file mode, e.g. "644" or "755"',
-            },
-            recursive: {
-              type: 'boolean',
               description:
-                'Force recursive directory upload. If omitted, auto-detected via local stat.',
+                'Permissions as an octal string, one value for everything sent. Leave it out and each ' +
+                'file keeps the permissions it has locally, so a build directory arrives with its ' +
+                'executables still executable. Applied before the data takes its place, and for a ' +
+                'directory to every file in it — a chmod afterwards is a wasted call.',
             },
-            atomic: {
-              type: 'boolean',
-              description:
-                'Ignored: the upload always writes next to the target and renames into place. ' +
-                'Accepted so existing calls keep working.',
-              default: true,
-            },
-            verify: {
-              type: 'boolean',
-              description:
-                'Compare local and remote sha256 after upload. Default: true.',
-              default: true,
-            },
+            recursive: RECURSIVE_PARAM,
+            verify: VERIFY_PARAM,
             sudo: {
               type: 'boolean',
               description:
-                'Transfer to /tmp under the SSH user, then copy next to the target and rename ' +
-                'into place under sudo. Default: false.',
+                'For destinations the profile\'s user cannot write, /etc and /opt among them. The ' +
+                'transfer itself never runs as root: the data goes to /tmp first, so the machine needs ' +
+                'room for a second copy. Default: false.',
               default: false,
             },
             owner: {
               type: 'string',
               description:
-                'When sudo=true, owner spec applied with `chown` before the file takes the ' +
-                'target path (e.g. "root:root").',
+                'Ownership as "root:root", applied before the data takes its place and, for a ' +
+                'directory, to every file in it. Needs sudo; without it the answer says so instead of ' +
+                'pretending it applied.',
             },
             overwrite: {
               type: 'boolean',
-              description: 'Overwrite if remote_path exists. Default: true.',
+              description:
+                'Set false to refuse rather than replace — including when the server cannot say ' +
+                'whether a target is there. Default: true.',
               default: true,
             },
-            concurrency: {
-              type: 'number',
-              description:
-                'Deprecated and ignored: the transfer goes through scp, which has no ' +
-                'chunk concurrency to tune. Kept so that existing callers do not break.',
-            },
-            timeout: {
-              type: 'number',
-              description:
-                'Give up after this many milliseconds. By default there is no limit: the transfer runs as long as it takes, and a stalled connection is dropped by the transport itself.',
-            },
+            timeout: TIMEOUT_PARAM,
           },
-          required: ['local_path', 'remote_path'],
+          required: ['profile', 'local_path', 'remote_path'],
         },
         outputSchema: FILES_OUTPUT_SCHEMA,
       },
@@ -233,36 +253,31 @@ export class TransferTool {
         name: 'ssh_download',
         annotations: { title: 'Download from a server', ...WRITES_REMOTE },
         description:
-          'Download a remote file or directory via scp (binary-safe, streaming) with optional sha256 verification.',
+          'When: a file or a directory has to end up on local disk — an archive, a database dump, a ' +
+          'binary, a backup to keep. The bytes land as a file and never pass through this ' +
+          'conversation, and sha256 is compared on both sides by default. An interrupted transfer ' +
+          'leaves no stump at local_path: the data lands beside it and is moved in once whole.\n' +
+          'Not for: finding out what is inside something — ssh_file_read and ssh_log_search answer ' +
+          'that on the machine itself. Fetching a file in order to read it is a round trip nobody needs.',
         inputSchema: {
           type: 'object',
           properties: {
-            profile: { type: 'string', description: 'SSH profile name' },
-            remote_path: { type: 'string', description: 'Remote source path' },
-            local_path: { type: 'string', description: 'Local destination path' },
-            recursive: {
-              type: 'boolean',
-              description: 'Force recursive directory download (auto-detected via remote stat).',
-            },
-            verify: {
+            profile: { type: 'string', description: PROFILE_PARAM_DESCRIPTION },
+            remote_path: { type: 'string', description: 'What to fetch from the server.' },
+            local_path: { type: 'string', description: 'Where it lands on this machine.' },
+            recursive: RECURSIVE_PARAM,
+            verify: VERIFY_PARAM,
+            sudo: {
               type: 'boolean',
               description:
-                'Compare local and remote sha256 after download. Default: true.',
-              default: true,
+                'For sources the profile\'s user cannot read, /root among them. A copy is made under ' +
+                'root in /tmp, fetched from there and removed — so the machine needs room for it. ' +
+                'Default: false.',
+              default: false,
             },
-            concurrency: {
-              type: 'number',
-              description:
-                'Deprecated and ignored: the transfer goes through scp, which has no ' +
-                'chunk concurrency to tune. Kept so that existing callers do not break.',
-            },
-            timeout: {
-              type: 'number',
-              description:
-                'Give up after this many milliseconds. By default there is no limit: the transfer runs as long as it takes, and a stalled connection is dropped by the transport itself.',
-            },
+            timeout: TIMEOUT_PARAM,
           },
-          required: ['remote_path', 'local_path'],
+          required: ['profile', 'remote_path', 'local_path'],
         },
         outputSchema: FILES_OUTPUT_SCHEMA,
       },
@@ -456,10 +471,10 @@ export class TransferTool {
       kind: 'file',
       stage: async (staging) => {
         if (opts.sudo) {
-          await this.stageUnderSudo(sshConfig, localPath, staging, opts.timeoutMs);
+          await this.stageUnderSudo(sshConfig, localPath, staging, opts.timeoutMs, !opts.mode);
           return;
         }
-        await this.putFile(sshConfig, localPath, staging, opts.timeoutMs);
+        await this.putFile(sshConfig, localPath, staging, opts.timeoutMs, !opts.mode);
       },
       verify: async (staging) => {
         if (!opts.verify) return null;
@@ -500,10 +515,11 @@ export class TransferTool {
     sshConfig: any,
     localPath: string,
     remotePath: string,
-    timeoutMs?: number
+    timeoutMs?: number,
+    preserveMode = false
   ): Promise<void> {
     const runner = await getRunner(sshConfig);
-    await runner.upload(localPath, remotePath, { timeoutMs });
+    await runner.upload(localPath, remotePath, { timeoutMs, preserveMode });
   }
 
   /**
@@ -517,22 +533,54 @@ export class TransferTool {
     sshConfig: any,
     localPath: string,
     staging: string,
-    timeoutMs?: number
+    timeoutMs?: number,
+    preserveMode = false
   ): Promise<void> {
     const handoff = buildSudoStagingPath();
-    await this.putFile(sshConfig, localPath, handoff, timeoutMs);
+    await this.putFile(sshConfig, localPath, handoff, timeoutMs, preserveMode);
 
     try {
       // The named ceiling reaches this far too: copying the whole file scales
       // with its size
       await this.executor.executeChecked(
         sshConfig,
-        `cp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
+        `cp -p -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
         { sudo: true, timeout: timeoutMs }
       );
     } finally {
       await this.executor
         .execute(sshConfig, `rm -f -- ${shellQuote(handoff)}`, {})
+        .catch(() => undefined);
+    }
+  }
+
+  /**
+   * Fill the staging path with a whole tree the connecting user cannot write.
+   *
+   * The transport never runs as root, so the tree lands in /tmp first and is
+   * copied next to the target from there. The handoff copy goes away whatever
+   * happens: it is a full second copy of the data on a shared path.
+   */
+  private async stageTreeUnderSudo(
+    sshConfig: SSHConfig,
+    localDir: string,
+    staging: string,
+    timeoutMs?: number,
+    preserveMode = false
+  ): Promise<void> {
+    const handoff = buildSudoStagingPath();
+    const runner = await getRunner(sshConfig);
+    await runner.upload(localDir, handoff, { recursive: true, preserveMode, timeoutMs });
+
+    try {
+      await this.executor.executeChecked(
+        sshConfig,
+        `cp -rp -- ${shellQuote(handoff)} ${shellQuote(staging)}`,
+        { sudo: true, timeout: timeoutMs }
+      );
+    } finally {
+      await this.executor
+        .execute(sshConfig, `rm -rf -- ${shellQuote(handoff)}`, {})
         .catch(() => undefined);
     }
   }
@@ -547,13 +595,17 @@ export class TransferTool {
   private async applyOwnership(
     sshConfig: any,
     staging: string,
-    opts: { mode?: string; owner?: string; sudo: boolean }
+    opts: { mode?: string; owner?: string; sudo: boolean; recursive?: boolean; timeoutMs?: number }
   ): Promise<string[]> {
+    // A tree is walked entirely: mode and owner named for a directory upload
+    // speak about what lands in it, not about the folder alone
+    const deep = opts.recursive ? '-R ' : '';
+
     if (opts.mode) {
       await this.executor.executeChecked(
         sshConfig,
-        `chmod ${opts.mode} -- ${shellQuote(staging)}`,
-        { sudo: opts.sudo }
+        `chmod ${deep}${opts.mode} -- ${shellQuote(staging)}`,
+        { sudo: opts.sudo, timeout: opts.timeoutMs }
       );
     }
 
@@ -567,8 +619,8 @@ export class TransferTool {
 
     await this.executor.executeChecked(
       sshConfig,
-      `chown ${opts.owner} -- ${shellQuote(staging)}`,
-      { sudo: opts.sudo }
+      `chown ${deep}${opts.owner} -- ${shellQuote(staging)}`,
+      { sudo: opts.sudo, timeout: opts.timeoutMs }
     );
     return [];
   }
@@ -651,12 +703,6 @@ export class TransferTool {
       timeoutMs?: number;
     }
   ): Promise<UploadDirResult> {
-    if (opts.sudo) {
-      throw new Error(
-        'Recursive sudo upload is not yet supported. Upload to a user-writable staging dir, then `sudo cp -r` it into place.'
-      );
-    }
-
     const finalDir = remoteDir;
 
     if (!opts.overwrite) {
@@ -687,8 +733,9 @@ export class TransferTool {
       totalBytes += (await stat(join(localDir, rel))).size;
     }
 
-    const ops = remotePathOps({ executor: this.executor, config: sshConfig });
+    const ops = remotePathOps({ executor: this.executor, config: sshConfig, sudo: opts.sudo });
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
+    let ownerWarnings: string[] = [];
 
     // The directory is replaced only as a whole and only through the
     // installer. A separate `rm -rf` on the live path followed by a `mv`
@@ -702,7 +749,15 @@ export class TransferTool {
       stage: async (staging) => {
         // The whole tree travels at once: the transport creates subdirectories
         const runner = await getRunner(sshConfig);
-        await runner.upload(localDir, staging, { recursive: true, timeoutMs: opts.timeoutMs });
+        if (opts.sudo) {
+          await this.stageTreeUnderSudo(sshConfig, localDir, staging, opts.timeoutMs, !opts.mode);
+          return;
+        }
+        await runner.upload(localDir, staging, {
+          recursive: true,
+          preserveMode: !opts.mode,
+          timeoutMs: opts.timeoutMs,
+        });
       },
       verify: async (staging) => {
         if (!opts.verify) return null;
@@ -713,21 +768,21 @@ export class TransferTool {
             path: posixPath.join(staging, files[i]),
           })),
           'upload',
-          { timeoutMs: opts.timeoutMs }
+          // under sudo the staged tree belongs to root — there is no other way to read it
+          { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
         );
         return null;
       },
+      // Mode and owner are applied before the replace: otherwise the tree
+      // would live on the live path with the wrong access for a while.
+      // Walking the tree scales with its size, so the ceiling here is the
+      // same as for the transfer
       finalize: async (staging) => {
-        if (!opts.mode) return;
-        // Mode is applied before the replace: otherwise the tree would live
-        // on the live path with the wrong access for a while. Walking the
-        // tree also scales with its size, so the ceiling here is the same as
-        // for the transfer
-        await this.executor.executeChecked(
-          sshConfig,
-          `chmod -R ${opts.mode} -- ${shellQuote(staging)}`,
-          { timeout: opts.timeoutMs ?? 0 }
-        );
+        ownerWarnings = await this.applyOwnership(sshConfig, staging, {
+          ...opts,
+          recursive: true,
+          timeoutMs: opts.timeoutMs ?? 0,
+        });
       },
     });
 
@@ -736,10 +791,9 @@ export class TransferTool {
       bytes: totalBytes,
       ...verdict,
       atomic: true,
-      sudo: false,
+      sudo: opts.sudo,
       files_uploaded: files.length,
-      // A recursive upload runs without sudo — so there is nothing to change the owner with
-      warnings: [...outcome.warnings, ...(opts.owner ? [OWNER_NEEDS_SUDO] : [])],
+      warnings: [...outcome.warnings, ...ownerWarnings],
     };
   }
 
@@ -762,18 +816,19 @@ export class TransferTool {
     const remotePath = requireText(args.remote_path, 'remote_path', '"/opt/app/app.conf"');
     const localPath = requireText(args.local_path, 'local_path', '"./app.conf"');
 
-    const source = await resolveRemotePath(this.executor, sshConfig, remotePath, {
-    });
+    const sudo = args.sudo === true;
+
+    const source = await resolveRemotePath(this.executor, sshConfig, remotePath, { sudo });
 
     const isDir =
-      args.recursive ?? (await this.isRemoteDir(sshConfig, source.path));
+      args.recursive ?? (await this.isRemoteDir(sshConfig, source.path, sudo));
 
     if (isDir) {
       const result = await this.downloadDirectory(
         sshConfig,
         source.path,
         localPath,
-        { verify: args.verify !== false, timeoutMs }
+        { verify: args.verify !== false, sudo, timeoutMs }
       );
       const verdict = result.verified
         ? `verified (${result.files} files)`
@@ -798,7 +853,7 @@ export class TransferTool {
       sshConfig,
       source.path,
       localPath,
-      { verify: args.verify !== false, timeoutMs }
+      { verify: args.verify !== false, sudo, timeoutMs }
     );
     const fileVerdict = file.verified
       ? 'verified'
@@ -821,21 +876,65 @@ export class TransferTool {
 
   private async isRemoteDir(
     sshConfig: any,
-    remotePath: string
+    remotePath: string,
+    sudo = false
   ): Promise<boolean> {
     const r = await this.executor.execute(
       sshConfig,
       `test -d ${shellQuote(remotePath)} && echo YES || echo NO`,
-      {}
+      { sudo }
     );
     return r.stdout.trim() === 'YES';
+  }
+
+  /**
+   * Bring a source the connecting user cannot read within its reach.
+   *
+   * The transport never runs as root, so the data is copied under root into
+   * /tmp, handed over to the connecting user and fetched from there. The copy
+   * goes away whatever happens next — it is a second copy of someone else's
+   * data sitting on a shared path, not something to leave behind. The
+   * original is only ever read, so no failure here can cost anything.
+   */
+  private async fetchUnderSudo(
+    sshConfig: SSHConfig,
+    remotePath: string,
+    staging: string,
+    recursive: boolean,
+    timeoutMs?: number
+  ): Promise<void> {
+    const handoff = buildSudoStagingPath();
+
+    // Ownership moves to the connecting user rather than opening the copy to
+    // everyone: on a shared machine `chmod a+r` would show the file to every
+    // account on it for as long as the transfer runs
+    await this.executor.executeChecked(
+      sshConfig,
+      `cp ${recursive ? '-r ' : ''}-- ${shellQuote(remotePath)} ${shellQuote(handoff)}`,
+      { sudo: true, timeout: timeoutMs }
+    );
+
+    try {
+      await this.executor.executeChecked(
+        sshConfig,
+        `chown -R -- ${shellQuote(sshConfig.username)} ${shellQuote(handoff)}`,
+        { sudo: true, timeout: timeoutMs }
+      );
+
+      const runner = await getRunner(sshConfig);
+      await runner.download(handoff, staging, { recursive, timeoutMs });
+    } finally {
+      await this.executor
+        .execute(sshConfig, `rm -rf -- ${shellQuote(handoff)}`, { sudo: true })
+        .catch(() => undefined);
+    }
   }
 
   private async downloadFile(
     sshConfig: any,
     remotePath: string,
     localPath: string,
-    opts: { verify: boolean; timeoutMs?: number }
+    opts: { verify: boolean; sudo?: boolean; timeoutMs?: number }
   ): Promise<{ bytes: number; verified: boolean; verifyNote?: string; warnings: string[] }> {
     const runner = await getRunner(sshConfig);
     let bytes = 0;
@@ -847,7 +946,11 @@ export class TransferTool {
       finalPath: localPath,
       kind: 'file',
       stage: async (staging) => {
-        await runner.download(remotePath, staging, { timeoutMs: opts.timeoutMs });
+        if (opts.sudo) {
+          await this.fetchUnderSudo(sshConfig, remotePath, staging, false, opts.timeoutMs);
+        } else {
+          await runner.download(remotePath, staging, { timeoutMs: opts.timeoutMs });
+        }
         bytes = (await stat(staging)).size;
       },
       verify: async (staging) => {
@@ -856,7 +959,9 @@ export class TransferTool {
           sshConfig,
           [{ path: remotePath, hash: await sha256OfFile(staging) }],
           'download',
-          { timeoutMs: opts.timeoutMs }
+          // the source is read under root here too — otherwise hashing it is
+          // exactly as impossible as reading it was
+          { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
         );
         return null;
       },
@@ -876,7 +981,7 @@ export class TransferTool {
     sshConfig: any,
     remoteDir: string,
     localDir: string,
-    opts: { verify: boolean; timeoutMs?: number }
+    opts: { verify: boolean; sudo?: boolean; timeoutMs?: number }
   ): Promise<{ files: number; verified: boolean; verifyNote?: string; warnings: string[] }> {
     const runner = await getRunner(sshConfig);
     let files: string[] = [];
@@ -886,7 +991,11 @@ export class TransferTool {
       finalPath: localDir,
       kind: 'directory',
       stage: async (staging) => {
-        await runner.download(remoteDir, staging, { recursive: true, timeoutMs: opts.timeoutMs });
+        if (opts.sudo) {
+          await this.fetchUnderSudo(sshConfig, remoteDir, staging, true, opts.timeoutMs);
+        } else {
+          await runner.download(remoteDir, staging, { recursive: true, timeoutMs: opts.timeoutMs });
+        }
         files = await listTreeFiles(staging);
       },
       verify: async (staging) => {
@@ -898,7 +1007,7 @@ export class TransferTool {
             path: posixPath.join(remoteDir, files[i]),
           })),
           'download',
-          { timeoutMs: opts.timeoutMs }
+          { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
         );
         return null;
       },

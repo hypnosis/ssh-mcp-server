@@ -321,6 +321,13 @@ describe('ssh-args', () => {
       ).toContain('-r');
     });
 
+    it('adds -p only when the local permissions must survive the trip', () => {
+      expect(buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/etc/b')).not.toContain('-p');
+      expect(
+        buildScpArgs(KEY_PROFILE, CAPS, 'upload', '/tmp/a', '/etc/b', { preserveMode: true })
+      ).toContain('-p');
+    });
+
     /**
      * Единственное, что обрывает зависшую передачу: своего потолка у неё нет
      * с тех пор, как его сняли (пункт 3.1). Если keepalive уйдёт из аргументов,

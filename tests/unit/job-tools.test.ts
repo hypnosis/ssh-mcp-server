@@ -71,11 +71,11 @@ describe('объявление инструментов', () => {
     const required = Object.fromEntries(
       tools.map((tool) => [tool.name, (tool.inputSchema as { required?: string[] }).required])
     );
-    expect(required.ssh_job_status).toEqual(['id']);
-    expect(required.ssh_job_output).toEqual(['id']);
-    expect(required.ssh_job_kill).toEqual(['id']);
+    expect(required.ssh_job_status).toEqual(['profile', 'id']);
+    expect(required.ssh_job_output).toEqual(['profile', 'id']);
+    expect(required.ssh_job_kill).toEqual(['profile', 'id']);
     // Списку идентификатор не нужен: он и есть способ узнать идентификаторы
-    expect(required.ssh_job_list).toBeUndefined();
+    expect(required.ssh_job_list).toEqual(['profile']);
   });
 });
 

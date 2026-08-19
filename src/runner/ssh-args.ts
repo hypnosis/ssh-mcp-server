@@ -353,7 +353,11 @@ export function buildScpArgs(
   direction: 'upload' | 'download',
   localPath: string,
   remotePath: string,
-  options: SshArgsOptions & { recursive?: boolean; legacyProtocol?: boolean } = {}
+  options: SshArgsOptions & {
+    recursive?: boolean;
+    legacyProtocol?: boolean;
+    preserveMode?: boolean;
+  } = {}
 ): string[] {
   const args = buildCommonOptions(config, caps, options);
 
@@ -370,6 +374,12 @@ export function buildScpArgs(
 
   if (options.recursive) {
     args.push('-r');
+  }
+
+  // Permissions travel with the data; times come along with them, since scp
+  // has no flag for one without the other
+  if (options.preserveMode) {
+    args.push('-p');
   }
 
   const localSpec = normalizeLocalSpec(localPath);

@@ -180,7 +180,7 @@ describe('передача файлов: неудачный шаг не выда
 
   it('sudo-копия без прав — это ошибка загрузки, а не «Upload OK»', async () => {
     respondWith([
-      [/^cp -- /, { exitCode: 1, stderr: "cp: cannot create '/etc/app.conf': Permission denied" }],
+      [/^cp -p -- /, { exitCode: 1, stderr: "cp: cannot create '/etc/app.conf': Permission denied" }],
     ]);
 
     const response = await new TransferTool().handleCall(

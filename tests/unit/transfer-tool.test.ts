@@ -104,6 +104,12 @@ function moveTree(from: string, to: string): void {
   }
 }
 
+function copyTree(from: string, to: string): void {
+  for (const key of subtree(from)) {
+    server.set(to + key.slice(from.length), { ...server.get(key)! });
+  }
+}
+
 const ok = (stdout = ''): SSHExecuteResult =>
   ({ stdout, stderr: '', exitCode: 0, truncated: false }) as SSHExecuteResult;
 
@@ -209,21 +215,30 @@ function answer(command: string): SSHExecuteResult {
   }
 
   if (command.startsWith('chown ')) {
-    // Владельца разбирает сама утилита: пустая группа — отказ, а не тихий успех
-    const spec = command.slice('chown '.length).split(' ')[0];
+    // Владельца разбирает сама утилита: пустая группа — отказ, а не тихий успех.
+    // Имя владельца приходит и голым словом, и в кавычках — цель всегда последняя
+    const rest = command.replace(/^chown (-R )?/, '');
+    const spec = rest.startsWith('--') ? paths[0] : rest.split(' ')[0];
+    const target = paths[paths.length - 1];
     if (!/^[A-Za-z0-9_.][A-Za-z0-9_.-]*(:[A-Za-z0-9_.][A-Za-z0-9_.-]*)?$/.test(spec)) {
       return fail(`chown: invalid spec: '${spec}'`);
     }
-    if (!server.has(paths[0])) return fail(`chown: cannot access '${paths[0]}'`);
+    if (!server.has(target)) return fail(`chown: cannot access '${target}'`);
     return ok();
   }
 
-  if (command.startsWith('cp -- ')) {
+  // Флаги разбираются, а не сверяются целиком: `-p` тащит права, `-r` — дерево,
+  // и без `-r` каталог утилита не копирует, а отказывает
+  const copyFlags = command.match(/^cp( -([a-z]+))? -- /);
+  if (copyFlags) {
     const [source, target] = paths;
+    const recursive = (copyFlags[2] ?? '').includes('r');
     const node = server.get(source);
-    if (!node || node.kind !== 'file') return fail(`cp: cannot stat '${source}'`);
+    if (!node) return fail(`cp: cannot stat '${source}': No such file or directory`);
+    if (node.kind === 'dir' && !recursive) return fail(`cp: -r not specified; omitting '${source}'`);
     if (!server.has(parentOf(target))) return fail(`cp: cannot create '${target}'`);
-    server.set(target, { ...node });
+    if (recursive) copyTree(source, target);
+    else server.set(target, { ...node });
     return ok();
   }
 
@@ -347,8 +362,8 @@ describe('ssh_upload под sudo: как данные встают на мест
     const handoff = uploadMock.mock.calls[0][1] as string;
     expect(handoff).toMatch(/^\/tmp\/\.ssh-mcp-upload-[0-9a-f]{16}$/);
 
-    const copy = commandFor(/^cp -- /)!;
-    expect(copy[0]).toBe(`cp -- '${handoff}' '${staging()}'`);
+    const copy = commandFor(/^cp -p -- /)!;
+    expect(copy[0]).toBe(`cp -p -- '${handoff}' '${staging()}'`);
     expect(copy[1]).toMatchObject({ sudo: true });
     expect(text).toContain('Upload OK');
   });
@@ -374,7 +389,7 @@ describe('ssh_upload под sudo: как данные встают на мест
         server.set(quotedPaths(command)[1], { kind: 'file', content: '' });
         return fail('terminated', 124);
       }
-      if (/^cp -- /.test(command)) return fail('terminated', 124);
+      if (/^cp -p -- /.test(command)) return fail('terminated', 124);
       return answer(command);
     });
 
@@ -482,7 +497,7 @@ describe('ssh_upload под sudo: как данные встают на мест
   });
 
   it('промежуточный файл убирается и тогда, когда копия не удалась', async () => {
-    refusals = [[/^cp -- /, { stderr: 'cp: Permission denied' }]];
+    refusals = [[/^cp -p -- /, { stderr: 'cp: Permission denied' }]];
 
     const text = await sudoUpload();
     const handoff = uploadMock.mock.calls[0][1] as string;
@@ -1079,10 +1094,10 @@ describe('объявление инструментов', () => {
     expect(tools.map((tool) => tool.name)).toEqual(['ssh_upload', 'ssh_download']);
   });
 
-  it('оба требуют пару путей и ничего сверх того', () => {
+  it('оба требуют машину и пару путей — без машины звать некуда', () => {
     expect(tools.map((tool) => tool.inputSchema.required)).toEqual([
-      ['local_path', 'remote_path'],
-      ['remote_path', 'local_path'],
+      ['profile', 'local_path', 'remote_path'],
+      ['profile', 'remote_path', 'local_path'],
     ]);
   });
 
@@ -1091,8 +1106,8 @@ describe('объявление инструментов', () => {
       (tool) => tool.inputSchema.properties as Record<string, { default?: unknown }>
     );
 
-    expect(upload.atomic.default).toBe(true);
     expect(upload.verify.default).toBe(true);
+    expect(download.sudo.default).toBe(false);
     expect(upload.sudo.default).toBe(false);
     expect(upload.overwrite.default).toBe(true);
     expect(download.verify.default).toBe(true);
@@ -1116,12 +1131,36 @@ describe('объявление инструментов', () => {
     }
   });
 
-  it('оба знают про потолок передачи и про отменённую настройку параллельности', () => {
+  it('оба знают про потолок передачи', () => {
+    for (const tool of tools) {
+      expect(propertiesOf(tool).map(([name]) => name)).toContain('timeout');
+    }
+  });
+
+  /**
+   * Параметры, которые ничего не делают, из объявления убраны: их описание
+   * ехало в контекст каждой сессии и объясняло агенту, что настраивать
+   * нечего. Приём остался прежним — пакет опубликован, и старый вызов
+   * обязан работать, а не падать на незнакомом поле.
+   */
+  it('отменённые настройки не объявлены, но вызов с ними по-прежнему работает', async () => {
     for (const tool of tools) {
       const names = propertiesOf(tool).map(([name]) => name);
-      expect(names).toContain('timeout');
-      expect(names).toContain('concurrency');
+      expect(names).not.toContain('atomic');
+      expect(names).not.toContain('concurrency');
     }
+
+    const text = await textOf(
+      call('ssh_upload', {
+        local_path: localFile,
+        remote_path: '/srv/app.js',
+        verify: false,
+        atomic: true,
+        concurrency: 4,
+      })
+    );
+
+    expect(text).toContain('✓ Upload OK: /srv/app.js');
   });
 });
 
@@ -1231,21 +1270,184 @@ describe('разбор ответа о том, что лежит на пути',
   });
 });
 
-describe('отказы, которые случаются до первой команды', () => {
-  it('рекурсивная загрузка под sudo не поддержана и ничего не делает', async () => {
+/**
+ * Транспорт никогда не идёт под root, поэтому привилегированный путь всегда
+ * проходит через /tmp. Проверяется весь круг: копия под root, передача
+ * владельца, передача данных и уборка — потерянный handoff остаётся лежать
+ * полной копией чужих данных на общем пути.
+ */
+/**
+ * Без названного режима права берутся с локальной стороны, а не из umask
+ * сервера. Иначе каталог сборки приезжает с одинаковыми правами у всех
+ * файлов: исполняемый файл, потерявший свой бит, — это сломанный деплой,
+ * о котором в ответе не сказано ни слова.
+ */
+describe('права при заливке', () => {
+  it('без mode права едут с локальной стороны', async () => {
+    await textOf(call('ssh_upload', { local_path: localFile, remote_path: '/srv/app.js', verify: false }));
+
+    expect(uploadMock.mock.calls[0][2]).toMatchObject({ preserveMode: true });
+    expect(commandFor(/^chmod /)).toBeUndefined();
+  });
+
+  it('названный mode отменяет перенос прав — решает вызывающий, а не локальный файл', async () => {
+    await textOf(
+      call('ssh_upload', {
+        local_path: localFile,
+        remote_path: '/srv/app.js',
+        mode: '600',
+        verify: false,
+      })
+    );
+
+    expect(uploadMock.mock.calls[0][2]).toMatchObject({ preserveMode: false });
+    expect(commandFor(/^chmod 600 /)).toBeDefined();
+  });
+
+  it('каталог без mode тоже везёт свои права — у каждого файла свои', async () => {
+    await textOf(
+      call('ssh_upload', {
+        local_path: localDir,
+        remote_path: '/srv/app',
+        recursive: true,
+        verify: false,
+      })
+    );
+
+    expect(uploadMock.mock.calls[0][2]).toMatchObject({ recursive: true, preserveMode: true });
+  });
+});
+
+describe('привилегированные источники и цели', () => {
+  it('скачивание под sudo: копия под root, смена владельца, уборка', async () => {
+    putFile('/root/secret.tar.gz', 'payload');
+    const target = join(localDir, 'secret.tar.gz');
+
+    const text = await textOf(
+      call('ssh_download', {
+        remote_path: '/root/secret.tar.gz',
+        local_path: target,
+        sudo: true,
+        verify: false,
+      })
+    );
+
+    expect(text).toContain('✓ Downloaded file: /root/secret.tar.gz');
+    expect(readFileSync(target, 'utf8')).toBe('payload');
+
+    const copy = commandFor(/^cp -- /)!;
+    const handoff = quotedPaths(copy[0])[1];
+    expect(handoff.startsWith('/tmp/')).toBe(true);
+    expect(copy[1].sudo).toBe(true);
+
+    const chown = commandFor(/^chown -R -- /)!;
+    expect(chown[0]).toContain(handoff);
+    expect(chown[1].sudo).toBe(true);
+
+    // Скачивалось из передаточной копии, а не из закрытого источника
+    expect(downloadMock.mock.calls[0][0]).toBe(handoff);
+    expect(server.has(handoff)).toBe(false);
+  });
+
+  it('сверка под sudo считает хэш источника из-под root', async () => {
+    putFile('/root/secret.tar.gz', 'payload');
+
+    await textOf(
+      call('ssh_download', {
+        remote_path: '/root/secret.tar.gz',
+        local_path: join(localDir, 'secret.tar.gz'),
+        sudo: true,
+      })
+    );
+
+    expect(commandFor(/^sha256sum -- /)![1].sudo).toBe(true);
+  });
+
+  it('передаточная копия убирается и тогда, когда передача сорвалась', async () => {
+    putFile('/root/secret.tar.gz', 'payload');
+    downloadMock.mockRejectedValueOnce(new Error('connection lost'));
+
+    const text = await textOf(
+      call('ssh_download', {
+        remote_path: '/root/secret.tar.gz',
+        local_path: join(localDir, 'secret.tar.gz'),
+        sudo: true,
+        verify: false,
+      })
+    );
+
+    expect(text).toContain('connection lost');
+    const handoff = quotedPaths(commandFor(/^cp -- /)![0])[1];
+    expect(server.has(handoff)).toBe(false);
+  });
+
+  it('каталог под sudo уезжает через /tmp, а права и владелец идут по всему дереву', async () => {
     const text = await textOf(
       call('ssh_upload', {
         local_path: localDir,
         remote_path: '/etc/app',
         recursive: true,
         sudo: true,
+        mode: '755',
+        owner: 'root:root',
+        verify: false,
       })
     );
 
-    expect(text).toContain('Recursive sudo upload is not yet supported');
-    expect(uploadMock).not.toHaveBeenCalled();
+    expect(text).toContain('✓ Upload OK: /etc/app');
+    // Ни одного предупреждения: и права, и владелец легли
+    expect(text).not.toContain('warnings:');
+
+    // Дерево ушло в /tmp обычным пользователем, оттуда скопировано под root
+    const handoff = uploadMock.mock.calls[0][1] as string;
+    expect(handoff.startsWith('/tmp/')).toBe(true);
+    const copy = commandFor(/^cp -rp -- /)!;
+    expect(copy[0]).toContain(handoff);
+    expect(copy[1].sudo).toBe(true);
+
+    // Права и владелец — на всё дерево, а не на его верхушку
+    expect(commandFor(/^chmod -R 755 -- /)![1].sudo).toBe(true);
+    expect(commandFor(/^chown -R root:root -- /)![1].sudo).toBe(true);
+
+    expect(server.get('/etc/app/app.js')).toEqual({ kind: 'file', content: 'run();' });
+    expect(server.has(handoff)).toBe(false);
   });
 
+  it('каталог под sudo скачивается целиком, а не одним файлом', async () => {
+    putDir('/root/backup');
+    putFile('/root/backup/dump.sql', 'rows');
+
+    const target = join(localDir, 'backup');
+    await textOf(
+      call('ssh_download', {
+        remote_path: '/root/backup',
+        local_path: target,
+        sudo: true,
+        verify: false,
+      })
+    );
+
+    const handoff = quotedPaths(commandFor(/^cp -r -- /)![0])[1];
+    expect(downloadMock.mock.calls[0][0]).toBe(handoff);
+    expect(downloadMock.mock.calls[0][2]).toMatchObject({ recursive: true });
+  });
+
+  it('каталог без sudo с названным владельцем честно говорит, что владелец не применён', async () => {
+    const text = await textOf(
+      call('ssh_upload', {
+        local_path: localDir,
+        remote_path: '/srv/app',
+        recursive: true,
+        owner: 'root:root',
+        verify: false,
+      })
+    );
+
+    expect(text).toContain('owner was NOT applied');
+  });
+});
+
+describe('отказы, которые случаются до первой команды', () => {
   it('пустой каталог не уезжает на сервер', async () => {
     const empty = join(localDir, 'empty');
     mkdirSync(empty);

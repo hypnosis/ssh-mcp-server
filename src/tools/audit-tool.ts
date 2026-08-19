@@ -17,6 +17,7 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { stripTerminalControls } from '../utils/terminal-noise.js';
 import { READS_REMOTE } from './annotations.js';
+import { PROFILE_PARAM_DESCRIPTION } from './params.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -85,28 +86,44 @@ export class AuditTool {
         name: 'ssh_audit_baseline',
         annotations: { title: 'Audit a server', ...READS_REMOTE },
         description:
-          'Read-only baseline server audit in a single batched call: system, disk, memory, network listeners, sshd config, systemd services, docker, firewall, available updates. Returns structured JSON plus a CRITICAL/WARNING/OK red-flags shortlist.',
+          'When: taking stock of a machine — how it is set up and where it is exposed. One call ' +
+          'reads the system, disk, memory, listening ports, sshd config, services, docker, ' +
+          'firewall and pending updates, and ends with a CRITICAL/WARNING/OK shortlist to read ' +
+          'first. Anything there was nothing to measure with is named in unavailable rather than ' +
+          'shown as zero.\n' +
+          'Not for: how the machine is doing right now — ssh_snapshot. One unit — ' +
+          'ssh_service_status. What filled the disk — ssh_disk_breakdown. A certificate — ' +
+          'ssh_tls_check.',
         inputSchema: {
           type: 'object',
           properties: {
-            profile: { type: 'string', description: 'SSH profile name' },
+            profile: {
+              type: 'string',
+              description: PROFILE_PARAM_DESCRIPTION,
+            },
             include: {
               type: 'array',
               items: { type: 'string' },
               description:
-                'Sections to include. Default: all. Available: system, disk, mem, net, ssh, services, docker, firewall, updates.',
+                'Sections to read, when only some are wanted: system, disk, mem, net, ssh, ' +
+                'services, docker, firewall, updates. Default: all of them.',
             },
             include_sudo_sections: {
               type: 'boolean',
-              description: 'Run sections that require sudo (e.g. sshd -T). Default: false.',
+              description:
+                'Read the sshd config the way sshd itself sees it (sshd -T), which needs root. ' +
+                'Without it that section says so instead of guessing from the file. Default: false',
               default: false,
             },
             compact: {
               type: 'boolean',
-              description: 'Trim long sections to keep response small. Default: true.',
+              description:
+                'Trim the long sections. Turning it off returns them whole and costs a much ' +
+                'larger answer. Default: true',
               default: true,
             },
           },
+          required: ['profile'],
         },
         outputSchema: BASELINE_OUTPUT_SCHEMA,
       },
@@ -114,23 +131,38 @@ export class AuditTool {
         name: 'ssh_tls_check',
         annotations: { title: 'Check a TLS certificate', ...READS_REMOTE },
         description:
-          'Check TLS certificate for a domain: expiry date, SAN includes hostname, issuer chain, and whether a deploy renew hook is configured (Let\'s Encrypt).',
+          'When: a certificate — how many days it has left, whether it actually covers the name ' +
+          'asked for, who issued it, and whether renewal is wired up at all (a Let\'s Encrypt ' +
+          'deploy hook). The handshake is made from the server, so it sees the certificate that ' +
+          'machine really serves.\n' +
+          'A field nothing could be read into comes back null, never as a reassuring number.\n' +
+          'Not for: whether the site answers — that is ssh_exec with curl.',
         inputSchema: {
           type: 'object',
           properties: {
-            profile: { type: 'string', description: 'SSH profile name' },
-            domain: { type: 'string', description: 'FQDN to check' },
-            port: { type: 'number', description: 'TLS port. Default: 443.', default: 443 },
-            check_chain: { type: 'boolean', default: true },
-            check_renew_hook: { type: 'boolean', default: true },
+            profile: {
+              type: 'string',
+              description: PROFILE_PARAM_DESCRIPTION,
+            },
+            domain: { type: 'string', description: 'The name to ask for, e.g. "example.com".' },
+            port: { type: 'number', description: 'Default: 443', default: 443 },
+            check_renew_hook: {
+              type: 'boolean',
+              description:
+                'Look for the renewal config as well. Turning it off skips a read that needs the ' +
+                'filesystem. Default: true',
+              default: true,
+            },
             sudo: {
               type: 'boolean',
               description:
-                'Read the Let\'s Encrypt renewal config with sudo. Without it an unprivileged user cannot see the hooks. Default: false.',
+                'Read the renewal config as root — an ordinary user cannot see the hooks, and ' +
+                'without this "no hook configured" would just mean "could not look". ' +
+                'Default: false',
               default: false,
             },
           },
-          required: ['domain'],
+          required: ['profile', 'domain'],
         },
         outputSchema: TLS_CHECK_OUTPUT_SCHEMA,
       },
@@ -138,19 +170,33 @@ export class AuditTool {
         name: 'ssh_disk_breakdown',
         annotations: { title: 'Break down disk usage', ...READS_REMOTE },
         description:
-          'Disk usage breakdown: df by mount, top-N largest dirs under given paths, docker disk, journald disk, common cache dirs.',
+          'When: the disk is filling and the question is what ate it. One call gives df by ' +
+          'mount, the largest directories under each path, plus the usual suspects counted ' +
+          'separately — docker, the journal and the caches.\n' +
+          'Not for: how full the disk is at all — ssh_snapshot and ssh_audit_baseline already ' +
+          'say that; come here once the number is alarming.',
         inputSchema: {
           type: 'object',
           properties: {
-            profile: { type: 'string', description: 'SSH profile name' },
-            top_n: { type: 'number', default: 20 },
+            profile: {
+              type: 'string',
+              description: PROFILE_PARAM_DESCRIPTION,
+            },
+            top_n: {
+              type: 'number',
+              description: 'How many of the largest directories to name per path. Default: 20',
+              default: 20,
+            },
             paths: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Root paths to scan. Default: ["/"].',
+              description:
+                'Where to look. Naming the suspect directly is far cheaper than walking the ' +
+                'whole filesystem. Default: ["/"]',
               default: ['/'],
             },
           },
+          required: ['profile'],
         },
         outputSchema: DISK_BREAKDOWN_OUTPUT_SCHEMA,
       },
@@ -158,16 +204,37 @@ export class AuditTool {
         name: 'ssh_service_status',
         annotations: { title: 'Check a service', ...READS_REMOTE },
         description:
-          'Combined systemctl status + journalctl tail for a unit, in one batched call.',
+          'When: one service — whether it is enabled, what state it is in, how it restarts, and ' +
+          'the tail of its own journal, all in one call.\n' +
+          'A machine without systemd answers "NOT CHECKED" and a name systemd does not know is ' +
+          'said as such: neither is reported as a stopped service, because that reads as an ' +
+          'outage that is not happening.\n' +
+          'Not for: every service at once — ssh_audit_baseline. The log of something that is not ' +
+          'a unit — ssh_log_tail.',
         inputSchema: {
           type: 'object',
           properties: {
-            profile: { type: 'string', description: 'SSH profile name' },
-            unit: { type: 'string', description: 'systemd unit name' },
-            log_lines: { type: 'number', default: 50 },
-            since: { type: 'string', description: 'journalctl --since value, e.g. "1h ago"' },
+            profile: {
+              type: 'string',
+              description: PROFILE_PARAM_DESCRIPTION,
+            },
+            unit: {
+              type: 'string',
+              description: 'Unit name, e.g. "nginx" or "nginx.service".',
+            },
+            log_lines: {
+              type: 'number',
+              description: 'How much of the journal comes back. Default: 50',
+              default: 50,
+            },
+            since: {
+              type: 'string',
+              description:
+                'Narrow the journal to a window, as journalctl reads it: "1h ago", "today", ' +
+                '"2026-08-19".',
+            },
           },
-          required: ['unit'],
+          required: ['profile', 'unit'],
         },
         outputSchema: SERVICE_STATUS_OUTPUT_SCHEMA,
       },

@@ -113,7 +113,7 @@ describe('ssh_exec: обещанный срок совпадает с отпра
     >;
     const promised = Number(promisedDefault());
 
-    expect(properties.timeout.description).toContain(`Default: ${promised}`);
+    expect(properties.timeout.description).toContain(`default ${promised}`);
     expect(properties.timeout.description).toContain(`(${promised / 1000} seconds)`);
   });
 });

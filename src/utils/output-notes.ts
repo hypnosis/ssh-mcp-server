@@ -118,17 +118,36 @@ export function matchLimitNote(max: number): string {
  * `12:` for a found line and `12-` for a neighboring one, so only the
  * former is counted.
  */
-export function limitMatches(text: string, max: number): { text: string; limited: boolean } {
+export function limitMatches(
+  text: string,
+  max: number,
+  /** Which end to keep: the oldest lines of the file, or the newest */
+  from: 'start' | 'end' = 'start'
+): { text: string; limited: boolean } {
   const lines = text.split('\n');
-  let matches = 0;
+  const matchLines: number[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    if (!/^(.*:)?\d+:/.test(lines[i])) continue;
-    matches += 1;
-    if (matches > max) return { text: lines.slice(0, i).join('\n').replace(/\n--$/, ''), limited: true };
+    if (/^(.*:)?\d+:/.test(lines[i])) matchLines.push(i);
   }
 
-  return { text, limited: false };
+  if (matchLines.length <= max) return { text, limited: false };
+
+  if (from === 'start') {
+    return {
+      text: lines.slice(0, matchLines[max]).join('\n').replace(/\n--$/, ''),
+      limited: true,
+    };
+  }
+
+  // Keeping the newest means cutting from above, and the cut starts at the
+  // first match that survives — anything before it is context for a match
+  // that is being dropped
+  const firstKept = matchLines[matchLines.length - max];
+  return {
+    text: lines.slice(firstKept).join('\n').replace(/^--\n/, ''),
+    limited: true,
+  };
 }
 
 /** Whether the text read back contains a replacement character — a trace of lost bytes */

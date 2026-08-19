@@ -5,6 +5,7 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { READS_REMOTE, WRITES_REMOTE } from './annotations.js';
+import { PROFILE_PARAM_DESCRIPTION } from './params.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
@@ -77,12 +78,50 @@ interface FileWriteArgs {
   files?: unknown;
 }
 
+/**
+ * One entry of ssh_file_write, described once for both shapes the tool takes.
+ *
+ * A single file and a list of them are the same entry; written twice, the two
+ * copies drift and the list ends up the poorer of the pair.
+ */
+const fileEntry = {
+  path: { type: 'string', description: 'Where the file goes on the machine.' },
+  content: {
+    type: 'string',
+    description:
+      'The whole new content — the file is replaced by it, not extended with it, and it is written ' +
+      'byte for byte: no trailing newline is added.',
+  },
+  mode: {
+    type: 'string',
+    description:
+      'Permissions as an octal string, "644". Applied before the file takes its place, so it is never ' +
+      'live with the wrong ones.',
+  },
+  sudo: {
+    type: 'boolean',
+    description:
+      'Write as root — for /etc and anywhere else the profile\'s user cannot write. Default: false.',
+  },
+  verify: {
+    type: 'boolean',
+    description:
+      'Compare sha256 before the file takes its place. Worth it for anything a machine will act on. ' +
+      'Default: false.',
+  },
+  binary: {
+    type: 'boolean',
+    description: 'content is base64 and is decoded before the write. Default: false.',
+  },
+} as const;
+
 /** ssh_file_list arguments, matching its inputSchema */
 interface FileListArgs {
   profile?: string;
   path?: unknown;
   pattern?: unknown;
   recursive?: boolean;
+  sudo?: boolean;
 }
 
 /**
@@ -105,42 +144,50 @@ export class FileTools {
         name: 'ssh_file_read',
         annotations: { title: 'Read a remote file', ...READS_REMOTE },
         description:
-          'Read file(s) from remote server. Supports single file or batch reading. ' +
-          'For binaries use binary=true (reads via scp, returns base64). ' +
-          'For large files prefer ssh_download.',
+          'When: reading configs, scripts or any other text off a machine — the whole list of paths in one ' +
+          'call, not one call per file. A file too large for the output limit, or one that turns out not to ' +
+          'be text, answers as a failure naming that path: a piece of a file is never handed back as the file.\n' +
+          'Not for: log files — ssh_log_tail and ssh_log_search filter on the machine instead of hauling ' +
+          'everything over. Binaries and anything wanted as a local file — ssh_download. Seeing what a ' +
+          'directory holds — ssh_file_list.',
         inputSchema: {
           type: 'object',
           properties: {
             profile: {
               type: 'string',
-              description: 'SSH profile name',
+              description: PROFILE_PARAM_DESCRIPTION,
             },
             path: {
               oneOf: [
                 { type: 'string' },
                 { type: 'array', items: { type: 'string' } },
               ],
-              description: 'File path or array of file paths to read',
+              description:
+                'One path, or a list of them: ["/etc/hosts", "/etc/resolv.conf"]. A file that cannot be ' +
+                'read costs the list nothing — the others still come back.',
             },
             encoding: {
               type: 'string',
               enum: ['utf8', 'base64'],
-              description: 'File encoding. Default: utf8',
+              description:
+                'base64 keeps bytes that are not text intact, but the content still travels through the ' +
+                'command channel and its size limit — for a real binary use binary below. Default: utf8.',
               default: 'utf8',
             },
             binary: {
               type: 'boolean',
               description:
-                'Read via scp and return base64 (binary-safe). Default: false. Implies encoding=base64.',
+                'Fetch the file over the transport instead of the command channel and answer with base64. ' +
+                'The safe way for non-text; implies encoding=base64. Default: false.',
               default: false,
             },
             sudo: {
               type: 'boolean',
-              description: 'Read files with sudo. Default: false',
+              description: 'Read as root — for files the profile\'s user cannot open. Default: false',
               default: false,
             },
           },
-          required: ['path'],
+          required: ['profile', 'path'],
         },
       },
       
@@ -149,66 +196,35 @@ export class FileTools {
         name: 'ssh_file_write',
         annotations: { title: 'Write a remote file', ...WRITES_REMOTE },
         description:
-          'Write file(s) to remote server. Supports single file or batch writing. ' +
-          'Optional flags per file: verify (sha256 after write), atomic (ignored — the write always ' +
-          'uses a temp path next to the target and renames into place), ' +
-          'binary (content is base64; uploaded via scp — required for binaries). ' +
-          'For files >256KB, binaries, or directories prefer ssh_upload.',
+          'When: putting a config, a script or a unit file on a machine, several at once if needed. The ' +
+          'content lands on a temp path beside the target and takes its place by rename, so the live path ' +
+          'is never a half-written file; with verify: true the sha256 is compared before that rename, and a ' +
+          'mismatch leaves the old file exactly where it was. A machine with no sha256 tool answers ' +
+          '"nothing to check with" — that is a written file, not a failed one.\n' +
+          'Not for: content that already exists as a local file, a whole directory, or anything large — ' +
+          'ssh_upload, which never routes the bytes through this conversation. Adding to the end of a file: ' +
+          'this replaces the content, so read it first or use ssh_exec.',
         inputSchema: {
           type: 'object',
           properties: {
             profile: {
               type: 'string',
-              description: 'SSH profile name',
+              description: PROFILE_PARAM_DESCRIPTION,
             },
             files: {
               oneOf: [
-                {
-                  type: 'object',
-                  properties: {
-                    path: { type: 'string' },
-                    content: { type: 'string' },
-                    mode: { type: 'string', description: 'File permissions (e.g., "644", "755")' },
-                    sudo: { type: 'boolean', description: 'Write with sudo' },
-                    verify: {
-                      type: 'boolean',
-                      description: 'Verify sha256 after write. Default: false.',
-                    },
-                    atomic: {
-                      type: 'boolean',
-                      description:
-                        'Ignored: the write always writes to a temp path next to the target and ' +
-                        'renames into place. Accepted so existing calls keep working.',
-                    },
-                    binary: {
-                      type: 'boolean',
-                      description:
-                        'Content is base64-encoded; upload via scp. Default: false.',
-                    },
-                  },
-                  required: ['path', 'content'],
-                },
+                { type: 'object', properties: fileEntry, required: ['path', 'content'] },
                 {
                   type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      path: { type: 'string' },
-                      content: { type: 'string' },
-                      mode: { type: 'string' },
-                      sudo: { type: 'boolean' },
-                      verify: { type: 'boolean' },
-                      atomic: { type: 'boolean' },
-                      binary: { type: 'boolean' },
-                    },
-                    required: ['path', 'content'],
-                  },
+                  items: { type: 'object', properties: fileEntry, required: ['path', 'content'] },
                 },
               ],
-              description: 'Single file object or array of file objects to write',
+              description:
+                'One file, or a list of them — each with its own mode and sudo, decided per file rather ' +
+                'than for the call.',
             },
           },
-          required: ['files'],
+          required: ['profile', 'files'],
         },
         outputSchema: FILES_OUTPUT_SCHEMA,
       },
@@ -217,29 +233,44 @@ export class FileTools {
       {
         name: 'ssh_file_list',
         annotations: { title: 'List a remote directory', ...READS_REMOTE },
-        description: 'List files in directory on remote server',
+        description:
+          'When: finding out what a directory actually holds before acting on it — names, sizes, ' +
+          'permissions, owner and the time each entry was last changed, together. That last one ' +
+          'answers which files are still being written to and which have been dead for months. The ' +
+          'pattern is matched on the machine, so narrowing costs nothing extra and guessing at names ' +
+          'is unnecessary.\n' +
+          'Not for: what is inside the files — ssh_file_read takes the list of paths from here.',
         inputSchema: {
           type: 'object',
           properties: {
             profile: {
               type: 'string',
-              description: 'SSH profile name',
+              description: PROFILE_PARAM_DESCRIPTION,
             },
             path: {
               type: 'string',
-              description: 'Directory path to list',
+              description: 'Directory to list.',
             },
             pattern: {
               type: 'string',
-              description: 'File pattern (e.g., "*.log", "*.conf")',
+              description:
+                'Shell glob matched on the machine: "*.conf". Without it every entry comes back.',
             },
             recursive: {
               type: 'boolean',
-              description: 'List files recursively. Default: false',
+              description:
+                'Descend into subdirectories. On a deep tree the answer is cut at the output limit and ' +
+                'says so. Default: false',
+              default: false,
+            },
+            sudo: {
+              type: 'boolean',
+              description:
+                'List as root — for directories the profile\'s user cannot open. Default: false',
               default: false,
             },
           },
-          required: ['path'],
+          required: ['profile', 'path'],
         },
       },
     ];
@@ -572,7 +603,6 @@ export class FileTools {
       mode?: string;
       sudo?: boolean;
       verify?: boolean;
-      atomic?: boolean;
       binary?: boolean;
     },
     /** Expanded destination path, already checked against the rules */
@@ -734,12 +764,13 @@ export class FileTools {
     const args = (request.params.arguments ?? {}) as FileListArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
+    const sudo = args.sudo === true;
     const path = requireText(args.path, 'path', '"/var/log"');
-    const target = await resolveRemotePath(this.executor, sshConfig, path, {});
+    const target = await resolveRemotePath(this.executor, sshConfig, path, { sudo });
     const safePath = shellQuote(target.path);
 
     let command = 'ls -lah';
-    
+
     if (args.recursive) {
       command = 'ls -lRah';
     }
@@ -753,6 +784,7 @@ export class FileTools {
     }
     
     const result = await this.executor.execute(sshConfig, command, {
+      sudo,
       idempotent: true,
       signal,
     });

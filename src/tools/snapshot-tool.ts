@@ -6,6 +6,7 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { stripTerminalControls } from '../utils/terminal-noise.js';
 import { READS_REMOTE } from './annotations.js';
+import { PROFILE_PARAM_DESCRIPTION } from './params.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { snapshotSummary, SNAPSHOT_OUTPUT_SCHEMA } from './snapshot-output.js';
@@ -35,15 +36,25 @@ export class SnapshotTool {
     return {
       name: 'ssh_snapshot',
       annotations: { title: 'Snapshot system health', ...READS_REMOTE },
-      description: 'Get comprehensive system health snapshot including services, resources, docker, network, and recent errors',
+      description:
+        'When: how the machine is doing right now, in one call — uptime, processor, memory, ' +
+        'disk, containers, listening ports, the well-known services and the newest error lines ' +
+        'from the journal. There is nothing to choose, so two snapshots of the same machine are ' +
+        'comparable.\n' +
+        'What there was nothing to measure with is named in unavailable and arrives as null, ' +
+        'never as zero: a machine with neither ss nor netstat would otherwise report no ' +
+        'listening ports, and nothing listening reads as a machine that is fine.\n' +
+        'Not for: why it is that way — ssh_audit_baseline reads the configuration, ' +
+        'ssh_disk_breakdown finds what filled the disk, ssh_service_status digs into one unit.',
       inputSchema: {
         type: 'object',
         properties: {
           profile: {
             type: 'string',
-            description: 'SSH profile name',
+            description: PROFILE_PARAM_DESCRIPTION,
           },
         },
+        required: ['profile'],
       },
       outputSchema: SNAPSHOT_OUTPUT_SCHEMA,
     };
@@ -101,7 +112,15 @@ export class SnapshotTool {
       
       return {
         content: [{ type: 'text', text: output }],
-        structuredContent: snapshotSummary({ cpu, memory, disk, docker, network }),
+        structuredContent: snapshotSummary({
+          cpu,
+          memory,
+          disk,
+          docker,
+          network,
+          services,
+          recentErrors: errors,
+        }),
       };
     } catch (error: any) {
       logger.error('ssh_snapshot failed:', error);

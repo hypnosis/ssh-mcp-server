@@ -559,7 +559,74 @@ describe('ssh_snapshot: шапка решений', () => {
     const header = await summary();
 
     expect(header).toMatchObject({ disk_pct: null, cpu_pct: null, mem_pct: null, load: null });
-    expect(header.unavailable).toEqual(['disk_pct', 'mem_pct', 'cpu_pct', 'load', 'ports']);
+    expect(header.unavailable).toEqual([
+      'disk_pct',
+      'mem_pct',
+      'cpu_pct',
+      'load',
+      'ports',
+      'services_running',
+    ]);
+  });
+
+  /**
+   * Снимок обещает службы и свежие ошибки, а поля о них молчали: снимок с
+   * тремя ошибками в журнале и снимок, где журнал нечем прочесть, приходили
+   * одинаковыми. Обещание словами без поля рядом — то же «0 портов слушает».
+   */
+  it('без systemctl службы приходят пустотой, а не нулём работающих', async () => {
+    respondWith([[/command -v systemctl/, 'no']]);
+
+    const header = await summary();
+
+    expect(header.services_running).toBeNull();
+    expect(header.unavailable).toContain('services_running');
+  });
+
+  it('работающие службы сосчитаны, а остановленные в счёт не идут', async () => {
+    respondWith([
+      [/command -v systemctl/, 'yes'],
+      [/systemctl show --property=Version/, 'systemd 252'],
+      [/is-active (nginx|docker)/, 'active'],
+      [/is-active/, 'inactive'],
+    ]);
+
+    const header = await summary();
+
+    expect(header.services_running).toBe(2);
+    expect(header.unavailable).not.toContain('services_running');
+  });
+
+  it('служба, о которой не ответили, не считается работающей', async () => {
+    respondWith([
+      [/command -v systemctl/, 'yes'],
+      [/systemctl show --property=Version/, 'systemd 252'],
+      [/is-active nginx/, 'active'],
+    ]);
+
+    const header = await summary();
+
+    expect(header.services_running).toBe(1);
+  });
+
+  it('без журнала ошибки приходят пустотой, а не «ошибок нет»', async () => {
+    respondWith([[/var\/log\/syslog/, 'NO_SYSLOG']]);
+
+    const header = await summary();
+
+    expect(header.recent_errors).toBeNull();
+    expect(header.unavailable).toContain('recent_errors');
+  });
+
+  it('прочитанный журнал отдаёт число свежих ошибок', async () => {
+    respondWith([
+      [/var\/log\/syslog/, 'kernel: EXT4-fs error\nsshd: fatal: no hostkeys\nsystemd: critical'],
+    ]);
+
+    const header = await summary();
+
+    expect(header.recent_errors).toBe(3);
+    expect(header.unavailable).not.toContain('recent_errors');
   });
 
   it('самый заполненный раздел решает: в шапке стоит он, а не первый попавшийся', async () => {

@@ -60,6 +60,15 @@ export interface TransferOptions {
   signal?: AbortSignal;
   /** Recursive directory transfer */
   recursive?: boolean;
+  /**
+   * Carry the local permission bits over instead of letting the server's
+   * umask decide them.
+   *
+   * Without this a build directory arrives with every file the same: an
+   * executable that lost its bit is a broken deploy, and nothing in the
+   * answer says so.
+   */
+  preserveMode?: boolean;
 }
 
 /**

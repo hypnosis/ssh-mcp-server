@@ -25,6 +25,7 @@ vi.mock('../../src/managers/ssh-executor.js', async (importOriginal) => {
       passport = passportMock;
       executeChecked = actual.SSHExecutor.prototype.executeChecked;
     },
+    DEFAULT_TIMEOUT_MS: actual.DEFAULT_TIMEOUT_MS,
   };
 });
 
@@ -87,17 +88,22 @@ function answer(command: string): SSHExecuteResult {
 
   // Раскрытие шаблона: существующее имя закрывает вопрос, иначе отвечает find.
   // Скрытые файлы find отдаёт наравне с остальными — отбор по точке не его дело
-  if (command.startsWith('if [ -e ')) {
-    const literal = /^if \[ -e '([^']*)'/.exec(command)?.[1] ?? '';
+  if (command.startsWith('if [ -f ')) {
+    const literal = /^if \[ -f '([^']*)'/.exec(command)?.[1] ?? '';
     const directory = /find '([^']*)'/.exec(command)?.[1] ?? '';
     const pattern = /-name '([^']*)'/.exec(command)?.[1] ?? '';
     if (logs.has(literal)) return ok('SSH_MCP_GLOB_LITERAL\n');
 
-    const matched = [...logs.keys()].filter(
-      (path) =>
-        path.slice(0, path.lastIndexOf('/')) === directory &&
-        globExpression(pattern).test(path.slice(path.lastIndexOf('/') + 1))
-    );
+    // Обход дерева отличается от одного уровня ровно отсутствием -maxdepth:
+    // мок повторяет это, иначе рекурсия «работала» бы и без неё
+    const deep = !command.includes('-maxdepth 1');
+    const matched = [...logs.keys()].filter((path) => {
+      const inside = deep
+        ? path.startsWith(`${directory}/`)
+        : path.slice(0, path.lastIndexOf('/')) === directory;
+      const name = path.slice(path.lastIndexOf('/') + 1);
+      return inside && (pattern === '' || globExpression(pattern).test(name));
+    });
     return ok(matched.map((path) => `${path}\0`).join(''));
   }
 
@@ -112,6 +118,32 @@ function answer(command: string): SSHExecuteResult {
     if (!lines) return fail(`tail: cannot open '${path}' for reading: No such file or directory`);
     const shown = lines.slice(-Number(match[1]));
     return ok(shown.length > 0 ? `${shown.join('\n')}\n` : '');
+  }
+
+  // Только имена: grep -l берёт сразу все пути и печатает те, где нашлось.
+  // Нечитаемый файл уходит в stderr и в список не попадает
+  if (command.startsWith('grep -l ')) {
+    const [query, ...paths] = quotedPaths(command);
+    const insensitive = command.slice(0, command.indexOf("'")).includes('i');
+    const expression = new RegExp(query, insensitive ? 'i' : '');
+    const named: string[] = [];
+    const failed: string[] = [];
+
+    for (const path of paths) {
+      const lines = logs.get(path);
+      if (!lines) {
+        failed.push(`grep: ${path}: No such file or directory`);
+        continue;
+      }
+      if (lines.some((line) => expression.test(line))) named.push(path);
+    }
+
+    return {
+      stdout: named.length > 0 ? `${named.join('\n')}\n` : '',
+      stderr: failed.join('\n'),
+      exitCode: named.length > 0 ? 0 : 1,
+      truncated: false,
+    } as SSHExecuteResult;
   }
 
   if (command.startsWith('grep ')) {
@@ -231,26 +263,57 @@ describe('объявление инструментов', () => {
     }
   });
 
-  it('хвосту обязателен только путь, а число строк по умолчанию — сто', () => {
+  it('хвосту обязательны машина и путь, а число строк по умолчанию — сто', () => {
     const schema = toolNamed('ssh_log_tail').inputSchema as any;
-    expect(schema.required).toEqual(['path']);
+    expect(schema.required).toEqual(['profile', 'path']);
     expect(Object.keys(schema.properties)).toEqual(['profile', 'path', 'lines', 'sudo']);
     expect(schema.properties.lines.default).toBe(100);
     expect(schema.properties.sudo.default).toBe(false);
   });
 
-  it('поиску обязательны путь и запрос, а контекст и регистр по умолчанию выключены', () => {
+  it('поиск по дереву берёт файлы любой глубины, а не только верхний уровень', async () => {
+    logs.set('/etc/nginx/nginx.conf', ['proxy_pass http://a;']);
+    logs.set('/etc/nginx/conf.d/api.conf', ['proxy_pass http://b;']);
+    logs.set('/etc/nginx/sites-enabled/site', ['proxy_pass http://c;']);
+
+    const output = await search({ path: '/etc/nginx', query: 'proxy_pass', recursive: true });
+
+    expect(commandFor(/^if \[ -f /)![0]).not.toContain('-maxdepth 1');
+    expect(output).toContain('/etc/nginx/conf.d/api.conf');
+    expect(output).toContain('/etc/nginx/sites-enabled/site');
+  });
+
+  it('без рекурсии тот же каталог остаётся одним уровнем', async () => {
+    logs.set('/etc/nginx/nginx.conf', ['proxy_pass http://a;']);
+    logs.set('/etc/nginx/conf.d/api.conf', ['proxy_pass http://b;']);
+
+    const output = await search({ path: '/etc/nginx/*.conf', query: 'proxy_pass' });
+
+    expect(commandFor(/^if \[ -f /)![0]).toContain('-maxdepth 1');
+    expect(output).not.toContain('conf.d/api.conf');
+  });
+
+  it('поиску обязательны машина, путь и запрос, а контекст и регистр по умолчанию выключены', () => {
     const schema = toolNamed('ssh_log_search').inputSchema as any;
-    expect(schema.required).toEqual(['path', 'query']);
+    expect(schema.required).toEqual(['profile', 'path', 'query']);
     expect(Object.keys(schema.properties)).toEqual([
       'profile',
       'path',
       'query',
       'context',
       'caseSensitive',
+      'recursive',
+      'namesOnly',
+      'since',
+      'from',
       'maxMatches',
+      'timeout',
       'sudo',
     ]);
+    expect(schema.properties.recursive.default).toBe(false);
+    expect(schema.properties.namesOnly.default).toBe(false);
+    expect(schema.properties.from.default).toBe('end');
+    expect(schema.properties.from.enum).toEqual(['start', 'end']);
     expect(schema.properties.context.default).toBe(0);
     expect(schema.properties.caseSensitive.default).toBe(false);
     expect(schema.properties.maxMatches.default).toBe(200);
@@ -408,21 +471,21 @@ describe('ssh_log_tail: несколько журналов', () => {
 
 describe('ssh_log_search: один журнал', () => {
   it('запрос уходит в кавычках, а флаги собираются в объявленном порядке', async () => {
-    await search({ path: '/var/log/syslog', query: 'ERROR' });
+    await search({ path: '/var/log/syslog', query: 'ERROR', from: 'start' });
     expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n -m 201 'ERROR' '/var/log/syslog'");
   });
 
   it('поиск с учётом регистра идёт без -i', async () => {
-    await search({ path: '/var/log/syslog', query: 'ERROR', caseSensitive: true });
+    await search({ path: '/var/log/syslog', query: 'ERROR', caseSensitive: true, from: 'start' });
     expect(commandFor(/^grep /)![0]).toBe("grep -E -n -m 201 'ERROR' '/var/log/syslog'");
   });
 
   it('контекст добавляется отдельным флагом, а нулевой не добавляется вовсе', async () => {
-    await search({ path: '/var/log/syslog', query: 'ERROR', context: 1 });
+    await search({ path: '/var/log/syslog', query: 'ERROR', context: 1, from: 'start' });
     expect(commandFor(/^grep /)![0]).toBe("grep -E -i -C 1 -n -m 201 'ERROR' '/var/log/syslog'");
 
     vi.clearAllMocks();
-    await search({ path: '/var/log/syslog', query: 'ERROR', context: 0 });
+    await search({ path: '/var/log/syslog', query: 'ERROR', context: 0, from: 'start' });
     expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n -m 201 'ERROR' '/var/log/syslog'");
   });
 
@@ -451,7 +514,7 @@ describe('ssh_log_search: один журнал', () => {
 
   it('если сервер объяснился в stdout, ошибка берёт объяснение оттуда', async () => {
     overrides = [[/^grep /, { exitCode: 2, stderr: '', stdout: 'grep: permission denied' }]];
-    expect(await search({ path: '/var/log/syslog', query: 'ERROR' })).toBe(
+    expect(await search({ path: '/var/log/syslog', query: 'ERROR', from: 'start' })).toBe(
       'Error: Failed to search log: grep: permission denied'
     );
   });
@@ -496,11 +559,183 @@ describe('ssh_log_search: один журнал', () => {
     expect(text).not.toContain('Showing the first');
   });
 
-  it('предел просят у самой grep, а не режут хвостом конвейера', async () => {
-    await search({ path: '/var/log/syslog', query: 'ERROR', maxMatches: 7 });
+/**
+   * Окно времени сужает работу дважды: файлы, куда никто не писал, не
+   * читаются вовсе, а в остальных остаются только строки с подходящей датой.
+   * Обе половины называются вслух: молча выброшенный файл неотличим от файла,
+   * в котором ничего нет.
+   */
+  it('окно времени отсеивает нетронутые файлы и фильтрует строки по дате', async () => {
+    logs.set('/var/log/a.log', ['2026-08-19 ERROR today', '2026-08-01 ERROR old']);
+    logs.set('/var/log/b.log', ['2026-08-01 ERROR old']);
+    overrides = [
+      [/^date /, { stdout: '2026-08-19\n' }],
+      [/^find /, { stdout: '/var/log/a.log\0' }],
+      [/^grep -l -E /, { stdout: '/var/log/a.log\n' }],
+    ];
+
+    const output = await search({
+      path: ['/var/log/a.log', '/var/log/b.log'],
+      query: 'ERROR',
+      since: 'today',
+    });
+
+    // Дата спрошена у сервера, а не взята из своей головы
+    expect(commandFor(/^date /)![0]).toBe('date +%Y-%m-%d');
+    expect(commandFor(/^find /)![0]).toContain('-mmin -1440');
+    // Нетронутый файл назван, а не выброшен молча
+    expect(output).toContain('1 of 2 file(s) were not touched');
+    // Фильтр по дате идёт вторым grep — нумерация остаётся от файла
+    const search1 = sentCommands().find(([c]) => c.startsWith('grep -E'))![0];
+    expect(search1).toContain("| grep -E '2026-08-19|Aug +0?19|19/Aug/2026'");
+  });
+
+  it('файл без распознаваемой метки ищется целиком и назван, а не сочтён пустым', async () => {
+    logs.set('/var/log/plain.log', ['ERROR no date here']);
+    overrides = [
+      [/^date /, { stdout: '2026-08-19\n' }],
+      [/^find /, { stdout: '/var/log/plain.log\0' }],
+      [/^grep -l -E /, { stdout: '' }],
+    ];
+
+    const output = await search({ path: '/var/log/plain.log', query: 'ERROR', since: 'today' });
+
+    expect(output).toContain('no recognisable timestamp in /var/log/plain.log');
+    expect(sentCommands().find(([c]) => c.startsWith('grep -E'))![0]).not.toContain('| grep -E');
+  });
+
+  it('окно короче суток сужает файлы, но не строки — дата на такое не отвечает', async () => {
+    logs.set('/var/log/a.log', ['2026-08-19 ERROR now']);
+    overrides = [
+      [/^date /, { stdout: '2026-08-19\n' }],
+      [/^find /, { stdout: '/var/log/a.log\0' }],
+    ];
+
+    await search({ path: '/var/log/a.log', query: 'ERROR', since: '2h' });
+
+    expect(commandFor(/^find /)![0]).toContain('-mmin -120');
+    expect(commandFor(/^grep -l -E /)).toBeUndefined();
+  });
+
+  it('обрезанный ответ find файлов не отсеивает — пропавший хвост читался бы как «не писали»', async () => {
+    logs.set('/var/log/a.log', ['2026-08-19 ERROR now']);
+    overrides = [
+      [/^date /, { stdout: '2026-08-19\n' }],
+      [/^find /, { stdout: '', truncated: true }],
+      [/^grep -l -E /, { stdout: '/var/log/a.log\n' }],
+    ];
+
+    const output = await search({ path: '/var/log/a.log', query: 'ERROR', since: 'today' });
+
+    expect(output).not.toContain('were not touched');
+  });
+
+  it('невнятная дата сервера — отказ, а не поиск по выдуманному дню', async () => {
+    overrides = [[/^date /, { stdout: 'not a date\n' }]];
+
+    expect(await search({ path: '/var/log/a.log', query: 'ERROR', since: 'today' })).toContain(
+      'did not report a usable date'
+    );
+  });
+
+  it('непонятное since отвергается до первой команды', async () => {
+    overrides = [[/^date /, { stdout: '2026-08-19\n' }]];
+
+    const output = await search({ path: '/var/log/a.log', query: 'ERROR', since: 'last week' });
+
+    expect(output).toContain('since must be');
+    expect(commandFor(/^grep /)).toBeUndefined();
+  });
+
+  /**
+   * Ответ на «в каких файлах» — это список путей, и он берётся одной командой:
+   * спрашивать файл за файлом значило бы сотню обращений на вопрос, который
+   * укладывается в одно.
+   */
+  it('только имена: один вызов на весь список, тела строк не едут', async () => {
+    logs.set('/var/log/a.log', ['ERROR here']);
+    logs.set('/var/log/b.log', ['quiet']);
+
+    const output = await search({
+      path: ['/var/log/a.log', '/var/log/b.log'],
+      query: 'ERROR',
+      namesOnly: true,
+    });
+
+    const greps = sentCommands().filter(([command]) => command.startsWith('grep '));
+    expect(greps).toHaveLength(1);
+    expect(greps[0][0]).toBe("grep -l -iE 'ERROR' '/var/log/a.log' '/var/log/b.log'");
+    expect(output).toContain('/var/log/a.log');
+    expect(output).not.toContain('ERROR here');
+  });
+
+  it('только имена: нечитаемый файл назван отдельно, а не молча пропущен', async () => {
+    overrides = [
+      [
+        /^grep -l /,
+        {
+          exitCode: 0,
+          stdout: '/var/log/a.log\n',
+          stderr: 'grep: /var/log/secret.log: Permission denied',
+        },
+      ],
+    ];
+
+    const output = await search({
+      path: ['/var/log/a.log', '/var/log/secret.log'],
+      query: 'ERROR',
+      namesOnly: true,
+    });
+
+    expect(output).toContain('/var/log/a.log');
+    expect(output).toContain('Not searched:');
+    expect(output).toContain('/var/log/secret.log: Permission denied');
+  });
+
+  it('только имена и контекст вместе не имеют смысла — отказ, а не тихий игнор', async () => {
+    const output = await search({
+      path: '/var/log/a.log',
+      query: 'ERROR',
+      namesOnly: true,
+      context: 2,
+    });
+
+    expect(output).toContain('namesOnly and context cannot be combined');
+  });
+
+  it('от начала файла предел просят у самой grep, а не режут хвостом конвейера', async () => {
+    await search({ path: '/var/log/syslog', query: 'ERROR', maxMatches: 7, from: 'start' });
 
     expect(commandFor(/^grep /)![0]).toContain('-m 8');
-    expect(commandFor(/^grep /)![0]).not.toContain('head');
+    expect(commandFor(/^grep /)![0]).not.toContain('|');
+  });
+
+  /**
+   * С конца файла предел ставит `tail`, и он считает строки, а не совпадения:
+   * у каждого совпадения с собой ещё context строк соседей, и без запаса
+   * до вызывающего доехало бы меньше найденного, чем он просил.
+   */
+  it('с конца файла предел ставит хвост, с запасом на строки контекста', async () => {
+    await search({ path: '/var/log/syslog', query: 'ERROR', maxMatches: 7, context: 2 });
+
+    const command = commandFor(/^grep /)![0];
+    expect(command).not.toContain('-m ');
+    expect(command).toContain('| tail -n 40');
+  });
+
+  /**
+   * Через конвейер код возврата принадлежит `tail`, и он равен нулю даже
+   * когда grep не смог открыть файл. Отличить провал от «ничего не нашлось»
+   * можно только по паре: пустой stdout и объяснение в stderr.
+   */
+  it('нечитаемый файл с конца файла — всё равно ошибка, а не «совпадений нет»', async () => {
+    overrides = [
+      [/^grep /, { exitCode: 0, stdout: '', stderr: "grep: /var/log/syslog: Permission denied" }],
+    ];
+
+    expect(await search({ path: '/var/log/syslog', query: 'ERROR' })).toBe(
+      'Error: Failed to search log: grep: /var/log/syslog: Permission denied'
+    );
   });
 
   it('поиск помечен безопасным для повтора и идёт с правами вызова', async () => {
@@ -585,8 +820,8 @@ describe('ssh_log_search: несколько журналов', () => {
     await search({ path: both, query: 'error', profile: 'staging', context: 2, sudo: true });
     const searches = sentCommands().filter(([command]) => command.startsWith('grep '));
     expect(searches.map(([command]) => command)).toEqual([
-      "grep -E -i -C 2 -n -m 201 'error' '/var/log/syslog'",
-      "grep -E -i -C 2 -n -m 201 'error' '/var/log/nginx.log'",
+      "grep -E -i -C 2 -n 'error' '/var/log/syslog' | tail -n 1005",
+      "grep -E -i -C 2 -n 'error' '/var/log/nginx.log' | tail -n 1005",
     ]);
     for (const [, options] of searches) {
       expect(options.sudo).toBe(true);
@@ -617,9 +852,10 @@ describe('форма ответа и отказы до первой команд
     expect(await responseOf(call('ssh_log_tail', { path: both }))).toEqual({ content: [textPart] });
     expect(
       await responseOf(call('ssh_log_search', { path: '/var/log/syslog', query: 'ERROR' }))
-    ).toEqual({ content: [textPart] });
+    ).toEqual({ content: [textPart], structuredContent: expect.any(Object) });
     expect(await responseOf(call('ssh_log_search', { path: both, query: 'ERROR' }))).toEqual({
       content: [textPart],
+      structuredContent: expect.any(Object),
     });
     expect(await responseOf(call('ssh_log_tail', { path: '/var/log/missing.log' }))).toEqual({
       content: [textPart],
@@ -627,7 +863,7 @@ describe('форма ответа и отказы до первой команд
     });
     expect(
       await responseOf(call('ssh_log_search', { path: '/var/log/syslog', query: 'nothing-here' }))
-    ).toEqual({ content: [textPart] });
+    ).toEqual({ content: [textPart], structuredContent: expect.any(Object) });
   });
 
   it('путь называет поле, значение и пример', async () => {
@@ -658,7 +894,7 @@ describe('раскрытие пути и правила профиля', () => {
 
   it('поиск раскрывает тильду тем же способом', async () => {
     await search({ path: '~/app.log', query: 'ERROR' });
-    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n -m 201 'ERROR' '/home/deploy/app.log'");
+    expect(commandFor(/^grep /)![0]).toBe("grep -E -i -n 'ERROR' '/home/deploy/app.log' | tail -n 201");
   });
 
   it('чужой домашний каталог — отказ, а не догадка', async () => {
@@ -692,10 +928,10 @@ describe('шаблон имени', () => {
     const output = await search({ path: '/var/log/*.log', query: 'ERROR' });
 
     expect(commandFor(/'\/var\/log\/app\.log'/)![0]).toBe(
-      "grep -E -i -n -m 201 'ERROR' '/var/log/app.log'"
+      "grep -E -i -n 'ERROR' '/var/log/app.log' | tail -n 201"
     );
     expect(commandFor(/'\/var\/log\/db\.log'/)![0]).toBe(
-      "grep -E -i -n -m 201 'ERROR' '/var/log/db.log'"
+      "grep -E -i -n 'ERROR' '/var/log/db.log' | tail -n 201"
     );
     expect(output).toContain('/var/log/app.log');
     expect(output).toContain('/var/log/db.log');
@@ -728,7 +964,7 @@ describe('шаблон имени', () => {
       'Error: cannot expand "/var/*/app.log": a pattern is supported in the file name, not in the directory.'
     );
     expect(commandFor(/^grep /)).toBeUndefined();
-    expect(commandFor(/^if \[ -e /)).toBeUndefined();
+    expect(commandFor(/^if \[ -f /)).toBeUndefined();
   });
 
   it('шаблон без совпадений называет себя, а не отвечает словами утилиты', async () => {
@@ -752,7 +988,7 @@ describe('шаблон имени', () => {
   });
 
   it('обрезанный список совпадений не выдаётся за полный', async () => {
-    overrides.push([/^if \[ -e /, { stdout: '/var/log/app.log\0', truncated: true }]);
+    overrides.push([/^if \[ -f /, { stdout: '/var/log/app.log\0', truncated: true }]);
 
     const output = await search({ path: '/var/log/*.log', query: 'ERROR' });
 
@@ -763,7 +999,7 @@ describe('шаблон имени', () => {
   });
 
   it('обрезка, не оставившая ни одного имени, — не «совпадений нет»', async () => {
-    overrides.push([/^if \[ -e /, { stdout: '', truncated: true }]);
+    overrides.push([/^if \[ -f /, { stdout: '', truncated: true }]);
 
     expect(await search({ path: '/var/log/*.log', query: 'ERROR' })).toBe(
       'Error: cannot expand "/var/log/*.log": the list of matching files was too long to read.'
@@ -773,7 +1009,7 @@ describe('шаблон имени', () => {
   it('шаблон раскрывается под теми же правами', async () => {
     await search({ path: '/var/log/*.log', query: 'ERROR', profile: 'staging', sudo: true });
 
-    const [command, options] = commandFor(/^if \[ -e /)!;
+    const [command, options] = commandFor(/^if \[ -f /)!;
     expect(command).toContain("find '/var/log' -maxdepth 1 ! -type d -name '*.log' -print0");
     expect(options.sudo).toBe(true);
   });
@@ -782,7 +1018,146 @@ describe('шаблон имени', () => {
     profile.config = { ...profile.config, pathSecurity: { deniedPaths: ['/var/log'] } };
 
     expect(await search({ path: '/var/log/*.log', query: 'ERROR' })).toMatch(/^Error: /);
-    expect(commandFor(/^if \[ -e /)).toBeUndefined();
+    expect(commandFor(/^if \[ -f /)).toBeUndefined();
     expect(commandFor(/^grep /)).toBeUndefined();
+  });
+});
+
+/**
+ * Поля ответа поиска — это ответ на один вопрос: пусто, потому что нечего
+ * нашлось, или пусто, потому что чего-то не прочитали. Текст об этом говорит
+ * словами, поля обязаны говорить числами, иначе агент, читающий поля, увидит
+ * ноль там, где была недоступная машина.
+ */
+describe('ssh_log_search: поля исхода', () => {
+  const outcomeOf = async (args: Record<string, unknown>) =>
+    (await responseOf(call('ssh_log_search', args))).structuredContent as Record<string, unknown>;
+
+  it('один журнал: строки сосчитаны, читать было что', async () => {
+    expect(await outcomeOf({ path: '/var/log/syslog', query: 'ERROR' })).toEqual({
+      matches: 1,
+      files_searched: 1,
+      files_unreadable: [],
+      files_skipped: 0,
+      files_undated: [],
+      limited: false,
+      truncated: false,
+    });
+  });
+
+  it('ни одного совпадения — это ноль строк при прочитанном файле', async () => {
+    const outcome = await outcomeOf({ path: '/var/log/syslog', query: 'nothing-here' });
+    expect(outcome.matches).toBe(0);
+    expect(outcome.files_searched).toBe(1);
+    expect(outcome.files_unreadable).toEqual([]);
+  });
+
+  it('недоступный журнал назван и не сосчитан прочитанным', async () => {
+    const outcome = await outcomeOf({
+      path: ['/var/log/syslog', '/var/log/missing.log'],
+      query: 'ERROR',
+    });
+
+    expect(outcome.files_unreadable).toEqual(['/var/log/missing.log']);
+    expect(outcome.files_searched).toBe(1);
+  });
+
+  it('только имена: непрочитанный файл виден и в полях, а не только в тексте', async () => {
+    const outcome = await outcomeOf({
+      path: ['/var/log/syslog', '/var/log/missing.log'],
+      query: 'ERROR',
+      namesOnly: true,
+    });
+
+    expect(outcome.matches).toBe(1);
+    expect(outcome.files_unreadable).toEqual(['/var/log/missing.log']);
+    expect(outcome.files_searched).toBe(1);
+  });
+
+  it('окно времени: пропущенное числом, недатированное именем', async () => {
+    logs.set('/var/log/old.log', ['ERROR ancient']);
+    overrides.push([/^date /, { stdout: '2026-08-19\n' }]);
+    // Свежим сервер считает только один файл из двух
+    overrides.push([/^find .*-mmin/, { stdout: '/var/log/syslog\0' }]);
+    overrides.push([/^grep -l -E '\[0-9\]\{4\}/, { stdout: '', exitCode: 1 }]);
+
+    const outcome = await outcomeOf({
+      path: ['/var/log/syslog', '/var/log/old.log'],
+      query: 'ERROR',
+      since: 'today',
+    });
+
+    expect(outcome.files_skipped).toBe(1);
+    expect(outcome.files_undated).toEqual(['/var/log/syslog']);
+  });
+
+  it('упёрлись в предел — это сказано полем, а не только строкой снизу', async () => {
+    logs.set('/var/log/many.log', ['ERROR one', 'ERROR two', 'ERROR three']);
+
+    const outcome = await outcomeOf({ path: '/var/log/many.log', query: 'ERROR', maxMatches: 2 });
+    expect(outcome.limited).toBe(true);
+    expect(outcome.matches).toBe(2);
+  });
+
+  it('предел, сработавший в одном журнале пачки, виден в полях всей пачки', async () => {
+    logs.set('/var/log/many.log', ['ERROR one', 'ERROR two', 'ERROR three']);
+
+    const outcome = await outcomeOf({
+      path: ['/var/log/syslog', '/var/log/many.log'],
+      query: 'ERROR',
+      maxMatches: 2,
+    });
+
+    expect(outcome.limited).toBe(true);
+    expect(outcome.files_searched).toBe(2);
+  });
+
+  it('обрезка в одном журнале пачки не теряется среди целых', async () => {
+    overrides.push([/^grep .*nginx\.log/, { stdout: '2:error 500\n', truncated: true }]);
+
+    const outcome = await outcomeOf({
+      path: ['/var/log/syslog', '/var/log/nginx.log'],
+      query: 'error',
+    });
+
+    expect(outcome.truncated).toBe(true);
+  });
+
+  it('обрезанный вывод помечен как неполный ответ', async () => {
+    overrides.push([/^grep /, { stdout: '2:ERROR disk full\n', truncated: true }]);
+
+    expect((await outcomeOf({ path: '/var/log/syslog', query: 'ERROR' })).truncated).toBe(true);
+  });
+});
+
+/**
+ * Поиск по гигабайтному журналу не укладывается в общий потолок, а поднять
+ * его было нечем: агент из-за этого уходил в ssh_exec с detach.
+ */
+describe('ssh_log_search: потолок времени', () => {
+  it('заданный потолок доезжает до транспорта', async () => {
+    await search({ path: '/var/log/syslog', query: 'ERROR', timeout: 300000 });
+
+    expect(commandFor(/^grep /)![1].timeout).toBe(300000);
+  });
+
+  it('без него транспорт получает своё умолчание, а не выдуманное число', async () => {
+    await search({ path: '/var/log/syslog', query: 'ERROR' });
+
+    expect(commandFor(/^grep /)![1].timeout).toBeUndefined();
+  });
+
+  it('потолок доезжает и в поиске только по именам', async () => {
+    await search({ path: '/var/log/syslog', query: 'ERROR', namesOnly: true, timeout: 120000 });
+
+    expect(commandFor(/^grep -l /)![1].timeout).toBe(120000);
+  });
+
+  it('потолок считается на каждый журнал пачки', async () => {
+    await search({ path: ['/var/log/syslog', '/var/log/nginx.log'], query: 'ERROR', timeout: 90000 });
+
+    const greps = sentCommands().filter(([command]) => command.startsWith('grep '));
+    expect(greps).toHaveLength(2);
+    for (const [, options] of greps) expect(options.timeout).toBe(90000);
   });
 });

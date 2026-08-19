@@ -381,9 +381,9 @@ describe('объявление инструментов', () => {
     ]);
   });
 
-  it('чтение требует только путь, а профиль остаётся необязательным', () => {
+  it('чтение без машины и без пути звать нечего — обязательны обе', () => {
     const schema = toolNamed('ssh_file_read').inputSchema as any;
-    expect(schema.required).toEqual(['path']);
+    expect(schema.required).toEqual(['profile', 'path']);
     expect(Object.keys(schema.properties)).toEqual([
       'profile',
       'path',
@@ -413,9 +413,9 @@ describe('объявление инструментов', () => {
     expect(properties.sudo.default).toBe(false);
   });
 
-  it('запись требует files, а у каждой записи обязательны путь и содержимое', () => {
+  it('запись требует машину и files, а у каждой записи — путь и содержимое', () => {
     const schema = toolNamed('ssh_file_write').inputSchema as any;
-    expect(schema.required).toEqual(['files']);
+    expect(schema.required).toEqual(['profile', 'files']);
     const [single, many] = schema.properties.files.oneOf;
     expect(single.required).toEqual(['path', 'content']);
     expect(many.items.required).toEqual(['path', 'content']);
@@ -423,16 +423,32 @@ describe('объявление инструментов', () => {
 
   it('у записи объявлены все флаги, которые инструмент умеет читать', () => {
     const [single, many] = (toolNamed('ssh_file_write').inputSchema as any).properties.files.oneOf;
-    const flags = ['path', 'content', 'mode', 'sudo', 'verify', 'atomic', 'binary'];
+    const flags = ['path', 'content', 'mode', 'sudo', 'verify', 'binary'];
     expect(Object.keys(single.properties)).toEqual(flags);
     expect(Object.keys(many.items.properties)).toEqual(flags);
   });
 
-  it('список требует путь, а шаблон и рекурсию — нет', () => {
+  /**
+   * Один файл и список описываются одним объектом. Разъехавшись, они дают
+   * агенту два разных набора флагов на один и тот же инструмент.
+   */
+  it('одиночная запись и список описаны одинаково, до текста параметра', () => {
+    const [single, many] = (toolNamed('ssh_file_write').inputSchema as any).properties.files.oneOf;
+    expect(single.properties).toEqual(many.items.properties);
+    expect(single.required).toEqual(many.items.required);
+  });
+
+  it('список требует машину и путь, а шаблон и рекурсию — нет', () => {
     const schema = toolNamed('ssh_file_list').inputSchema as any;
-    expect(schema.required).toEqual(['path']);
+    expect(schema.required).toEqual(['profile', 'path']);
     expect(schema.properties.recursive.default).toBe(false);
-    expect(Object.keys(schema.properties)).toEqual(['profile', 'path', 'pattern', 'recursive']);
+    expect(Object.keys(schema.properties)).toEqual([
+      'profile',
+      'path',
+      'pattern',
+      'recursive',
+      'sudo',
+    ]);
   });
 });
 
@@ -849,6 +865,18 @@ describe('ssh_file_list', () => {
   it('рекурсивный обход просит у сервера другой набор флагов', async () => {
     await list({ path: '/var/log', recursive: true });
     expect(commandFor(/^ls /)![0]).toBe("ls -lRah '/var/log'");
+  });
+
+  it('под sudo список идёт от root — иначе закрытый каталог не посмотреть', async () => {
+    await list({ path: '/var/log', sudo: true });
+
+    expect(commandFor(/^ls /)![1]).toMatchObject({ sudo: true });
+  });
+
+  it('без sudo листинг остаётся обычным — root не берётся про запас', async () => {
+    await list({ path: '/var/log' });
+
+    expect(commandFor(/^ls /)![1].sudo).toBeFalsy();
   });
 
   it('шаблон приклеивается к пути и остаётся рабочим', async () => {

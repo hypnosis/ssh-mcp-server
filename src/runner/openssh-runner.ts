@@ -504,6 +504,7 @@ export class OpenSshRunner implements CommandRunner {
       file: 'scp',
       args: buildScpArgs(this.config, this.capabilities(), direction, localPath, remotePath, {
         recursive: options.recursive,
+        preserveMode: options.preserveMode,
         legacyProtocol,
       }),
       env: this.buildEnv(),

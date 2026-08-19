@@ -2,45 +2,52 @@
 
 ## Publish to NPM
 
-Automatic publishing to NPM when a version tag is created.
+Publishing happens on its own when a version tag is pushed. There is no token
+anywhere: the workflow run proves its own identity to npm over OIDC, matched
+against the trusted publisher configured for this repository and this workflow
+file. Nothing is stored, so nothing expires and nothing can leak.
 
-### Setup
+### How the trust is set up
 
-1. **Create an NPM token:**
-   - Go to https://www.npmjs.com/settings/YOUR_USERNAME/tokens
-   - Create a new token of type "Automation" (for CI/CD)
-   - Copy the token
+Configured once on npmjs.com, on the package settings page, under **Trusted
+Publisher**:
 
-2. **Add the token to GitHub Secrets:**
-   - Go to Settings → Secrets and variables → Actions
-   - Click "New repository secret"
-   - Name: `NPM_TOKEN`
-   - Value: paste your NPM token
-   - Click "Add secret"
+| Field | Value |
+|---|---|
+| Publisher | GitHub Actions |
+| Organization or user | `hypnosis` |
+| Repository | `ssh-mcp-server` |
+| Workflow filename | `publish.yml` — the name only, no path |
+| Environment name | empty — this workflow declares no environment |
+| Allowed actions | `npm publish` |
 
-### Usage
+The workflow needs `id-token: write` for this, which it already declares.
+Publishing over OIDC also needs npm 11.5.1 or newer, which is why the job runs
+on Node 24.
 
-1. Update the version in `package.json`
-2. Update `CHANGELOG.md` (if present)
-3. Commit the changes:
-   ```bash
-   git add package.json CHANGELOG.md
-   git commit -m "chore: bump version to X.Y.Z"
-   git push
-   ```
+A mismatch in any of those fields is answered by the registry with 404 on the
+package itself, which reads as "the package does not exist" and sends you
+looking in the wrong place.
 
-4. Create and push the tag:
-   ```bash
-   git tag -a vX.Y.Z -m "Release X.Y.Z: Description"
-   git push origin vX.Y.Z
-   ```
+### Releasing a version
 
-5. GitHub Actions will automatically:
-   - Run the tests
-   - Build the project
-   - Publish to NPM
-   - Create a GitHub Release
+1. Set the version in `package.json` and in **both** places in `server.json`.
+2. Write the section in `CHANGELOG.md`.
+3. Refresh `package-lock.json` (`npm install --package-lock-only`), or `npm ci`
+   fails on the first step of the run.
+4. Commit, then tag and push:
+
+```bash
+git tag -a vX.Y.Z -m "Release X.Y.Z: what changed"
+git push origin main
+git push origin vX.Y.Z
+```
+
+The run then verifies the tag against `package.json` and both fields of
+`server.json`, installs, runs the unit tests, builds, publishes to npm with a
+signed provenance statement, registers the release in the MCP registry, and
+creates the GitHub Release.
 
 ### Triggers
 
-The workflow runs on push of a tag starting with `v` (for example, `v1.0.2`).
+A push of a tag matching `v*.*.*`. Nothing else publishes.

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-08-19
+
+### Changed — the release signs itself, with nothing left to steal
+- Releases now publish over OIDC: the workflow run proves its own identity to npm
+  against a trusted publisher configured for this repository and this workflow file.
+  The stored `NPM_TOKEN` is gone from every step — there is no long-lived credential
+  left to leak, expire, or rotate, and provenance is still signed against the run
+  that built the package.
+- The server itself is unchanged from 2.1.0: same tools, same descriptions, same
+  behaviour. Only the way the package reaches the registry is different.
+
 ## [2.1.0] - 2026-08-19
 
 ### Added — the surface explains itself to an agent that has never seen it

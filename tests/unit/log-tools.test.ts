@@ -1310,3 +1310,69 @@ describe('закрытое правами называется, а не выбр
     expect(outcome.files_skipped).toBe(1);
   });
 });
+
+/**
+ * Заметки в ответе — про то, что случилось, а не про то, что могло. Пустой
+ * список непроверенного и пустой список закрытого не должны рождать фразу:
+ * прочитавший её ищет причину там, где причины нет.
+ */
+describe('ssh_log_search: заметка появляется только по поводу', () => {
+  it('все файлы свежие — про нечитаемое время не сказано ни слова', async () => {
+    logs.set('/var/log/a.log', ['2026-08-19 ERROR now']);
+    overrides = [
+      [/^date /, { stdout: '2026-08-19\n' }],
+      [/^find .*-mmin/, { stdout: '/var/log/a.log\0' }],
+      [/^grep -l -E /, { stdout: '/var/log/a.log\n' }],
+    ];
+
+    const output = await search({ path: '/var/log/a.log', query: 'ERROR', since: 'today' });
+
+    expect(output).not.toContain('could not be read');
+  });
+
+  /** Обрезанный ответ — «неизвестно про всех», а не «у этих не прочитали время» */
+  it('обрезанный ответ find не приписывает файлам нечитаемое время', async () => {
+    logs.set('/var/log/a.log', ['2026-08-19 ERROR now']);
+    overrides = [
+      [/^date /, { stdout: '2026-08-19\n' }],
+      [/^find .*-mmin/, { stdout: '', stderr: "find: '/var/log/a.log': Permission denied", truncated: true }],
+      [/^grep -l -E /, { stdout: '/var/log/a.log\n' }],
+    ];
+
+    const output = await search({ path: '/var/log/a.log', query: 'ERROR', since: 'today' });
+
+    expect(output).not.toContain('could not be read');
+    expect(output).not.toContain('were not touched');
+  });
+
+  it('шаблон раскрылся целиком — про закрытые каталоги не сказано ни слова', async () => {
+    logs.set('/var/log/app/one.log', ['ERROR first']);
+    logs.set('/var/log/app/two.log', ['ERROR second']);
+
+    const output = await search({ path: '/var/log/app/*.log', query: 'ERROR' });
+
+    expect(output).not.toContain('could not look inside');
+  });
+
+  /**
+   * Жалоба сервера может быть на десять строк; в отказ идёт первая. Полотно на
+   * месте одной строки топит сам отказ.
+   */
+  it('отказ по шаблону несёт одну строку жалобы, а не весь ответ сервера', async () => {
+    overrides.push([
+      /^if \[ -f /,
+      {
+        stdout: '',
+        stderr: [
+          "find: '/var/log/closed': Permission denied",
+          "find: '/var/log/other': Permission denied",
+        ].join('\n'),
+      },
+    ]);
+
+    const output = await search({ path: '/var/log/nothing/*.log', query: 'ERROR' });
+
+    expect(output).toContain('/var/log/closed');
+    expect(output).not.toContain('/var/log/other');
+  });
+});

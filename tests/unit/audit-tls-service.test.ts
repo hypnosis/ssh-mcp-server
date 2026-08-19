@@ -850,6 +850,28 @@ describe('ssh_disk_breakdown: непрочитанное названо', () => 
   });
 
   /**
+   * Имя команды кончается двоеточием, и без него в список попадёт всякий, чьё
+   * имя начинается теми же буквами.
+   */
+  it('жалоба команды, чьё имя лишь начинается на du, каталогом не становится', async () => {
+    const answer: any = await withComplaint(
+      "duplicity: cannot read directory '/root': Permission denied"
+    );
+
+    expect(answer.structuredContent.unreadable).toEqual([]);
+  });
+
+  /** Хвост либо называет непрочитанное, либо пуст — третьего у него нет */
+  it('без жалоб ответ — тот же разбор и ни строкой больше', async () => {
+    const clean: any = await withComplaint('');
+    const noisy: any = await withComplaint("du: cannot read directory '/root': Permission denied");
+
+    expect(clean.content[0].text).toBe(
+      noisy.content[0].text.split('\n\n--- not looked into ---')[0]
+    );
+  });
+
+  /**
    * Разделы спрашиваются шаблоном, и шаблон, которому нечего сопоставить,
    * уезжает к `du` как есть. Тексты ниже сняты с контейнеров: закрытый каталог
    * приходит тем же нераскрытым шаблоном, что и пустой, и отличается только

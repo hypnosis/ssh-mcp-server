@@ -48,6 +48,7 @@ const TOOLS_WITH_OUTPUT_SCHEMA = [
   'ssh_download',
   'ssh_exec',
   'ssh_file_write',
+  'ssh_job_kill',
   'ssh_job_list',
   'ssh_job_status',
   'ssh_log_search',
@@ -102,6 +103,19 @@ describe('Список инструментов', () => {
     }
   });
 
+  /**
+   * Пара сигналов — обещание входа: третье имя сервер не примет, а пустой
+   * список не примет и первых двух.
+   */
+  it('снятие задачи обещает ровно два сигнала', async () => {
+    const { tools } = await client.listTools();
+    const kill = tools.find((tool: Tool) => tool.name === 'ssh_job_kill');
+    const signal = (kill?.inputSchema.properties as any).signal;
+
+    expect(signal.enum).toEqual(['TERM', 'KILL']);
+    expect(signal.default).toBe('TERM');
+  });
+
   it('схему ответа объявляют ровно те инструменты, что её обещают', async () => {
     const { tools } = await client.listTools();
     const withSchema = tools
@@ -119,6 +133,20 @@ describe('Список инструментов', () => {
  * сторожатся сами обязательные поля, а не только факт объявления схемы.
  */
 describe('Обещанные поля ответа', () => {
+  it('ответ снятия обязан нести исход, сигнал и причину', async () => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === 'ssh_job_kill')?.outputSchema as any;
+
+    expect(schema.required).toEqual(['id', 'outcome', 'signal', 'reason', 'legend']);
+    expect(schema.properties.outcome.enum).toEqual([
+      'signalled',
+      'gone',
+      'nopid',
+      'missing',
+      'no-answer',
+    ]);
+  });
+
   it('разбор службы обязан нести исход и все пять полей', async () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_service_status')?.outputSchema as any;

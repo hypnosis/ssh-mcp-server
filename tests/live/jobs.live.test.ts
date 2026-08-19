@@ -58,11 +58,19 @@ const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.j
  * Свежий MCP-сервер с новым клиентом: всё, что инструмент помнил в памяти,
  * этой заменой теряется. Состояние задачи обязано пережить её.
  */
-async function freshClient(): Promise<{ text: (name: string, args: object) => Promise<string>; close: () => Promise<void> }> {
+async function freshClient(): Promise<{
+  text: (name: string, args: object) => Promise<string>;
+  fields: (name: string, args: object) => Promise<Record<string, unknown>>;
+  close: () => Promise<void>;
+}> {
   const { server } = createMcpServer('live-test');
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'jobs-live', version: '1.0.0' }, { capabilities: {} });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+  // Сверку ответа со схемой клиент включает, только собрав список инструментов:
+  // без этого вызова поля читаются, но никем не проверяются
+  await client.listTools();
 
   return {
     text: async (name, args) => {
@@ -70,6 +78,12 @@ async function freshClient(): Promise<{ text: (name: string, args: object) => Pr
         content: Array<{ text: string }>;
       };
       return result.content[0].text;
+    },
+    fields: async (name, args) => {
+      const result = (await client.callTool({ name, arguments: args as never })) as {
+        structuredContent: Record<string, unknown>;
+      };
+      return result.structuredContent;
     },
     close: async () => {
       await client.close();
@@ -358,6 +372,36 @@ if (unavailable && LAB_REQUIRED) {
         expect(list).toContain(id);
 
         await second.close();
+      });
+
+      it('исход снятия приходит полем: сигнал ушёл, снимать нечего, задачи нет', async () => {
+        const client = await freshClient();
+        const answer = await client.text('ssh_exec', {
+          profile: server.name,
+          command: 'sleep 30',
+          detach: true,
+        });
+        const id = jobIdOf(answer);
+
+        const sent = await client.fields('ssh_job_kill', { profile: server.name, id });
+        expect(sent).toMatchObject({ id, outcome: 'signalled', signal: 'TERM', reason: null });
+
+        // Второе снятие: снимать уже нечего, и это исход, а не отказ
+        expect(
+          await waitUntil(async () => {
+            const again = await client.fields('ssh_job_kill', { profile: server.name, id });
+            return again.outcome === 'gone';
+          })
+        ).toBe(true);
+
+        const unknown = await client.fields('ssh_job_kill', {
+          profile: server.name,
+          id: 'no-such-job-0000',
+        });
+        expect(unknown).toMatchObject({ outcome: 'missing', signal: 'TERM' });
+        expect((unknown.legend as Record<string, string>)['outcome=missing']).toContain('no job');
+
+        await client.close();
       });
 
       it('несуществующая задача названа несуществующей, а не выдумана', async () => {

@@ -30,7 +30,7 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
   getAvailableProfiles: () => ['production'],
 }));
 
-import type { JobsSummary } from '../../src/tools/job-output.js';
+import type { JobsSummary, KillSummary } from '../../src/tools/job-output.js';
 
 const { JobTools } = await import('../../src/tools/job-tools.js');
 const { UNKNOWN_PASSPORT } = await import('../../src/runner/passport.js');
@@ -481,5 +481,93 @@ describe('легенда задач', () => {
     serverAnswers('');
 
     expect(await legendOf('ssh_job_list')).toEqual({});
+  });
+});
+
+/**
+ * Сводка рядом с ответом о снятии.
+ *
+ * Исходов пять, и решение по ним разное: сигнал ушёл, снимать было нечего,
+ * сигналить некому, задачи нет вовсе, ответа не было. Последний — «неизвестно»,
+ * а не «снято»: молчание сервера не говорит, что работа остановлена.
+ */
+describe('сводка снятия', () => {
+  async function killSummaryOf(args: Record<string, unknown> = {}): Promise<KillSummary> {
+    const response = await new JobTools().handleCall(call('ssh_job_kill', { id: JOB_ID, ...args }));
+    return response.structuredContent as KillSummary;
+  }
+
+  it.each([
+    ['signalled', 'SSH_MCP_JOB killed=1'],
+    ['gone', 'SSH_MCP_JOB killed=0 reason=gone'],
+    ['nopid', 'SSH_MCP_JOB killed=0 reason=nopid'],
+    ['missing', 'SSH_MCP_JOB killed=0 reason=missing'],
+    ['no-answer', ''],
+  ])('исход %s приходит полем, а не фразой', async (outcome, stdout) => {
+    serverAnswers(stdout);
+
+    expect((await killSummaryOf()).outcome).toBe(outcome);
+  });
+
+  it('посланный сигнал назван тот, что ушёл на сервер', async () => {
+    serverAnswers('SSH_MCP_JOB killed=1');
+
+    expect(await killSummaryOf({ signal: 'KILL' })).toMatchObject({
+      id: JOB_ID,
+      signal: 'KILL',
+      outcome: 'signalled',
+    });
+  });
+
+  it('чужая строка вместо сигнала не доезжает в поле', async () => {
+    serverAnswers('SSH_MCP_JOB killed=1');
+
+    expect((await killSummaryOf({ signal: 'TERM; touch /tmp/pwned' })).signal).toBe('TERM');
+  });
+
+  it('у снятой задачи причины нет — объяснять нечего', async () => {
+    serverAnswers('SSH_MCP_JOB killed=1');
+
+    expect((await killSummaryOf()).reason).toBeNull();
+  });
+
+  it('причина сервера доезжает как есть, когда снятия не было', async () => {
+    serverAnswers('SSH_MCP_JOB killed=0 reason=gone');
+
+    expect((await killSummaryOf()).reason).toBe('gone');
+  });
+
+  it.each([
+    ['signalled', 'SSH_MCP_JOB killed=1', 'signal'],
+    ['gone', 'SSH_MCP_JOB killed=0 reason=gone', 'already ended'],
+    ['nopid', 'SSH_MCP_JOB killed=0 reason=nopid', 'no pid'],
+    ['missing', 'SSH_MCP_JOB killed=0 reason=missing', 'no job'],
+    ['no-answer', '', 'did not answer'],
+  ])('легенда исхода %s говорит своё, а не общее', async (outcome, stdout, meaning) => {
+    serverAnswers(stdout);
+
+    expect((await killSummaryOf()).legend[`outcome=${outcome}`]).toContain(meaning);
+  });
+
+  it('легенда объясняет пришедший исход и молчит о соседних', async () => {
+    serverAnswers('SSH_MCP_JOB killed=0 reason=missing');
+
+    const { legend } = await killSummaryOf();
+
+    expect(Object.keys(legend)).toEqual(['outcome=missing']);
+    expect(legend['outcome=missing']).toContain('no job');
+  });
+
+  it('инструмент объявляет схему ответа, иначе поля до клиента не доедут', () => {
+    const kill = new JobTools().getTools().find((tool) => tool.name === 'ssh_job_kill');
+
+    expect(kill?.outputSchema).toBeDefined();
+    expect((kill?.outputSchema as any).properties.outcome.enum).toEqual([
+      'signalled',
+      'gone',
+      'nopid',
+      'missing',
+      'no-answer',
+    ]);
   });
 });

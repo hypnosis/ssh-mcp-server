@@ -11,7 +11,13 @@ import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { READS_REMOTE, WRITES_REMOTE } from './annotations.js';
 import { PROFILE_PARAM_DESCRIPTION } from './params.js';
 import { logger } from '../utils/logger.js';
-import { jobEntry, jobsSummary, JOBS_OUTPUT_SCHEMA } from './job-output.js';
+import {
+  jobEntry,
+  jobsSummary,
+  killSummary,
+  JOBS_OUTPUT_SCHEMA,
+  KILL_OUTPUT_SCHEMA,
+} from './job-output.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
@@ -164,6 +170,7 @@ export class JobTools {
           },
           required: ['profile', 'id'],
         },
+        outputSchema: KILL_OUTPUT_SCHEMA,
       },
     ];
   }
@@ -328,9 +335,11 @@ export class JobTools {
     const which = args.signal === 'KILL' ? 'KILL' : 'TERM';
 
     const result = await this.executor.execute(config, buildKillCommand(dir, which), { signal });
+    const killed = parseJobKill(result.stdout);
 
     return {
-      content: [{ type: 'text', text: describeKill(id, which, parseJobKill(result.stdout)) }],
+      content: [{ type: 'text', text: describeKill(id, which, killed) }],
+      structuredContent: killSummary(id, which, killed),
     };
   }
 }

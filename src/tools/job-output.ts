@@ -80,3 +80,76 @@ export const JOBS_OUTPUT_SCHEMA: OutputSchema = {
   },
   required: ['jobs', 'legend'],
 };
+
+/**
+ * Shape of the ssh_job_kill answer.
+ *
+ * Five outcomes lead to five different next steps, and the text tells them
+ * apart by wording alone. `no-answer` is the one that must not be read as
+ * success: the server said nothing, so whether the job still runs is unknown.
+ */
+export type KillOutcome = 'signalled' | 'gone' | 'nopid' | 'missing' | 'no-answer';
+
+/** What each outcome says about the job that was asked to stop */
+const KILL_MEANING: Record<KillOutcome, string> = {
+  signalled: 'the signal reached the process group of the job',
+  gone: 'the job had already ended, so there was nothing to stop',
+  nopid: 'the job recorded no pid, so there was nothing to signal',
+  missing: 'the server knows no job under this id',
+  'no-answer': 'the server did not answer the stop request, so the job state is unknown',
+};
+
+export interface KillSummary {
+  id: string;
+  outcome: KillOutcome;
+  /** The signal that was sent, after the requested one was checked against the allowed pair */
+  signal: 'TERM' | 'KILL';
+  /** What the server said when nothing was signalled; `null` after a sent signal */
+  reason: string | null;
+  legend: Legend;
+}
+
+/** The outcome of one stop request, as the kill answer words it */
+export function killSummary(
+  id: string,
+  signal: 'TERM' | 'KILL',
+  killed: { killed: boolean; reason?: string }
+): KillSummary {
+  const outcome = outcomeOf(killed);
+
+  return {
+    id,
+    outcome,
+    signal,
+    reason: killed.killed ? null : (killed.reason ?? null),
+    legend: legendFor('outcome', KILL_MEANING, [outcome]),
+  };
+}
+
+/** A reason the server never named is still an answer nobody can act on */
+function outcomeOf(killed: { killed: boolean; reason?: string }): KillOutcome {
+  if (killed.killed) return 'signalled';
+
+  switch (killed.reason) {
+    case 'gone':
+      return 'gone';
+    case 'nopid':
+      return 'nopid';
+    case 'missing':
+      return 'missing';
+    default:
+      return 'no-answer';
+  }
+}
+
+export const KILL_OUTPUT_SCHEMA: OutputSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    outcome: { type: 'string', enum: ['signalled', 'gone', 'nopid', 'missing', 'no-answer'] },
+    signal: { type: 'string', enum: ['TERM', 'KILL'] },
+    reason: { type: ['string', 'null'] },
+    legend: LEGEND_SCHEMA,
+  },
+  required: ['id', 'outcome', 'signal', 'reason', 'legend'],
+};

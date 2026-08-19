@@ -93,6 +93,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The advice for a `limited` connection names the tools that do not apply there instead of
   saying "audit tools", which told the reader nothing about which call to avoid.
 
+### Added — stopping a job answers in a field
+- `ssh_job_kill` now declares an output schema and names its outcome: `signalled`, `gone`,
+  `nopid`, `missing` or `no-answer`, beside the signal that was sent and what the server
+  said. Five outcomes lead to five different next steps and used to differ by wording
+  alone; `no-answer` is the one that must not be read as success — the server said nothing,
+  so whether the job still runs is unknown.
+
+### Known limitations
+Unchanged from 2.0.0 and recorded in `docs/tech-debt/` with measurements. Neither is tied
+to a release: both are lifted by work, not by a version.
+- **Cancelling a call does not stop the work on the server.** Cancellation drops the local
+  `ssh` client at once, but a command already started on the machine runs to its end.
+  Anything that has to be stoppable from outside is started with `detach: true` and stopped
+  by `ssh_job_kill`, which signals the process group. File transfers and the system
+  snapshot do not take cancellation at all, deliberately (`TD-08`).
+- **The mount-point check needs a `stat` that speaks the GNU or BusyBox syntax.** On a
+  server whose `stat` differs (BSD, macOS) the check does not run and says so; the install
+  proceeds, and the rename stays the real guard (`TD-09`).
+
 ## [2.0.3] - 2026-08-18
 
 ### Changed — the one-line pitch says what the server is for

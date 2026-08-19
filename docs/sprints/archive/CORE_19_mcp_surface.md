@@ -212,7 +212,7 @@ that one command when you mean it.
 | Уведомления о прогрессе при передаче | выброшено: «не для серверных» — решение владельца 2026-08-18 |
 | Наши логи в клиент | выброшено там же |
 | Слэш-команды `ssh/ping`, `ssh/health`, `ssh/debug` | отдельный спринт, [TD-21](../../tech-debt/scenarios-not-slash-commands_21.md) |
-| Схема ответа для `ssh_snapshot`, задач, передачи, `ssh_monitor` | [TD-20](../../tech-debt/structured-answers-missing_20.md) |
+| Схема ответа для `ssh_snapshot`, задач, передачи, `ssh_monitor` | [TD-20](../../tech-debt/archive/structured-answers-missing_20.md) |
 | Обновление SDK | обновлять нечего: 1.30.0 последняя, протокол `2026-07-28` не выпущен |
 
 Схема нужна не всем восемнадцати: у файлов и журналов ответ — это само содержимое, и

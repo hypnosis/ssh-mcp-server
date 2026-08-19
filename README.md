@@ -313,6 +313,24 @@ Both are bypassed by an explicit `# CONFIRMED-DESTRUCTIVE` marker, so nothing is
 
 Path handling, quoting rules and per-profile path restrictions: **[docs/security.md](docs/security.md)**.
 
+## Known limitations
+
+Two borders the server lives with. Both are measured and written down in `docs/tech-debt/`,
+and both are named here so you meet them in a document rather than in behaviour.
+
+**Cancelling a call frees your side, not the server.** The local `ssh` client is dropped at
+once, but a command already running on the machine finishes anyway — closing the channel
+does not kill what stands behind it. Anything that has to be stoppable from outside is
+started with `detach: true` and stopped with `ssh_job_kill`, which signals the whole process
+group. File transfers and `ssh_snapshot` ignore cancellation on purpose: a transfer has a
+window where stopping would leave nothing in place of the file, and a cancelled snapshot
+would come back with blanks instead of a refusal.
+
+**The mount-point check needs GNU or BusyBox `stat`.** Replacing a path that sits on a
+separate filesystem is refused, because there a rename stops being atomic. On a server whose
+`stat` speaks another dialect (BSD, macOS) that check cannot run: the answer says so, the
+install goes ahead, and the rename itself remains the guard.
+
 ## Configuration
 
 | Variable | What it does | Default |

@@ -17,8 +17,8 @@
 | TD-05 | Комментарии в разборе путей пересказывают решение | ✅ закрыт | [archive/path-guard-comments_05.md](archive/path-guard-comments_05.md) |
 | TD-06 | Поиск следов не отличает полный список от обрезанного | ✅ закрыт | [archive/leftover-scan-truncation_06.md](archive/leftover-scan-truncation_06.md) |
 | TD-07 | Проигравший в гонке установок получает сырой текст `mv` | ✅ закрыт | [archive/install-race-message_07.md](archive/install-race-message_07.md) |
-| TD-08 | Отмена доходит до нашей стороны, но не снимает работу на сервере | 📌 условие релиза v2.0.0 | [cancellation-not-wired_08.md](cancellation-not-wired_08.md) |
-| TD-09 | Проверка точки монтирования не знает BSD и macOS | 📌 условие релиза v2.0.0 | [mountpoint-check-bsd_09.md](mountpoint-check-bsd_09.md) |
+| TD-08 | Отмена доходит до нашей стороны, но не снимает работу на сервере | 📌 названное ограничение, доводится в CORE_14 | [cancellation-not-wired_08.md](cancellation-not-wired_08.md) |
+| TD-09 | Проверка точки монтирования не знает BSD и macOS | 📌 названное ограничение, ждёт стенда | [mountpoint-check-bsd_09.md](mountpoint-check-bsd_09.md) |
 | TD-10 | Имя профиля течёт через стек, потребителя нет | ✅ закрыт | [archive/profile-name-flows-nowhere_10.md](archive/profile-name-flows-nowhere_10.md) |
 | TD-11 | Экспорты, которых никто не зовёт | ✅ закрыт | [archive/unused-exports_11.md](archive/unused-exports_11.md) |
 | TD-12 | Снимок шлёт десять чтений разом и теряет часть молча | ✅ закрыт | [archive/snapshot-parallel-sessions_12.md](archive/snapshot-parallel-sessions_12.md) |
@@ -29,15 +29,15 @@
 | TD-17 | Шаблон пути в журнальных инструментах обещан, но не работает | ✅ закрыт | [archive/glob-path-not-expanded_17.md](archive/glob-path-not-expanded_17.md) |
 | TD-18 | Красный флаг аудита называет порт, которого никто не слушает | ✅ закрыт | [archive/audit-port-mismatch_18.md](archive/audit-port-mismatch_18.md) |
 | TD-19 | Предупреждения ловят слово, а не команду | ✅ закрыт | [archive/pattern-warnings-match-substring_19.md](archive/pattern-warnings-match-substring_19.md) |
-| TD-20 | Половина ответов разобрана, половина — текст | 🔹 отложено | [structured-answers-missing_20.md](structured-answers-missing_20.md) |
-| TD-21 | Готовые сценарии живут в голове, а не в сервере | 🔹 отложено | [scenarios-not-slash-commands_21.md](scenarios-not-slash-commands_21.md) |
-| TD-22 | Про видеокарту сервер не спрашивают | 🔹 отложено | [gpu-not-measured_22.md](gpu-not-measured_22.md) |
-| TD-23 | Двум инструментам нечем взять права, а остальным не сказано, когда их брать | ✅ закрыт 2026-08-19 | [sudo-missing-and-unruled_23.md](sudo-missing-and-unruled_23.md) |
-| TD-24 | Закрытый каталог выпадает из поиска молча | ✅ закрыт 2026-08-19 | [glob-and-window-swallow-permission_24.md](glob-and-window-swallow-permission_24.md) |
-| TD-25 | Выжившие мутанты в свежем коде CORE_21 | 🔸 отчёт оправдан, проверки не дописаны | [mutants-alive-in-fresh-code_25.md](mutants-alive-in-fresh-code_25.md) |
+| TD-20 | Половина ответов разобрана, половина — текст | ✅ закрыт 2026-08-19 | [archive/structured-answers-missing_20.md](archive/structured-answers-missing_20.md) |
+| TD-21 | Готовые сценарии живут в голове, а не в сервере | 🔹 отложено, шагом CORE_21 больше не закрывается | [scenarios-not-slash-commands_21.md](scenarios-not-slash-commands_21.md) |
+| TD-22 | Про видеокарту сервер не спрашивают | ❌ отказ 2026-08-19 | [deprecated/gpu-not-measured_22.md](deprecated/gpu-not-measured_22.md) |
+| TD-23 | Двум инструментам нечем взять права, а остальным не сказано, когда их брать | ✅ закрыт 2026-08-19 | [archive/sudo-missing-and-unruled_23.md](archive/sudo-missing-and-unruled_23.md) |
+| TD-24 | Закрытый каталог выпадает из поиска молча | ✅ закрыт 2026-08-19 | [archive/glob-and-window-swallow-permission_24.md](archive/glob-and-window-swallow-permission_24.md) |
+| TD-25 | Выжившие мутанты в свежем коде CORE_21 | ✅ закрыт 2026-08-19 | [archive/mutants-alive-in-fresh-code_25.md](archive/mutants-alive-in-fresh-code_25.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.
 
-**📌 условие релиза** — не «руки не дошли», а названное ограничение, с которым версия
-выходит. Записано в CHANGELOG и ROADMAP, чтобы пользователь узнал о нём из документа, а
-не из поведения.
+**📌 названное ограничение** — не «руки не дошли», а граница, с которой пакет живёт.
+Записано в CHANGELOG и README, чтобы пользователь узнал о ней из документа, а не из
+поведения. К версии не привязано: ограничение снимается работой, а не выпуском.

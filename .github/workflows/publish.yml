@@ -19,24 +19,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
       
-      # Checked here rather than at the publish step, which is the last one: a token
-      # without publish rights is answered by the registry with 404 Not Found on the
-      # package itself, which reads as "the package does not exist" and sends you
-      # looking in the wrong place — after the build and the tests have already run.
-      - name: Verify npm credentials
-        run: |
-          if ! WHOAMI=$(npm whoami 2>&1); then
-            echo "::error::npm rejected NPM_TOKEN: $WHOAMI"
-            echo "The token is missing, expired, or has no publish rights on this scope."
-            exit 1
-          fi
-          echo "Publishing as: $WHOAMI"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
       - name: Install dependencies
         run: npm ci
 
@@ -84,17 +69,14 @@ jobs:
             echo "Version ${{ steps.version.outputs.version }} not found, will publish"
           fi
         continue-on-error: true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       
-      # --provenance signs the package against this workflow run, so npm can show
-      # which commit and which build produced it. Needs the id-token permission
-      # declared above, and only works when publishing from CI.
+      # The identity is the OIDC token this run mints, matched against the trusted
+      # publisher configured on npm for this repository and workflow file. Nothing
+      # is stored: no NODE_AUTH_TOKEN here and none to rotate. --provenance signs
+      # the package against this run, so npm can show which commit produced it.
       - name: Publish to NPM
         if: steps.check_version.outputs.already_published != 'true'
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       
       # The registry stores metadata only: it reads mcpName straight from the package
       # that npm now serves, so this has to come after the publish above. The identity

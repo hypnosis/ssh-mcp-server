@@ -35,6 +35,7 @@
 | TD-23 | Двум инструментам нечем взять права, а остальным не сказано, когда их брать | ✅ закрыт 2026-08-19 | [archive/sudo-missing-and-unruled_23.md](archive/sudo-missing-and-unruled_23.md) |
 | TD-24 | Закрытый каталог выпадает из поиска молча | ✅ закрыт 2026-08-19 | [archive/glob-and-window-swallow-permission_24.md](archive/glob-and-window-swallow-permission_24.md) |
 | TD-25 | Выжившие мутанты в свежем коде CORE_21 | ✅ закрыт 2026-08-19 | [archive/mutants-alive-in-fresh-code_25.md](archive/mutants-alive-in-fresh-code_25.md) |
+| TD-26 | Ответ приходит агенту без содержания там, где объявлена схема | 🔴 открыт 2026-08-19 | [content-lost-when-schema-declared_26.md](content-lost-when-schema-declared_26.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.
 

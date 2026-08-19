@@ -108,6 +108,8 @@ export interface DiskBreakdownResult {
   cache: DuEntry[];
   docker: string | null;
   journald: string | null;
+  /** Directories du was not allowed to look into — the list above is short by them */
+  unreadable: string[];
   unavailable: string[];
 }
 
@@ -333,6 +335,10 @@ export const DISK_BREAKDOWN_OUTPUT_SCHEMA: OutputSchema = {
     cache: DU_ENTRIES,
     docker: { type: ['string', 'null'] },
     journald: { type: ['string', 'null'] },
+    unreadable: {
+      ...STRING_LIST,
+      description: 'Not looked into: the sizes above leave these out',
+    },
     unavailable: STRING_LIST,
   },
   required: [
@@ -342,6 +348,7 @@ export const DISK_BREAKDOWN_OUTPUT_SCHEMA: OutputSchema = {
     'cache',
     'docker',
     'journald',
+    'unreadable',
     'unavailable',
   ],
 };

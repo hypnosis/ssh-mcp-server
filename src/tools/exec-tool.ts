@@ -26,7 +26,6 @@ import {
 import { SSHTimeoutError } from '../runner/errors.js';
 import {
   blockedMessage,
-  CONFIRMATION_MARKER,
   findRemovalTargets,
   inspectCommand,
 } from '../utils/destructive-command.js';
@@ -159,28 +158,7 @@ export class ExecTool {
       name: 'ssh_exec',
       annotations: { title: 'Run commands', ...RUNS_COMMANDS },
       description:
-        'When: running a command, or a list of commands, on one machine — the fallback for work that has ' +
-        'no tool of its own — every other tool here does in one call what exec needs a chain of shell for.\n' +
-        'Not for:\n' +
-        '  reading or writing files — ssh_file_read and ssh_file_list take a list of paths; ssh_file_write ' +
-        'writes beside the target, renames into place and compares sha256. cat and echo leave a half-written ' +
-        'config live.\n' +
-        '  logs — ssh_log_tail and ssh_log_search take a list of files and a glob in one call, and say when a ' +
-        'result was cut short. exec + grep costs a round trip per file and hides truncation.\n' +
-        '  moving bytes — ssh_upload and ssh_download. Never base64 through exec: output limits truncate it ' +
-        'silently and the file lands broken.\n' +
-        '  anything slow — detach: true below, then ssh_job_status, ssh_job_output, ssh_job_kill. Without it a ' +
-        'long command dies on the timeout with the work half done.\n' +
-        '  health and diagnosis — ssh_snapshot, ssh_audit_baseline, ssh_disk_breakdown, ssh_service_status, ' +
-        'ssh_tls_check. They parse the answer and name what could not be measured, instead of returning a blank ' +
-        'that reads as zero.\n' +
-        '  is the machine reachable — ssh_monitor action:test.\n' +
-        'Piping output into a file to read it back with a second call means the wrong tool was picked.\n' +
-        'Refused before anything runs: a recursive delete aimed at the filesystem root, a home directory or a ' +
-        'system tree (/etc, /usr, /var, /home, …) — including a path that reaches one of them through a symlink, ' +
-        'and including a target the server expands itself (variable, substitution, glob), which cannot be checked ' +
-        `in advance. Append "${CONFIRMATION_MARKER}" to that one command to mean it; the rest of the batch is ` +
-        'unaffected.',
+          'Run command(s). command (one or a list), sudo, cwd, timeout, detach. Last resort: files, logs, transfers, health and jobs have their own tools.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -194,10 +172,7 @@ export class ExecTool {
               { type: 'array', items: { type: 'string' } },
             ],
             description:
-              'One command, or a list of them: ["hostname", "whoami"]. Each one runs in its own shell, so a ' +
-              'variable set by one does not reach the next and a cd inside one does not move the next — cwd ' +
-              'below applies to every command in the list. A non-zero exit does not stop the list — each ' +
-              'command answers for itself; a broken connection does, and the answer names how far it got.',
+              'One command, or a list: ["hostname", "whoami"]. Each runs in its own shell — no shared variable, no shared cd; cwd applies to all. A non-zero exit does not stop the list.',
           },
           sudo: {
             type: 'boolean',
@@ -207,25 +182,20 @@ export class ExecTool {
           cwd: {
             type: 'string',
             description:
-              'Directory to start in; applies to a detached job too. A directory that cannot be entered ' +
-              'stops the command instead of running it somewhere else.',
+              'Directory to start in, detached jobs included. Cannot be entered -> the command stops, it does not run elsewhere.',
           },
           timeout: {
             type: 'number',
             description:
-              `Milliseconds before the command is killed; default ${DEFAULT_TIMEOUT_MS} ` +
-              `(${DEFAULT_TIMEOUT_MS / 1000} seconds), counted per ` +
-              'command in a list, not for the whole list. Raising it for work measured in minutes is the wrong ' +
-              'fix — use detach.',
+              `Milliseconds, per command in a list, not for the whole list; default ${DEFAULT_TIMEOUT_MS}. ` +
+              'Work measured in minutes -> detach, not a bigger number.',
             default: DEFAULT_TIMEOUT_MS,
           },
           detach: {
             type: 'boolean',
             description:
-              'Start the command as a background job on the server and return its id right away, ' +
-              'instead of waiting for it. The job outlives this call and the timeout above does not ' +
-              'apply to it; follow it with ssh_job_status / ssh_job_output and stop it with ssh_job_kill. ' +
-              'Takes a single command and cannot be combined with sudo. Default: false',
+              'Background job on the server: returns an id at once, outlives this call, timeout does not apply. ' +
+              'Follow with ssh_job_status / ssh_job_output, stop with ssh_job_kill. One command, no sudo. Default: false',
             default: false,
           },
         },

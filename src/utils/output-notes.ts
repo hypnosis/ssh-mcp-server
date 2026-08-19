@@ -167,3 +167,24 @@ export function exitCodeHint(exitCode: number): string {
   }
   return '';
 }
+
+/**
+ * The path a tool complained about, taken out of its own words:
+ * "grep: /var/log/secure: Permission denied".
+ *
+ * Read by whoever asked, because a complaint silenced or left as raw text
+ * turns "could not look" into "nothing there".
+ */
+export function unreadablePath(line: string): string {
+  const complaint = /^[^:]*: (.*): [^:]*$/.exec(line.trim());
+  const named = complaint ? complaint[1] : line.trim();
+  // The name may sit inside the complaint's own words rather than beside
+  // them: grep names the file plainly, du says "cannot read directory
+  // '/root'". A quoted path is what both of them agree on — quotes alone are
+  // not enough, because BusyBox writes "can't open" and spends a quote on it
+  const quoted = /'(\/[^']*)'/.exec(named);
+  if (quoted) return quoted[1];
+
+  const wrapped = /^'(.*)'$/.exec(named);
+  return wrapped ? wrapped[1] : named;
+}

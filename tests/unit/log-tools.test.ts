@@ -80,6 +80,13 @@ function globExpression(pattern: string): RegExp {
  * флаг, и обращение не к тому журналу.
  */
 function answer(command: string): SSHExecuteResult {
+  const result = respond(command);
+  // Команде, заткнувшей stderr, сервер жалобы не показывает. Без этого мок
+  // отвечал бы добрее живой машины и глушение проходило бы незамеченным
+  return command.includes('2>/dev/null') ? ({ ...result, stderr: '' } as SSHExecuteResult) : result;
+}
+
+function respond(command: string): SSHExecuteResult {
   const override = overrides.find(([pattern]) => pattern.test(command));
   if (override) return { ...ok(), ...override[1] } as SSHExecuteResult;
 
@@ -1159,5 +1166,147 @@ describe('ssh_log_search: потолок времени', () => {
     const greps = sentCommands().filter(([command]) => command.startsWith('grep '));
     expect(greps).toHaveLength(2);
     for (const [, options] of greps) expect(options.timeout).toBe(90000);
+  });
+});
+
+/**
+ * Права — тот же «мы не знаем», что и обрезанный ответ, и обрабатываются так же.
+ * Молча выброшенный по правам файл читается как «в журнале чисто», а закрытая
+ * ветка дерева — как «искали везде». Жалобу пишут оба набора утилит, но
+ * по-разному: coreutils берёт имя в кавычки, BusyBox пишет как есть.
+ */
+describe('закрытое правами называется, а не выбрасывается', () => {
+  const outcomeOf = async (args: Record<string, unknown>) =>
+    (await responseOf(call('ssh_log_search', args))).structuredContent as Record<string, unknown>;
+
+  const complaints: Array<[string, string]> = [
+    ['coreutils', "find: '/var/log/closed': Permission denied"],
+    ['BusyBox', 'find: /var/log/closed: Permission denied'],
+  ];
+
+  it.each(complaints)('%s: закрытый каталог назван полем, а не пропущен', async (_utils, complaint) => {
+    overrides.push([/^if \[ -f /, { stdout: '/var/log/syslog\0', stderr: complaint }]);
+
+    const outcome = await outcomeOf({ path: '/var/log/*.log', query: 'ERROR', recursive: true });
+
+    expect(outcome.files_unreadable).toContain('/var/log/closed');
+  });
+
+  it('закрытый каталог назван и словами, не только полем', async () => {
+    overrides.push([
+      /^if \[ -f /,
+      { stdout: '/var/log/syslog\0', stderr: "find: '/var/log/closed': Permission denied" },
+    ]);
+
+    expect(await search({ path: '/var/log/*.log', query: 'ERROR', recursive: true })).toContain(
+      'could not look inside /var/log/closed'
+    );
+  });
+
+  it('только имена: закрытый каталог виден и в этой ветке', async () => {
+    overrides.push([
+      /^if \[ -f /,
+      { stdout: '/var/log/syslog\0', stderr: "find: '/var/log/closed': Permission denied" },
+    ]);
+
+    const outcome = await outcomeOf({
+      path: '/var/log/*.log',
+      query: 'ERROR',
+      recursive: true,
+      namesOnly: true,
+    });
+
+    expect(outcome.files_unreadable).toContain('/var/log/closed');
+  });
+
+  it('пачка журналов: закрытый каталог стоит рядом с непрочитанными файлами', async () => {
+    overrides.push([
+      /^if \[ -f /,
+      {
+        stdout: '/var/log/syslog\0/var/log/missing.log\0',
+        stderr: "find: '/var/log/closed': Permission denied",
+      },
+    ]);
+
+    const outcome = await outcomeOf({ path: '/var/log/*.log', query: 'ERROR', recursive: true });
+
+    expect(outcome.files_unreadable).toEqual(['/var/log/closed', '/var/log/missing.log']);
+  });
+
+  /**
+   * Ничего не нашлось и жаловались на права — это разные вещи, и отказ обязан
+   * сказать какая: «no files match» без причины отправляет искать опечатку в
+   * шаблоне вместо того, чтобы взять sudo.
+   */
+  it('пусто из-за прав — отказ называет причину', async () => {
+    overrides.push([
+      /^if \[ -f /,
+      { stdout: '', stderr: "find: '/var/log/closed': Permission denied" },
+    ]);
+
+    expect(await search({ path: '/var/log/closed/*.log', query: 'ERROR' })).toContain(
+      'Permission denied'
+    );
+  });
+
+  it.each(complaints)(
+    '%s: файл с нечитаемым временем ищется, а не уходит в «не менялся»',
+    async (_utils, complaint) => {
+      logs.set('/var/log/closed', ['ERROR inside']);
+      overrides.push([/^date /, { stdout: '2026-08-19\n' }]);
+      overrides.push([/^find .*-mmin/, { stdout: '/var/log/syslog\0', stderr: complaint }]);
+      overrides.push([/^grep -l -E '\[0-9\]\{4\}/, { stdout: '', exitCode: 1 }]);
+
+      const outcome = await outcomeOf({
+        path: ['/var/log/syslog', '/var/log/closed'],
+        query: 'ERROR',
+        since: 'today',
+      });
+
+      // Окно не выбросило его: он прочитан наравне со свежим
+      expect(outcome.files_skipped).toBe(0);
+      expect(outcome.matches).toBe(2);
+    }
+  );
+
+  it('нечитаемое время названо словами — окно к такому файлу не применялось', async () => {
+    logs.set('/var/log/closed', ['ERROR inside']);
+    overrides.push([/^date /, { stdout: '2026-08-19\n' }]);
+    overrides.push([
+      /^find .*-mmin/,
+      { stdout: '/var/log/syslog\0', stderr: "find: '/var/log/closed': Permission denied" },
+    ]);
+    overrides.push([/^grep -l -E '\[0-9\]\{4\}/, { stdout: '', exitCode: 1 }]);
+
+    expect(
+      await search({
+        path: ['/var/log/syslog', '/var/log/closed'],
+        query: 'ERROR',
+        since: 'today',
+      })
+    ).toContain('the time of /var/log/closed could not be read');
+  });
+
+  /**
+   * Старый файл и файл, до которого не дотянулись, — разные исходы. Первый
+   * сосчитан пропущенным, второй прочитан.
+   */
+  it('нетронутый файл по-прежнему пропускается и считается', async () => {
+    logs.set('/var/log/old.log', ['ERROR ancient']);
+    logs.set('/var/log/closed', ['ERROR inside']);
+    overrides.push([/^date /, { stdout: '2026-08-19\n' }]);
+    overrides.push([
+      /^find .*-mmin/,
+      { stdout: '/var/log/syslog\0', stderr: "find: '/var/log/closed': Permission denied" },
+    ]);
+    overrides.push([/^grep -l -E '\[0-9\]\{4\}/, { stdout: '', exitCode: 1 }]);
+
+    const outcome = await outcomeOf({
+      path: ['/var/log/syslog', '/var/log/old.log', '/var/log/closed'],
+      query: 'ERROR',
+      since: 'today',
+    });
+
+    expect(outcome.files_skipped).toBe(1);
   });
 });

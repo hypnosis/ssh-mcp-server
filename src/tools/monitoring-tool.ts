@@ -88,18 +88,7 @@ export class MonitoringTool {
       name: 'ssh_monitor',
       annotations: { title: 'Manage connections', ...MANAGES_CONNECTION },
       description:
-        'When: questions about the connection rather than about the machine.\n' +
-        'action: list names the machines you are allowed to name — the only place those names ' +
-        'come from, and never a reason to ask anyone for a password or a key, because the login ' +
-        'is already stored here.\n' +
-        'action: test says what a machine is before any real work is aimed at it: ready, limited ' +
-        '(the login works but the shell is not POSIX — a device with its own CLI), no-route (never ' +
-        'reached) or rejected (reached, login refused). A failed command would not tell those ' +
-        'four apart.\n' +
-        'action: stats and close are about the shared connection — what it is doing, and hanging ' +
-        'it up now instead of waiting for it to idle out. action: reload re-reads the profiles ' +
-        'file after it has been edited.\n' +
-        'Not for: anything the machine itself has to answer — ssh_exec and the tools around it.',
+        'The connection, not the machine. action: list (profile names) | test (ready|limited|no-route|rejected) | stats | close | reload.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -111,8 +100,7 @@ export class MonitoringTool {
           profile: {
             type: 'string',
             description:
-              'Which machine. Required for stats, test and close — each profile is a different ' +
-              'server, so none is assumed. list and reload take none.'
+              'Which machine. Required for stats, test and close; list and reload take none.'
           }
         },
         required: ['action']

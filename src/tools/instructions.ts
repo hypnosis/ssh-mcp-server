@@ -1,79 +1,43 @@
 /**
- * The map of the toolset, handed to the model at connect time.
+ * The index of the toolset, handed to the model at connect time.
  *
- * The client reads this once, on initialize, and puts it in the model's system
- * prompt before any call is made. It says what each tool does that ssh_exec
- * cannot — a round trip saved, an answer parsed, a write verified, a
- * measurement honestly marked as missing — because a model that only sees a
- * list of names reaches for the one tool that runs anything.
+ * The client reads it once, on initialize, and puts it in the system prompt
+ * before any call is made. It answers "which tool for which question" and the
+ * few rules that hold for all of them; what each tool takes and returns lives
+ * in the tool itself, so nothing is said twice.
  *
- * Every tool is named here on purpose: a tool missing from the map is a tool
- * the model will not choose.
+ * Every tool is named here on purpose: one missing from the index is one the
+ * model will not choose.
  */
 
-export const SERVER_INSTRUCTIONS = `SSH access to remote machines. Every call names a profile; there is no default.
+export const SERVER_INSTRUCTIONS = `SSH to configured machines. Every call names a profile; there is no default.
 
-Profiles hold the credentials — key, passphrase or password — and the server reads
-them itself. Never ask anyone for a secret and never put one in a call: name the
-profile. ssh_monitor action:list names the profiles you may name, and a call made
-without one is refused with the same list. Two profiles can point at the same
-address and differ only by name.
+Credentials — key, passphrase or password — live in the profiles and the server reads
+them itself. Never ask anyone for a secret; name the profile. ssh_monitor action:list
+gives the names. Two profiles can point at the same address and differ only by name.
 
-Two resources answer questions about the setup instead of guesswork:
-ssh://profiles/current is what is configured here — name, host, port, user and
-whether the login uses a key or a password, secrets never included — and
-ssh://profiles/example is the shape of the profiles file. Read them before
-inventing a format or asking someone for one.
+On a machine you have not touched yet: ssh_monitor action:test first — it names the
+state (ready, limited, no-route, rejected) before anything else runs.
 
-Answers carry fields beside the text, not instead of it: every tool that declares an
-output schema puts the outcome in structuredContent, and the legend there explains
-the words it uses. Read the fields; the text holds the detail.
+Which tool for which question:
+  run something          ssh_exec — for what has no tool of its own
+  slow work              ssh_exec detach:true, then ssh_job_status, ssh_job_output,
+                         ssh_job_list, ssh_job_kill
+  logs, any text search   ssh_log_search, ssh_log_tail
+  files                   ssh_file_read, ssh_file_list, ssh_file_write
+  move bytes              ssh_upload, ssh_download
+  how it is doing         ssh_snapshot
+  how it is set up        ssh_audit_baseline, ssh_tls_check
+  something is wrong      ssh_service_status, ssh_disk_breakdown
+  the connection          ssh_monitor
 
-On a machine you have not touched yet, start with ssh_monitor action:test: it
-names the state before anything else runs against it.
+Reach for the specific tool before ssh_exec: each batches round trips, parses the
+answer, verifies what it wrote, or says it could not check — where exec returns a
+blank that reads as zero.
 
-Reach for the specific tool before ssh_exec. Each one below does something exec
-cannot: it batches round trips, parses the answer, verifies what it wrote, or
-says it could not check — instead of returning a blank you would read as zero.
+Answers put the outcome in structuredContent wherever a schema is declared, and its
+legend explains the words it uses. Read the fields; the text holds the detail.
 
-logs       ssh_log_tail and ssh_log_search take a list of files, and a glob in
-           the file name, in one call. The glob is expanded by the server's
-           find, not by its shell, so a name with a space or a newline stays a
-           name. A result cut short says so. exec + tail/grep gives none of
-           that and costs a round trip per file.
-
-files      ssh_file_read takes a list of paths, ssh_file_list one directory.
-           ssh_file_write takes a list of files with mode and sudo per file,
-           writes each one beside its target and moves it into place, and with
-           verify:true compares sha256 afterwards. exec + cat/echo has no such
-           step: a half-written config is already live.
-
-binaries   ssh_upload and ssh_download. Never move bytes as base64 through
-           exec — output limits truncate it silently and the file lands broken.
-
-health     ssh_snapshot for one machine at a glance. ssh_audit_baseline and
-           ssh_tls_check return structured fields — read them, do not parse the
-           text. What could not be measured says NOT CHECKED: that is neither
-           zero nor healthy, and reporting it as either is a lie.
-
-digging    ssh_service_status for one unit, ssh_disk_breakdown when a disk
-           fills up. Each collects its evidence in one round trip and classifies
-           it; exec + systemctl + du + find is four calls and no verdict.
-
-slow work  ssh_exec with detach:true answers with a job id at once; without
-           it a long command dies on the timeout with the work half done and out
-           of reach. Follow it with ssh_job_status, ssh_job_output, ssh_job_list
-           and stop it with ssh_job_kill. Of its three outcomes — running,
-           finished, lost — lost is neither success nor failure.
-
-is it up   ssh_monitor action:test answers with one of four states. limited
-           means logged in, but the shell is the device's own CLI (routers,
-           appliances): the connection is fine and ssh_exec with the vendor's
-           own commands is all that runs there. The file tools, ssh_snapshot,
-           ssh_audit_baseline, ssh_tls_check, ssh_disk_breakdown and
-           ssh_service_status have nothing to work with on such a shell. Do not
-           go fixing a network that works.
-
-ssh_exec is for what has no tool of its own. It refuses a recursive delete aimed
-at a system path and stops the whole batch; append # CONFIRMED-DESTRUCTIVE to
-that one command when you mean it.`;
+Setup questions: ssh://profiles/current (what is configured here) and
+ssh://profiles/example (the shape of the file).
+`;

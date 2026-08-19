@@ -103,17 +103,17 @@ describe('ssh_exec: обещанный срок совпадает с отпра
   });
 
   /**
-   * Обе величины в тексте — миллисекунды и секунды — обязаны идти от одного
-   * числа: разъехавшись, они превращают описание в ложь, которую читает агент.
+   * Срок назван в тексте и в значении по умолчанию. Разъехавшись, они
+   * превращают описание в ложь, которую читает агент.
    */
   it('текст схемы называет то же число, что и её значение по умолчанию', () => {
     const properties = new ExecTool().getTool().inputSchema.properties as Record<
       string,
-      { description?: string }
+      { description?: string; default?: unknown }
     >;
     const promised = Number(promisedDefault());
 
     expect(properties.timeout.description).toContain(`default ${promised}`);
-    expect(properties.timeout.description).toContain(`(${promised / 1000} seconds)`);
+    expect(properties.timeout.default).toBe(promised);
   });
 });

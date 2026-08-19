@@ -5,7 +5,7 @@
 
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { READS_REMOTE } from './annotations.js';
-import { PROFILE_PARAM_DESCRIPTION } from './params.js';
+import { PROFILE_PARAM_DESCRIPTION, SUDO_PARAM_DESCRIPTION } from './params.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -17,6 +17,7 @@ import {
   DEFAULT_MAX_MATCHES,
   limitMatches,
   matchLimitNote,
+  unreadablePath,
 } from '../utils/output-notes.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
 import { requireText, requireTextList } from '../utils/tool-args.js';
@@ -26,12 +27,6 @@ import { posix as posixPath } from 'path';
 /** Lines that carry something, as the answer counts them */
 function countLines(text: string): number {
   return text ? text.split('\n').filter((line) => line.length > 0).length : 0;
-}
-
-/** The file grep could not open, out of its own complaint: "grep: /path: reason" */
-function unreadablePath(line: string): string {
-  const complaint = /^[^:]*: (.*): [^:]*$/.exec(line.trim());
-  return complaint ? complaint[1] : line.trim();
 }
 
 /** Characters that make a name count as a pattern instead of a file name */
@@ -241,14 +236,14 @@ export class LogTools {
         { type: 'array', items: { type: 'string' } },
       ],
       description:
-        'One path, a list of them, or a glob in the file name: "/var/log/*.log". The glob is ' +
-        'expanded by the server\'s find rather than by a shell, so a name with a space or a newline ' +
-        'stays one name. A glob in the directory part is refused.',
+        'One path, a list, or a glob in the file name: "/var/log/*.log". Expanded by the server\'s ' +
+        'find, not a shell — a name with a space or a newline stays one name. A glob in the ' +
+        'directory part is refused.',
     };
 
     const SUDO_PARAM = {
       type: 'boolean',
-      description: 'Read as root — for logs the profile\'s user cannot open. Default: false',
+      description: SUDO_PARAM_DESCRIPTION,
       default: false,
     };
 
@@ -258,10 +253,7 @@ export class LogTools {
         name: 'ssh_log_tail',
         annotations: { title: 'Tail a log file', ...READS_REMOTE },
         description:
-          'When: what happened most recently — the tail of one file or of every log in a directory, in ' +
-          'one call. Only the last lines cross the wire, so the size of the file does not matter.\n' +
-          'Not for: looking for something specific — ssh_log_search greps on the machine instead of ' +
-          'hauling lines here to be read. A whole file — ssh_file_read.',
+          'Last lines of file(s). path (list | glob), lines, sudo. File size irrelevant. Looking for something -> ssh_log_search.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -286,14 +278,7 @@ export class LogTools {
         name: 'ssh_log_search',
         annotations: { title: 'Search log files', ...READS_REMOTE },
         description:
-          'When: finding lines in text files on the machine — logs, but any text file will do. The grep ' +
-          'runs there and only what matched comes back, so a search across a gigabyte of logs costs the ' +
-          'same as a small one. A list of files, a glob in the file name, or a whole directory tree with ' +
-          'recursive: true — all in one call.\n' +
-          '"No matches found" is the answer that nothing matched, not a failure; a file that could not ' +
-          'be read is named separately, so an empty result is never a hidden error.\n' +
-          'Not for: the end of a file when nothing is being looked for — ssh_log_tail. The whole ' +
-          'content — ssh_file_read.',
+          'grep on the server. path (list | glob | tree), query, since:today, from:end, namesOnly, recursive. Empty = no match; unreadable files listed apart.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -304,72 +289,59 @@ export class LogTools {
             path: PATH_PARAM,
             query: {
               type: 'string',
-              description: 'Extended regular expression, as grep -E reads it.',
+              description: 'Regex, grep -E dialect.',
             },
             context: {
               type: 'number',
-              description: 'Lines to show around each match. Default: 0',
+              description: 'Lines around each match, as grep -C. Excluded by namesOnly. Default: 0',
               default: 0,
             },
             caseSensitive: {
               type: 'boolean',
-              description: 'Case is ignored unless this is true. Default: false',
+              description: 'false = case ignored. Default: false',
               default: false,
             },
             recursive: {
               type: 'boolean',
               description:
-                'Search the whole tree under the path instead of one level. With it a directory can ' +
-                'be named directly, and a glob in the file name — "/etc/nginx" with recursive, or ' +
-                '"/etc/nginx/*.conf" to reach only those at any depth. Default: false',
+                'Walk the whole tree, not one level. With a glob: "/etc/nginx/*.conf" reaches those ' +
+                'at any depth. Symlinked files are searched, symlinked dirs not descended. Default: false',
               default: false,
             },
             namesOnly: {
               type: 'boolean',
               description:
-                'Answer with the paths that contain a match and nothing else — the cheap way to ask ' +
-                '"which files", since no line bodies travel and the cap is never reached. Cannot be ' +
-                'combined with context. Default: false',
+                'Answer = matching paths, no line bodies. One command for the whole list; maxMatches ' +
+                'and context do not apply. Default: false',
               default: false,
             },
             since: {
               type: 'string',
               description:
-                'Only what falls inside a time window: "today" — the day the server itself is ' +
-                'living, asked rather than assumed — a date like "2026-08-19", or an age like ' +
-                '"2h" / "3d". Files nobody wrote to in that window are not read at all, and in ' +
-                'the rest only lines carrying a matching date are kept, in any of the three shapes ' +
-                'a log writes one (2026-08-19, Aug 19, 19/Aug/2026) — the answer says how many ' +
-                'files were skipped. A window shorter than a day narrows the files but not the lines, ' +
-                'because a date alone cannot say "two hours ago"; a file whose lines carry no ' +
-                'recognisable timestamp is searched in full and named, never silently counted as ' +
-                'empty. Example: since: "today", query: "error".',
+                'Window: "today" | "2026-08-19" | "2h" | "3d", the day taken from the server. Skips ' +
+                'files untouched in it (count reported), then keeps only lines dated inside — ' +
+                '2026-08-19, Aug 19, 19/Aug/2026. Undated file: searched whole and named. Under a ' +
+                'day filters files, not lines.',
             },
             from: {
               type: 'string',
               enum: ['start', 'end'],
               description:
-                'Which end the cap keeps when there are more matches than maxMatches: "end" is the ' +
-                'newest, "start" the oldest. A log is read from its end, so that is the default; ' +
-                'switch to "start" for a file whose beginning is the interesting part — that one ' +
-                'also stops reading once the cap is full, while "end" has to pass the whole file. ' +
-                'Default: end',
+                'Which end maxMatches keeps: "end" newest (scans the whole file), "start" oldest ' +
+                '(stops reading at the cap). Default: end',
               default: 'end',
             },
             maxMatches: {
               type: 'number',
               description:
-                'Cap per file. Reaching it is said in the answer, so a cut list is never read as the ' +
-                `whole of it; from below decides which end survives. Default: ${DEFAULT_MAX_MATCHES}`,
+                `Cap per file; reaching it is reported. Default: ${DEFAULT_MAX_MATCHES}`,
               default: DEFAULT_MAX_MATCHES,
             },
             timeout: {
               type: 'number',
               description:
-                `Milliseconds before the search is killed; default ${DEFAULT_TIMEOUT_MS} ` +
-                `(${DEFAULT_TIMEOUT_MS / 1000} seconds), counted per file. Worth raising for a ` +
-                'multi-gigabyte file read end to end — which is what from: "end" does, while ' +
-                'from: "start" stops at the cap and rarely needs it.',
+                `Milliseconds per file, default ${DEFAULT_TIMEOUT_MS}. Raise for multi-gigabyte ` +
+                'files with from: "end".',
               default: DEFAULT_TIMEOUT_MS,
             },
             sudo: SUDO_PARAM,
@@ -552,6 +524,9 @@ export class LogTools {
       args.recursive === true
     );
     const notes = expansion.notes;
+    // Directories find could not walk are unreadable in the same sense as a
+    // file grep could not open, and travel in the same field
+    const refusedDirs = expansion.unreadable;
     let paths = expansion.paths;
 
     // A time window narrows the work twice: files nobody wrote to are not
@@ -564,16 +539,22 @@ export class LogTools {
     let filesUndated: string[] = [];
     if (args.since !== undefined) {
       const window = parseSince(args.since, await this.serverToday(sshConfig, sudo));
-      const fresh = await this.changedWithin(sshConfig, paths, window.minutes, sudo);
+      const { fresh, unchecked } = await this.changedWithin(sshConfig, paths, window.minutes, sudo);
 
-      filesSkipped = paths.length - fresh.length;
-      if (fresh.length < paths.length) {
+      filesSkipped = paths.length - fresh.length - unchecked.length;
+      if (filesSkipped > 0) {
         notes.push(
-          `Note: ${paths.length - fresh.length} of ${paths.length} file(s) were not touched within ` +
+          `Note: ${filesSkipped} of ${paths.length} file(s) were not touched within ` +
             `the window and were not searched.`
         );
       }
-      paths = fresh;
+      if (unchecked.length > 0) {
+        notes.push(
+          `Note: the time of ${unchecked.join(', ')} could not be read, so the window was not ` +
+            `applied there — searched anyway rather than dropped.`
+        );
+      }
+      paths = [...fresh, ...unchecked];
 
       if (window.days.length > 0 && paths.length > 0) {
         const dated = await this.filesWithTimestamps(sshConfig, paths, sudo);
@@ -682,7 +663,7 @@ export class LogTools {
         structuredContent: {
           matches: found.length,
           files_searched: paths.length - unreadableFiles.length,
-          files_unreadable: unreadableFiles,
+          files_unreadable: [...refusedDirs, ...unreadableFiles],
           files_skipped: filesSkipped,
           files_undated: filesUndated,
           // Only whole files are named here, so there is no per-file cap to hit
@@ -711,7 +692,7 @@ export class LogTools {
       const outcome = (found: number, limited: boolean): SearchOutcome => ({
         matches: found,
         files_searched: 1,
-        files_unreadable: [],
+        files_unreadable: refusedDirs,
         files_skipped: filesSkipped,
         files_undated: filesUndated,
         limited,
@@ -823,7 +804,7 @@ export class LogTools {
       structuredContent: {
         matches: results.reduce((total, result) => total + result.matchCount, 0),
         files_searched: results.length - failed.length,
-        files_unreadable: failed.map((result) => result.path),
+        files_unreadable: [...refusedDirs, ...failed.map((result) => result.path)],
         files_skipped: filesSkipped,
         files_undated: filesUndated,
         limited: results.some((result) => result.limited === true),
@@ -852,27 +833,46 @@ export class LogTools {
     return day;
   }
 
-  /** Of the given files, the ones written to inside the window */
+  /**
+   * Of the given files, the ones written to inside the window — and the ones
+   * whose time could not be read at all.
+   *
+   * The two are kept apart on purpose. A file find could not look at is not
+   * an old file: dropping it here would send it out as "not touched within
+   * the window", and a closed directory would read as a quiet log. Whatever
+   * could not be checked stays in the search, where an unreadable file is
+   * named for what it is.
+   */
   private async changedWithin(
     sshConfig: any,
     paths: string[],
     minutes: number,
     sudo: boolean
-  ): Promise<string[]> {
-    if (paths.length === 0) return paths;
+  ): Promise<{ fresh: string[]; unchecked: string[] }> {
+    if (paths.length === 0) return { fresh: paths, unchecked: [] };
 
     const result = await this.executor.execute(
       sshConfig,
-      `find ${paths.map((path) => shellQuote(path)).join(' ')} -maxdepth 0 -mmin -${minutes} -print0 2>/dev/null`,
+      `find ${paths.map((path) => shellQuote(path)).join(' ')} -maxdepth 0 -mmin -${minutes} -print0`,
       { sudo, idempotent: true }
     );
 
     // An answer that was cut off cannot be used to drop files: the missing
     // tail would look exactly like "nothing was written there"
-    if (result.truncated) return paths;
+    if (result.truncated) return { fresh: paths, unchecked: [] };
 
-    const fresh = new Set(result.stdout.split('\0').filter((name) => name.length > 0));
-    return paths.filter((path) => fresh.has(path));
+    const found = new Set(result.stdout.split('\0').filter((name) => name.length > 0));
+    const complained = new Set(
+      result.stderr
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map(unreadablePath)
+    );
+
+    return {
+      fresh: paths.filter((path) => found.has(path)),
+      unchecked: paths.filter((path) => !found.has(path) && complained.has(path)),
+    };
   }
 
   /** Of the given files, the ones whose lines carry a date at all */
@@ -907,9 +907,10 @@ export class LogTools {
     paths: string[],
     sudo: boolean,
     recursive = false
-  ): Promise<{ paths: string[]; notes: string[] }> {
+  ): Promise<{ paths: string[]; notes: string[]; unreadable: string[] }> {
     const expanded: string[] = [];
     const notes: string[] = [];
+    const unreadable: string[] = [];
 
     for (const path of paths) {
       const pattern = posixPath.basename(path);
@@ -945,9 +946,17 @@ export class LogTools {
         sshConfig,
         `if [ -f ${shellQuote(literal)} ]; then printf '${GLOB_LITERAL}\\n'; else ` +
           `find ${shellQuote(target.path)} ${depth}! -type d ` +
-          `${nameFilter}-print0 2>/dev/null; fi`,
+          `${nameFilter}-print0; fi`,
         { sudo, idempotent: true }
       );
+
+      // What find could not walk is named, not dropped. Silenced, a closed
+      // directory inside the tree leaves the answer looking complete: files
+      // that were never looked at cannot be told from files with nothing in them
+      const refused = result.stderr
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map(unreadablePath);
 
       if (result.stdout.split('\n').some((line) => line.trim() === GLOB_LITERAL)) {
         expanded.push(literal);
@@ -965,7 +974,16 @@ export class LogTools {
         throw new Error(
           result.truncated
             ? `cannot expand "${path}": the list of matching files was too long to read.`
-            : `no files match "${path}"`
+            : refused.length > 0
+              ? `no files match "${path}": ${result.stderr.trim().split('\n')[0]}`
+              : `no files match "${path}"`
+        );
+      }
+
+      if (refused.length > 0) {
+        unreadable.push(...refused);
+        notes.push(
+          `Note: could not look inside ${refused.join(', ')} — anything there was not searched.`
         );
       }
 
@@ -982,7 +1000,7 @@ export class LogTools {
       expanded.push(...matches.slice(0, MAX_GLOB_MATCHES));
     }
 
-    return { paths: expanded, notes };
+    return { paths: expanded, notes, unreadable };
   }
 
   /** Notes about expanding a pattern go under the answer, not instead of it */

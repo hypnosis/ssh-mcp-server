@@ -52,7 +52,7 @@ describe('server instructions', () => {
   it('называют ssh_exec последним средством, а не первым', () => {
     const text = client.getInstructions() ?? '';
     expect(text).toContain('Reach for the specific tool before ssh_exec');
-    expect(text).toContain('ssh_exec is for what has no tool of its own');
+    expect(text).toContain('for what has no tool of its own');
   });
 });
 

@@ -106,10 +106,7 @@ export class JobTools {
         name: 'ssh_job_status',
         annotations: { title: 'Check a background job', ...READS_REMOTE },
         description:
-          'When: following work started by ssh_exec with detach: true. Four outcomes, and two of them ' +
-          'are neither success nor failure: lost means not running and without an exit code (signalled, or ' +
-          'the server restarted), missing means the server has no such job at all.\n' +
-          'Not for: what it printed — ssh_job_output, which a lost job still has.',
+          'State of a detached job. id -> running | done | lost | missing. lost = no exit code, but ssh_job_output still has what it wrote.',
         inputSchema: {
           type: 'object',
           properties: { profile, id },
@@ -121,10 +118,7 @@ export class JobTools {
         name: 'ssh_job_output',
         annotations: { title: 'Read job output', ...READS_REMOTE },
         description:
-          'When: collecting what a detached job has written so far, or all of it once finished. stdout and ' +
-          'stderr together. The answer names the offset to continue from, so repeated reads never overlap and ' +
-          'never skip. A lost job still has whatever it managed to write.\n' +
-          'Not for: whether it is still running — ssh_job_status.',
+          'stdout+stderr of a detached job. id, offset -> the next offset, so repeated reads never overlap or skip.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -143,8 +137,7 @@ export class JobTools {
         name: 'ssh_job_list',
         annotations: { title: 'List background jobs', ...READS_REMOTE },
         description:
-          'When: the job id was not kept, or several jobs are in flight on one machine. Directories of jobs ' +
-          `that are no longer running and older than ${JOB_TTL_SEC / 86400} days are cleared along the way.`,
+          'Detached jobs on a machine. profile only. Use when the id was not kept.',
         inputSchema: {
           type: 'object',
           properties: { profile },
@@ -156,8 +149,7 @@ export class JobTools {
         name: 'ssh_job_kill',
         annotations: { title: 'Stop a background job', ...WRITES_REMOTE },
         description:
-          'When: a detached job has to stop early. The signal goes to its whole process group, so its ' +
-          'children stop too. A job that is already gone is reported, not refused.',
+          'Stop a detached job. id, signal. Reaches the whole process group; a job already gone is reported, not refused.',
         inputSchema: {
           type: 'object',
           properties: {

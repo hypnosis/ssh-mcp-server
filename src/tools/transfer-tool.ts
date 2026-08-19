@@ -159,22 +159,19 @@ interface DownloadArgs {
 const VERIFY_PARAM = {
   type: 'boolean',
   description:
-    'Compare sha256 on both sides afterwards — every file of a directory, not just the total. A ' +
-    'machine with no sha256 tool answers "nothing to check with": a delivered file, not a broken ' +
-    'one. Default: true.',
+    'sha256 on both sides, per file. "unavailable" = no sha256 on the machine = delivered, not broken. Default: true',
   default: true,
 } as const;
 
 const RECURSIVE_PARAM = {
   type: 'boolean',
-  description: 'Only to force it — a directory is recognised as one without being told.',
+  description: 'Only to force it — a directory is recognised on its own.',
 } as const;
 
 const TIMEOUT_PARAM = {
   type: 'number',
   description:
-    'Milliseconds before giving up. There is no ceiling by default: unlike ssh_exec, a transfer runs ' +
-    'as long as it takes, and a stalled connection is dropped by the transport itself.',
+    'Milliseconds. No ceiling by default — a transfer runs as long as it takes.',
 } as const;
 
 export class TransferTool {
@@ -190,57 +187,44 @@ export class TransferTool {
         name: 'ssh_upload',
         annotations: { title: 'Upload to a server', ...WRITES_REMOTE },
         description:
-          'When: moving bytes onto a machine — a binary, an archive, a built directory, anything ' +
-          'already sitting on local disk. The bytes go over the transport and never pass through this ' +
-          'conversation, so size costs nothing here. Landing follows the same rule as a write: beside ' +
-          'the target first, into place by rename, and by default the sha256 of every file is compared ' +
-          'afterwards.\n' +
-          'A directory arrives as its contents at remote_path, not as a folder inside it, and it is ' +
-          'replaced whole or not at all.\n' +
-          'Not for: content that exists only as text here and nowhere on disk — ssh_file_write. Never ' +
-          'hand bytes to ssh_exec as base64: the output limit cuts it silently and the file lands broken.',
+          'Send a local file or dir to a machine. local_path, remote_path, mode, owner, sudo. Atomic + sha256. Never base64 via ssh_exec: cut silently.',
         inputSchema: {
           type: 'object',
           properties: {
             profile: { type: 'string', description: PROFILE_PARAM_DESCRIPTION },
             local_path: {
               type: 'string',
-              description: 'What to send: a file or a whole directory on this machine.',
+              description: 'A file or a directory on this machine.',
             },
             remote_path: {
               type: 'string',
-              description: 'Where it goes on the server.',
+              description:
+                'Where it goes on the server. A sent directory becomes this path itself and replaces ' +
+                'it whole, not file by file.',
             },
             mode: {
               type: 'string',
               description:
-                'Permissions as an octal string, one value for everything sent. Leave it out and each ' +
-                'file keeps the permissions it has locally, so a build directory arrives with its ' +
-                'executables still executable. Applied before the data takes its place, and for a ' +
-                'directory to every file in it — a chmod afterwards is a wasted call.',
+                'Octal, one value for every file sent. Omit to keep local permissions.',
             },
             recursive: RECURSIVE_PARAM,
             verify: VERIFY_PARAM,
             sudo: {
               type: 'boolean',
               description:
-                'For destinations the profile\'s user cannot write, /etc and /opt among them. The ' +
-                'transfer itself never runs as root: the data goes to /tmp first, so the machine needs ' +
-                'room for a second copy. Default: false.',
+                'For /etc, /opt and the like. Data stages in /tmp first — the machine needs room for a second copy. Default: false',
               default: false,
             },
             owner: {
               type: 'string',
               description:
-                'Ownership as "root:root", applied before the data takes its place and, for a ' +
-                'directory, to every file in it. Needs sudo; without it the answer says so instead of ' +
-                'pretending it applied.',
+                '"root:root", every file sent. Needs sudo; without it the answer says it was not applied.',
             },
             overwrite: {
               type: 'boolean',
               description:
-                'Set false to refuse rather than replace — including when the server cannot say ' +
-                'whether a target is there. Default: true.',
+                'false = refuse rather than replace, including when the target cannot be checked. ' +
+                'A directory is judged whole, not per file. Default: true',
               default: true,
             },
             timeout: TIMEOUT_PARAM,
@@ -253,12 +237,7 @@ export class TransferTool {
         name: 'ssh_download',
         annotations: { title: 'Download from a server', ...WRITES_REMOTE },
         description:
-          'When: a file or a directory has to end up on local disk — an archive, a database dump, a ' +
-          'binary, a backup to keep. The bytes land as a file and never pass through this ' +
-          'conversation, and sha256 is compared on both sides by default. An interrupted transfer ' +
-          'leaves no stump at local_path: the data lands beside it and is moved in once whole.\n' +
-          'Not for: finding out what is inside something — ssh_file_read and ssh_log_search answer ' +
-          'that on the machine itself. Fetching a file in order to read it is a round trip nobody needs.',
+          'Fetch a remote file or dir to local disk. remote_path, local_path, sudo. Atomic + sha256. Just reading content -> ssh_file_read.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -270,9 +249,7 @@ export class TransferTool {
             sudo: {
               type: 'boolean',
               description:
-                'For sources the profile\'s user cannot read, /root among them. A copy is made under ' +
-                'root in /tmp, fetched from there and removed — so the machine needs room for it. ' +
-                'Default: false.',
+                'For /root and the like. A root copy stages in /tmp, is fetched and removed — the machine needs room. Default: false',
               default: false,
             },
             timeout: TIMEOUT_PARAM,

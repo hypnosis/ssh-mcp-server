@@ -37,15 +37,7 @@ export class SnapshotTool {
       name: 'ssh_snapshot',
       annotations: { title: 'Snapshot system health', ...READS_REMOTE },
       description:
-        'When: how the machine is doing right now, in one call — uptime, processor, memory, ' +
-        'disk, containers, listening ports, the well-known services and the newest error lines ' +
-        'from the journal. There is nothing to choose, so two snapshots of the same machine are ' +
-        'comparable.\n' +
-        'What there was nothing to measure with is named in unavailable and arrives as null, ' +
-        'never as zero: a machine with neither ss nor netstat would otherwise report no ' +
-        'listening ports, and nothing listening reads as a machine that is fine.\n' +
-        'Not for: why it is that way — ssh_audit_baseline reads the configuration, ' +
-        'ssh_disk_breakdown finds what filled the disk, ssh_service_status digs into one unit.',
+        'Health right now: cpu, mem, disk, containers, ports, services, recent errors. profile only. Unmeasured -> null + unavailable, never 0.',
       inputSchema: {
         type: 'object',
         properties: {

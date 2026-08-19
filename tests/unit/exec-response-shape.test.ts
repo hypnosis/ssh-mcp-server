@@ -40,7 +40,6 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
 }));
 
 const { ExecTool } = await import('../../src/tools/exec-tool.js');
-const { CONFIRMATION_MARKER } = await import('../../src/utils/destructive-command.js');
 
 /** Ответы транспорта по образцу команды; всё, что не совпало, отвечает успехом */
 function respondWith(table: Array<[RegExp, Partial<SSHExecuteResult>]>): void {
@@ -114,9 +113,11 @@ describe('ssh_exec: объявление инструмента', () => {
    * Маркер — единственный способ провести отказанное удаление, и узнаёт о нём
    * агент только отсюда: описание без маркера превращает отказ в тупик.
    */
-  it('описание называет маркер подтверждения', () => {
-    expect(new ExecTool().getTool().description).toContain(CONFIRMATION_MARKER);
-  });
+  /**
+   * Маркер подтверждения из описания снят намеренно: агент читает его в самом
+   * отказе, где он и нужен (сторож — в destructive-command.test.ts), а в
+   * описании он был третьей копией того же текста.
+   */
 });
 
 describe('ssh_exec: ответ на одиночную команду', () => {

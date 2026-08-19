@@ -703,3 +703,149 @@ describe('ssh_disk_breakdown', () => {
     expect(sentCommand()).toContain('NO_JOURNALD');
   });
 });
+
+/**
+ * Права до сервера доезжают параметром, а не пожеланием.
+ *
+ * Разбор диска без прав не видит /root и /var/lib/docker — ровно те каталоги,
+ * ради которых его и зовут, когда место кончилось. Журнал без прав приходит
+ * урезанным, и «в журнале пусто» становится неотличимо от «журнал не показали».
+ * Инструмент, которому нечем взять права, врёт обоими способами молча.
+ */
+describe('права доезжают до сервера', () => {
+  const optionsOf = () => executeMock.mock.calls.at(-1)![2] ?? {};
+
+  it.each([
+    ['ssh_disk_breakdown', { profile: 'p' }],
+    ['ssh_service_status', { profile: 'p', unit: 'nginx' }],
+  ])('%s: без просьбы root не берётся', async (name, args) => {
+    await answer(name, args, '');
+
+    expect(optionsOf().sudo).toBe(false);
+  });
+
+  it.each([
+    ['ssh_disk_breakdown', { profile: 'p', sudo: true }],
+    ['ssh_service_status', { profile: 'p', unit: 'nginx', sudo: true }],
+  ])('%s: просьба доезжает до исполнителя', async (name, args) => {
+    await answer(name, args, '');
+
+    expect(optionsOf().sudo).toBe(true);
+  });
+
+  it.each([['ssh_disk_breakdown'], ['ssh_service_status']])(
+    '%s: параметр объявлен, иначе агенту нечего передать',
+    (name) => {
+      const tool = new AuditTool().getTools().find((candidate) => candidate.name === name)!;
+      const sudo = (tool.inputSchema.properties as Record<string, any>).sudo;
+
+      expect(sudo.type).toBe('boolean');
+      // Правило «когда брать» — то самое место, о которое спотыкались агенты
+      expect(sudo.description).toContain('Straight away for places a plain user cannot read');
+    }
+  );
+});
+
+/**
+ * Каталог, куда `du` не пустили, — это не «там пусто».
+ *
+ * Разбор диска зовут, когда место кончилось, и отвечает он списком самых
+ * жирных каталогов. Список, молча укоротившийся ровно на `/root` и
+ * `/var/lib/docker`, выглядит полным — и виновника в нём нет. Жалобу пишут оба
+ * набора утилит, но по-разному: coreutils берёт имя в кавычки, BusyBox — нет.
+ */
+describe('ssh_disk_breakdown: непрочитанное названо', () => {
+  const complaints: Array<[string, string]> = [
+    ['coreutils', "du: cannot read directory '/root': Permission denied"],
+    ['BusyBox', "du: can't open '/root': Permission denied"],
+  ];
+
+  /** Какая из команд du отвечает за раздел — по ней и видно, заткнули ли её */
+  const SECTION_DU: Record<string, string> = {
+    paths: 'du -shx',
+    var_log: 'du -sh /var/log',
+    cache: 'du -sh "$HOME"/.cache',
+  };
+
+  /**
+   * Ответ сервера, где часть каталогов прочитать не дали.
+   *
+   * Заглушённая команда жалобы не показывает — мок обязан молчать там же, где
+   * молчит сервер, иначе снятое глушение нечем отличить от возвращённого.
+   */
+  async function withComplaint(
+    stderr: string,
+    { from = 'paths', ...args }: Record<string, any> = {}
+  ) {
+    executeMock.mockImplementation(async (_config: unknown, command: string) => {
+      const part = command.split(';').find((chunk) => chunk.includes(SECTION_DU[from])) ?? '';
+      return {
+        stdout: `__SSH_MCP_DISK_SEP__du_0__SSH_MCP_DISK_SEP__\n4.0G\t/var\n`,
+        stderr: part.includes('2>/dev/null') ? '' : stderr,
+        exitCode: 0,
+        truncated: false,
+      };
+    });
+
+    return new AuditTool().handleCall({
+      params: { name: 'ssh_disk_breakdown', arguments: { profile: 'p', ...args } },
+    } as CallToolRequest);
+  }
+
+  it.each(complaints)('%s: закрытый каталог попадает в поля', async (_utils, complaint) => {
+    const answer: any = await withComplaint(complaint);
+
+    expect(answer.structuredContent.unreadable).toEqual(['/root']);
+  });
+
+  it('закрытый каталог назван и словами, с выходом из положения', async () => {
+    const answer: any = await withComplaint("du: cannot read directory '/root': Permission denied");
+
+    expect(answer.content[0].text).toContain('/root');
+    expect(answer.content[0].text).toContain('Retry with sudo: true');
+  });
+
+  it('каждый каталог назван один раз, сколько бы раз du ни жаловался', async () => {
+    const answer: any = await withComplaint(
+      [
+        "du: cannot read directory '/root': Permission denied",
+        "du: cannot read directory '/root': Permission denied",
+        "du: cannot read directory '/var/lib/docker': Permission denied",
+      ].join('\n')
+    );
+
+    expect(answer.structuredContent.unreadable).toEqual(['/root', '/var/lib/docker']);
+  });
+
+  /**
+   * Жалуется не только `du`: рядом в той же команде идут docker и journald,
+   * которых на машине может не быть. Их «команда не найдена» — не закрытый
+   * каталог, и в списке непрочитанного ему не место.
+   */
+  it('чужие жалобы в список не попадают', async () => {
+    const answer: any = await withComplaint(
+      ['sh: docker: not found', "du: cannot read directory '/root': Permission denied"].join('\n')
+    );
+
+    expect(answer.structuredContent.unreadable).toEqual(['/root']);
+  });
+
+  it.each([['var_log'], ['cache']])(
+    'жалоба из раздела %s тоже доходит, а не только из запрошенных путей',
+    async (from) => {
+      const answer: any = await withComplaint(
+        "du: cannot read directory '/root': Permission denied",
+        { from }
+      );
+
+      expect(answer.structuredContent.unreadable).toEqual(['/root']);
+    }
+  );
+
+  it('никто не жаловался — список пуст, а не отсутствует', async () => {
+    const answer: any = await withComplaint('');
+
+    expect(answer.structuredContent.unreadable).toEqual([]);
+    expect(answer.content[0].text).not.toContain('not looked into');
+  });
+});

@@ -294,6 +294,7 @@ describe('Обещанные поля ответа', () => {
       'cache',
       'docker',
       'journald',
+      'unreadable',
       'unavailable',
     ]);
     expect(schema.properties.filesystems.items.required).toEqual([

@@ -85,33 +85,28 @@ interface FileWriteArgs {
  * copies drift and the list ends up the poorer of the pair.
  */
 const fileEntry = {
-  path: { type: 'string', description: 'Where the file goes on the machine.' },
+  path: { type: 'string', description: 'Where the file goes.' },
   content: {
     type: 'string',
     description:
-      'The whole new content — the file is replaced by it, not extended with it, and it is written ' +
-      'byte for byte: no trailing newline is added.',
+      'The whole new content, written byte for byte. Replaces the file, never extends it; no ' +
+      'trailing newline is added.',
   },
   mode: {
     type: 'string',
-    description:
-      'Permissions as an octal string, "644". Applied before the file takes its place, so it is never ' +
-      'live with the wrong ones.',
+    description: 'Octal string, "644". Applied before the file takes its place.',
   },
   sudo: {
     type: 'boolean',
-    description:
-      'Write as root — for /etc and anywhere else the profile\'s user cannot write. Default: false.',
+    description: 'Write as root — /etc and anywhere the profile user cannot write. Default: false',
   },
   verify: {
     type: 'boolean',
-    description:
-      'Compare sha256 before the file takes its place. Worth it for anything a machine will act on. ' +
-      'Default: false.',
+    description: 'Compare sha256 before the file takes its place. Default: false',
   },
   binary: {
     type: 'boolean',
-    description: 'content is base64 and is decoded before the write. Default: false.',
+    description: 'content is base64, decoded before writing. Default: false',
   },
 } as const;
 
@@ -144,12 +139,7 @@ export class FileTools {
         name: 'ssh_file_read',
         annotations: { title: 'Read a remote file', ...READS_REMOTE },
         description:
-          'When: reading configs, scripts or any other text off a machine — the whole list of paths in one ' +
-          'call, not one call per file. A file too large for the output limit, or one that turns out not to ' +
-          'be text, answers as a failure naming that path: a piece of a file is never handed back as the file.\n' +
-          'Not for: log files — ssh_log_tail and ssh_log_search filter on the machine instead of hauling ' +
-          'everything over. Binaries and anything wanted as a local file — ssh_download. Seeing what a ' +
-          'directory holds — ssh_file_list.',
+          'Read text files. path = one or a list, all in one call. Too large or not text -> a named failure, never a partial file. Logs -> ssh_log_search.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -163,27 +153,27 @@ export class FileTools {
                 { type: 'array', items: { type: 'string' } },
               ],
               description:
-                'One path, or a list of them: ["/etc/hosts", "/etc/resolv.conf"]. A file that cannot be ' +
-                'read costs the list nothing — the others still come back.',
+                'One path, or a list: ["/etc/hosts", "/etc/resolv.conf"]. An unreadable file costs the ' +
+                'list nothing — the others still come back.',
             },
             encoding: {
               type: 'string',
               enum: ['utf8', 'base64'],
               description:
-                'base64 keeps bytes that are not text intact, but the content still travels through the ' +
-                'command channel and its size limit — for a real binary use binary below. Default: utf8.',
+                'base64 keeps non-text bytes intact but still goes through the command channel and its ' +
+                'size limit. Real binary -> binary below. Default: utf8',
               default: 'utf8',
             },
             binary: {
               type: 'boolean',
               description:
-                'Fetch the file over the transport instead of the command channel and answer with base64. ' +
-                'The safe way for non-text; implies encoding=base64. Default: false.',
+                'Fetch over the transport, not the command channel; answer in base64. The safe way for ' +
+                'non-text, implies encoding=base64. Default: false',
               default: false,
             },
             sudo: {
               type: 'boolean',
-              description: 'Read as root — for files the profile\'s user cannot open. Default: false',
+              description: 'Read as root, for files the profile user cannot open. Default: false',
               default: false,
             },
           },
@@ -196,14 +186,7 @@ export class FileTools {
         name: 'ssh_file_write',
         annotations: { title: 'Write a remote file', ...WRITES_REMOTE },
         description:
-          'When: putting a config, a script or a unit file on a machine, several at once if needed. The ' +
-          'content lands on a temp path beside the target and takes its place by rename, so the live path ' +
-          'is never a half-written file; with verify: true the sha256 is compared before that rename, and a ' +
-          'mismatch leaves the old file exactly where it was. A machine with no sha256 tool answers ' +
-          '"nothing to check with" — that is a written file, not a failed one.\n' +
-          'Not for: content that already exists as a local file, a whole directory, or anything large — ' +
-          'ssh_upload, which never routes the bytes through this conversation. Adding to the end of a file: ' +
-          'this replaces the content, so read it first or use ssh_exec.',
+          'Write text files. files[] of path, content, mode, sudo, verify. Atomic rename; verify compares sha256. Local file or dir -> ssh_upload.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -220,8 +203,7 @@ export class FileTools {
                 },
               ],
               description:
-                'One file, or a list of them — each with its own mode and sudo, decided per file rather ' +
-                'than for the call.',
+                'One file, or a list — mode and sudo decided per file, not per call.',
             },
           },
           required: ['profile', 'files'],
@@ -234,12 +216,7 @@ export class FileTools {
         name: 'ssh_file_list',
         annotations: { title: 'List a remote directory', ...READS_REMOTE },
         description:
-          'When: finding out what a directory actually holds before acting on it — names, sizes, ' +
-          'permissions, owner and the time each entry was last changed, together. That last one ' +
-          'answers which files are still being written to and which have been dead for months. The ' +
-          'pattern is matched on the machine, so narrowing costs nothing extra and guessing at names ' +
-          'is unnecessary.\n' +
-          'Not for: what is inside the files — ssh_file_read takes the list of paths from here.',
+          'List a directory. path, pattern, recursive, sudo -> names, sizes, modes, owner, mtime. What is inside the files -> ssh_file_read.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -253,20 +230,17 @@ export class FileTools {
             },
             pattern: {
               type: 'string',
-              description:
-                'Shell glob matched on the machine: "*.conf". Without it every entry comes back.',
+              description: 'Glob matched on the machine: "*.conf". Without it every entry comes back.',
             },
             recursive: {
               type: 'boolean',
               description:
-                'Descend into subdirectories. On a deep tree the answer is cut at the output limit and ' +
-                'says so. Default: false',
+                'Descend into subdirectories. A deep tree is cut at the output limit and says so. Default: false',
               default: false,
             },
             sudo: {
               type: 'boolean',
-              description:
-                'List as root — for directories the profile\'s user cannot open. Default: false',
+              description: 'List as root, for directories the profile user cannot open. Default: false',
               default: false,
             },
           },

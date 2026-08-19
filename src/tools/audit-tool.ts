@@ -17,7 +17,8 @@
 import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { stripTerminalControls } from '../utils/terminal-noise.js';
 import { READS_REMOTE } from './annotations.js';
-import { PROFILE_PARAM_DESCRIPTION } from './params.js';
+import { PROFILE_PARAM_DESCRIPTION, SUDO_PARAM_DESCRIPTION } from './params.js';
+import { unreadablePath } from '../utils/output-notes.js';
 import { logger } from '../utils/logger.js';
 import { toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -58,6 +59,7 @@ interface DiskBreakdownArgs {
   profile?: string;
   top_n?: unknown;
   paths?: string[];
+  sudo?: boolean;
 }
 
 /** ssh_service_status arguments, matching its inputSchema */
@@ -66,6 +68,7 @@ interface ServiceStatusArgs {
   unit?: unknown;
   log_lines?: unknown;
   since?: string;
+  sudo?: boolean;
 }
 
 export class AuditTool {
@@ -86,14 +89,7 @@ export class AuditTool {
         name: 'ssh_audit_baseline',
         annotations: { title: 'Audit a server', ...READS_REMOTE },
         description:
-          'When: taking stock of a machine — how it is set up and where it is exposed. One call ' +
-          'reads the system, disk, memory, listening ports, sshd config, services, docker, ' +
-          'firewall and pending updates, and ends with a CRITICAL/WARNING/OK shortlist to read ' +
-          'first. Anything there was nothing to measure with is named in unavailable rather than ' +
-          'shown as zero.\n' +
-          'Not for: how the machine is doing right now — ssh_snapshot. One unit — ' +
-          'ssh_service_status. What filled the disk — ssh_disk_breakdown. A certificate — ' +
-          'ssh_tls_check.',
+          'How a machine is set up: sshd, firewall, updates, services, docker, ports, disk + CRITICAL/WARNING/OK. include picks sections. Now -> ssh_snapshot.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -105,21 +101,18 @@ export class AuditTool {
               type: 'array',
               items: { type: 'string' },
               description:
-                'Sections to read, when only some are wanted: system, disk, mem, net, ssh, ' +
-                'services, docker, firewall, updates. Default: all of them.',
+                'system, disk, mem, net, ssh, services, docker, firewall, updates. Default: all',
             },
             include_sudo_sections: {
               type: 'boolean',
               description:
-                'Read the sshd config the way sshd itself sees it (sshd -T), which needs root. ' +
-                'Without it that section says so instead of guessing from the file. Default: false',
+                'Read sshd config as sshd sees it (sshd -T), needs root. Without it the ssh section ' +
+                'says so instead of guessing from the file. Default: false',
               default: false,
             },
             compact: {
               type: 'boolean',
-              description:
-                'Trim the long sections. Turning it off returns them whole and costs a much ' +
-                'larger answer. Default: true',
+              description: 'Trim the long sections. false = whole, much larger answer. Default: true',
               default: true,
             },
           },
@@ -131,12 +124,7 @@ export class AuditTool {
         name: 'ssh_tls_check',
         annotations: { title: 'Check a TLS certificate', ...READS_REMOTE },
         description:
-          'When: a certificate — how many days it has left, whether it actually covers the name ' +
-          'asked for, who issued it, and whether renewal is wired up at all (a Let\'s Encrypt ' +
-          'deploy hook). The handshake is made from the server, so it sees the certificate that ' +
-          'machine really serves.\n' +
-          'A field nothing could be read into comes back null, never as a reassuring number.\n' +
-          'Not for: whether the site answers — that is ssh_exec with curl.',
+          'TLS cert of a domain, handshake made from the server. domain, port, sudo -> days left, SAN match, issuer, renew hook. null = could not read.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -148,17 +136,14 @@ export class AuditTool {
             port: { type: 'number', description: 'Default: 443', default: 443 },
             check_renew_hook: {
               type: 'boolean',
-              description:
-                'Look for the renewal config as well. Turning it off skips a read that needs the ' +
-                'filesystem. Default: true',
+              description: 'Also look for the renewal config. Default: true',
               default: true,
             },
             sudo: {
               type: 'boolean',
               description:
-                'Read the renewal config as root — an ordinary user cannot see the hooks, and ' +
-                'without this "no hook configured" would just mean "could not look". ' +
-                'Default: false',
+                'Read the renewal config as root. Without it "no hook configured" only means ' +
+                '"could not look". Default: false',
               default: false,
             },
           },
@@ -170,11 +155,7 @@ export class AuditTool {
         name: 'ssh_disk_breakdown',
         annotations: { title: 'Break down disk usage', ...READS_REMOTE },
         description:
-          'When: the disk is filling and the question is what ate it. One call gives df by ' +
-          'mount, the largest directories under each path, plus the usual suspects counted ' +
-          'separately — docker, the journal and the caches.\n' +
-          'Not for: how full the disk is at all — ssh_snapshot and ssh_audit_baseline already ' +
-          'say that; come here once the number is alarming.',
+          'What filled the disk: df, largest dirs, docker, journald, caches. paths, top_n, sudo. How full it is at all -> ssh_snapshot.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -184,16 +165,20 @@ export class AuditTool {
             },
             top_n: {
               type: 'number',
-              description: 'How many of the largest directories to name per path. Default: 20',
+              description: 'Largest directories named per path. Default: 20',
               default: 20,
             },
             paths: {
               type: 'array',
               items: { type: 'string' },
               description:
-                'Where to look. Naming the suspect directly is far cheaper than walking the ' +
-                'whole filesystem. Default: ["/"]',
+                'Where to look. Naming the suspect beats walking the whole filesystem. Default: ["/"]',
               default: ['/'],
+            },
+            sudo: {
+              type: 'boolean',
+              description: `${SUDO_PARAM_DESCRIPTION} The cache section then reads root's home, not the profile user's.`,
+              default: false,
             },
           },
           required: ['profile'],
@@ -204,13 +189,7 @@ export class AuditTool {
         name: 'ssh_service_status',
         annotations: { title: 'Check a service', ...READS_REMOTE },
         description:
-          'When: one service — whether it is enabled, what state it is in, how it restarts, and ' +
-          'the tail of its own journal, all in one call.\n' +
-          'A machine without systemd answers "NOT CHECKED" and a name systemd does not know is ' +
-          'said as such: neither is reported as a stopped service, because that reads as an ' +
-          'outage that is not happening.\n' +
-          'Not for: every service at once — ssh_audit_baseline. The log of something that is not ' +
-          'a unit — ssh_log_tail.',
+          'One systemd unit: state + journal tail. unit, log_lines, since, sudo. No systemd -> NOT CHECKED, never reported as stopped.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -224,14 +203,17 @@ export class AuditTool {
             },
             log_lines: {
               type: 'number',
-              description: 'How much of the journal comes back. Default: 50',
+              description: 'Journal lines returned. Default: 50',
               default: 50,
             },
             since: {
               type: 'string',
-              description:
-                'Narrow the journal to a window, as journalctl reads it: "1h ago", "today", ' +
-                '"2026-08-19".',
+              description: 'Journal window, as journalctl reads it: "1h ago", "today", "2026-08-19".',
+            },
+            sudo: {
+              type: 'boolean',
+              description: `${SUDO_PARAM_DESCRIPTION} Without it the journal comes back trimmed to what the profile user may see.`,
+              default: false,
             },
           },
           required: ['profile', 'unit'],
@@ -1024,7 +1006,7 @@ export class AuditTool {
     const duCmds = paths
       .map(
         (p, index) =>
-          `echo "${SEP}du_${index}${SEP}"; du -shx ${p}/* 2>/dev/null | sort -rh | head -${topN}`
+          `echo "${SEP}du_${index}${SEP}"; du -shx ${p}/* | sort -rh | head -${topN}`
       )
       .join('; ');
 
@@ -1033,13 +1015,14 @@ export class AuditTool {
       duCmds + '; ' +
       `echo "${SEP}docker${SEP}"; (docker system df -v 2>/dev/null) || echo NO_DOCKER; ` +
       `echo "${SEP}journald${SEP}"; (journalctl --disk-usage 2>/dev/null) || echo NO_JOURNALD; ` +
-      `echo "${SEP}var_log${SEP}"; du -sh /var/log/* 2>/dev/null | sort -rh | head -${topN}; ` +
-      `echo "${SEP}cache${SEP}"; du -sh "$HOME"/.cache/* 2>/dev/null | sort -rh | head -${topN}`;
+      `echo "${SEP}var_log${SEP}"; du -sh /var/log/* | sort -rh | head -${topN}; ` +
+      `echo "${SEP}cache${SEP}"; du -sh "$HOME"/.cache/* | sort -rh | head -${topN}`;
 
     const r = await this.executor.execute(sshConfig, cmd, {
       timeout: 120000,
       idempotent: true,
       signal,
+      sudo: args.sudo === true,
     });
 
     // The separator is a way to slice the output, not part of the answer:
@@ -1067,10 +1050,27 @@ export class AuditTool {
       })
       .join('\n\n');
 
-    const result = this.buildDiskBreakdownResult(sections, requestedPaths);
+    // What du was not allowed to open is part of the answer, not noise: a
+    // directory left out of the sizes makes the list look complete while it
+    // is short by exactly the place that filled the disk
+    const unreadable = [
+      ...new Set(
+        r.stderr
+          .split('\n')
+          .filter((line) => line.trim().startsWith('du:'))
+          .map(unreadablePath)
+      ),
+    ];
+
+    const result = this.buildDiskBreakdownResult(sections, requestedPaths, unreadable);
+    const missed =
+      unreadable.length > 0
+        ? `\n\n--- not looked into ---\n${unreadable.join('\n')}\n` +
+          'The sizes above leave these out. Retry with sudo: true to include them.'
+        : '';
 
     return {
-      content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${body}` }],
+      content: [{ type: 'text', text: `=== ssh_disk_breakdown ===\n${body}${missed}` }],
       structuredContent: result,
     };
   }
@@ -1084,7 +1084,8 @@ export class AuditTool {
    */
   private buildDiskBreakdownResult(
     sections: Map<string, string>,
-    requestedPaths: string[]
+    requestedPaths: string[],
+    unreadable: string[]
   ): DiskBreakdownResult {
     const unavailable: string[] = [];
 
@@ -1121,6 +1122,7 @@ export class AuditTool {
       cache: entriesOf('cache', '$HOME/.cache'),
       docker: named('docker', 'NO_DOCKER', 'docker'),
       journald: named('journald', 'NO_JOURNALD', 'journald'),
+      unreadable,
       unavailable,
     };
   }
@@ -1154,6 +1156,7 @@ export class AuditTool {
       timeout: 30000,
       idempotent: true,
       signal,
+      sudo: args.sudo === true,
     });
     const sections = this.splitSections(r.stdout, SEP);
     const out = {

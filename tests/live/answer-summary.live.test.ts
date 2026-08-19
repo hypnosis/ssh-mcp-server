@@ -67,6 +67,10 @@ if (unavailable && LAB_REQUIRED) {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     client = new Client({ name: 'answer-summary-live', version: '1.0.0' }, { capabilities: {} });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    // Сверку ответа со схемой клиент включает, только собрав список
+    // инструментов: без этого вызова поля читаются, но никем не проверяются
+    await client.listTools();
   });
 
   afterAll(async () => {

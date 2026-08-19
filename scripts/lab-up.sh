@@ -162,7 +162,12 @@ DEBIAN_BOOT='apt-get update -qq >/dev/null && apt-get install -y -qq openssh-ser
 # scp-протокола запускает `scp` на сервере, и без пакета его там не будет.
 # sftp-server эта установка не добавляет — он живёт в openssh-server, которого
 # здесь нет и не будет: это и есть весь смысл узла.
+#
+# sha256sum снят намеренно: это единственный узел лаборатории, где сверку нечем
+# выполнить, а «проверить было нечем» — третий исход передачи, отличный и от
+# сошлось, и от не сошлось. Openssl здесь нет ни у одного образа.
 ROUTER_BOOT='apk add --no-cache dropbear openssh-client >/dev/null &&
+  rm -f /usr/bin/sha256sum &&
   mkdir -p /root/.ssh && cp /tmp/authkey /root/.ssh/authorized_keys &&
   chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys &&
   /usr/sbin/dropbear -F -E -R'

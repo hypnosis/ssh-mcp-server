@@ -10,6 +10,7 @@ dist/
 # Testing
 coverage/
 .nyc_output/
+reports/
 
 # Logs
 *.log

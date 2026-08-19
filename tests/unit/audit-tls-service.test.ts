@@ -848,4 +848,48 @@ describe('ssh_disk_breakdown: непрочитанное названо', () => 
     expect(answer.structuredContent.unreadable).toEqual([]);
     expect(answer.content[0].text).not.toContain('not looked into');
   });
+
+  /**
+   * Разделы спрашиваются шаблоном, и шаблон, которому нечего сопоставить,
+   * уезжает к `du` как есть. Тексты ниже сняты с контейнеров: закрытый каталог
+   * приходит тем же нераскрытым шаблоном, что и пустой, и отличается только
+   * жалобой. Отсюда и разбор — по жалобе, а не по звёздочке в имени.
+   */
+  describe('пустое место и закрытое различаются', () => {
+    const absent: Array<[string, string]> = [
+      ['coreutils', "du: cannot access '/root/.cache/*': No such file or directory"],
+      ['BusyBox', 'du: /var/log/*: No such file or directory'],
+    ];
+    const refused: Array<[string, string]> = [
+      ['coreutils', "du: cannot access '/root/*': Permission denied"],
+      ['BusyBox', 'du: /root/*: Permission denied'],
+    ];
+
+    it.each(absent)('%s: «нет такого» — это не отказ и советовать sudo не о чем', async (
+      _utils,
+      complaint
+    ) => {
+      const answer: any = await withComplaint(complaint);
+
+      expect(answer.structuredContent.unreadable).toEqual([]);
+      expect(answer.content[0].text).not.toContain('not looked into');
+    });
+
+    it.each(refused)('%s: закрытый каталог назван и через шаблон', async (_utils, complaint) => {
+      const answer: any = await withComplaint(complaint);
+
+      expect(answer.structuredContent.unreadable).toEqual(['/root/*']);
+    });
+
+    it('жалобы двух родов в одном ответе не смешиваются', async () => {
+      const answer: any = await withComplaint(
+        [
+          "du: cannot access '/root/.cache/*': No such file or directory",
+          "du: cannot read directory '/root': Permission denied",
+        ].join('\n')
+      );
+
+      expect(answer.structuredContent.unreadable).toEqual(['/root']);
+    });
+  });
 });

@@ -162,32 +162,34 @@ if (unavailable && LAB_REQUIRED) {
         ).toBe('640 root:root');
       });
 
-      it('каталог под sudo отклоняется до первой команды и ничего не оставляет', async () => {
-        // Рекурсия под sudo пока не реализована: uploadDirectory отказывает
-        // до любой команды на сервере. Отказ обязан быть отказом: текст с
-        // обходным путём и ни одного файла на сервере — половина дерева,
-        // разложенная перед ошибкой, была бы хуже, чем ничего.
+      it('каталог под sudo уезжает целиком, и владелец доходит до вложенного файла', async () => {
+        // Дерево едет через staging под пользователем, а на место встаёт
+        // одним переименованием. Проверяется весь путь: вложенный файл, а не
+        // только верхний, и владелец на нём же — до него правка владельца
+        // раньше не доходила.
         const source = join(workDir, `tree-${server.port}`);
         await mkdir(join(source, 'conf'), { recursive: true });
         await writeFile(join(source, 'run.sh'), '#!/bin/sh\necho ok\n');
         await writeFile(join(source, 'conf/app.ini'), 'key=value\n');
         const target = `${guardedDir}/tree`;
 
-        const answer = JSON.stringify(
-          await call(transfer, 'ssh_upload', {
-            profile: server.name,
-            local_path: source,
-            remote_path: target,
-            recursive: true,
-            sudo: true,
-            owner: 'root:root',
-          })
-        );
+        const answer: any = await call(transfer, 'ssh_upload', {
+          profile: server.name,
+          local_path: source,
+          remote_path: target,
+          recursive: true,
+          sudo: true,
+          owner: 'root:root',
+        });
 
-        expect(answer).toMatch(/not yet supported/i);
-        // Обходной путь называется прямо в отказе: без него читателю некуда идти
-        expect(answer).toMatch(/staging|cp -r/i);
-        expect(await asRoot(`ls -A '${target}' 2>/dev/null | wc -l`)).toBe('0');
+        expect(answer.structuredContent.files[0].written).toBe(true);
+        expect(await asRoot(`cat '${target}/conf/app.ini'`)).toBe('key=value');
+        expect(
+          await asRoot(
+            `stat -c '%U:%G' '${target}/conf/app.ini' 2>/dev/null || ` +
+              `stat -f '%Su:%Sg' '${target}/conf/app.ini'`
+          )
+        ).toBe('root:root');
       });
 
       it('после sudo-передачи в /tmp не остаётся следов', async () => {

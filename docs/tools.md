@@ -67,8 +67,25 @@ holds, which is why it is the only tool with `openWorldHint` false.
 - [`ssh_monitor`](#ssh_monitor---monitoring--diagnostics)
 - [Transfer tools](#transfer-tools-v130)
 - [Audit tools](#audit-tools-v130)
+  - [`ssh_audit_baseline`](#ssh_audit_baseline)
+  - [`ssh_tls_check`](#ssh_tls_check)
+  - [`ssh_disk_breakdown`](#ssh_disk_breakdown)
+  - [`ssh_service_status`](#ssh_service_status)
 
 ## `ssh_exec` - Execute Commands
+
+**When to reach for it.** When nothing else fits: a package manager, a migration, a
+one-off script. Everything with a tool of its own — files, logs, transfers, health, jobs —
+costs more here, because you get back text you then have to parse, and one round trip per
+thing you asked about.
+
+**Handy.** A list of commands travels in one call, and a non-zero exit does not stop the
+rest of the list. `cwd` applies to every one of them.
+
+**Trap.** Each command in a list runs in its own shell: no variable and no `cd` survives
+into the next one. `timeout` is per command, not for the list, and a job measured in
+minutes wants `detach` rather than a larger number.
+
 
 **⚠️ Important: Array Syntax**
 
@@ -76,10 +93,10 @@ For batch commands, use **double quotes** in JSON format:
 - ✅ Correct: `command: ["cmd1", "cmd2"]`
 - ❌ Incorrect: `command: ['cmd1', 'cmd2']`
 
-MCP tools require valid JSON syntax. Single quotes will cause errors. Same rule
-applies to `ssh_file_read`, `ssh_log_tail` and `ssh_log_search` — see
-[array-validator.md](array-validator.md) (Russian) for the full validation logic and
-error format.
+MCP tools require valid JSON syntax. Single quotes will cause errors. The same rule applies
+to `ssh_file_read`, `ssh_log_tail` and `ssh_log_search`: each of them takes either one
+string or an array of them, a value of any other shape is refused by name before the call
+leaves, and an empty array is refused rather than treated as "nothing to do".
 
 ```typescript
 // Single command
@@ -151,6 +168,18 @@ does not see.
 
 ### Background jobs — a command that outlives the call (v2.0.0+)
 
+**Why not plain `ssh_exec`.** The usual workaround — `nohup … > /tmp/out &`, wait, then
+`cat /tmp/out` — leaves a file nobody owns, gives no exit code and no way to tell "still
+running" from "died quietly". A detached job has an id, a state and an output cursor.
+
+**Handy.** `ssh_job_output` answers with the next offset, so repeated reads never overlap
+or skip a byte. `ssh_job_list` finds jobs when the id was not kept. `ssh_job_kill` reaches
+the whole process group, and a job already gone is reported rather than refused.
+
+**Trap.** `lost` is not `done`: the exit code is gone, but what the job wrote is still
+readable through `ssh_job_output`. Detach takes one command and no `sudo`.
+
+
 A command that runs longer than the timeout used to be impossible: the client was killed and
 you got a refusal, with the work neither finished nor reachable. Pass `detach: true` and the
 command is started as a job on the server — the answer comes back with its id right away.
@@ -189,6 +218,19 @@ are cleaned up by `ssh_job_list` seven days after they started; running ones are
 
 ### `ssh_file_read` - Read Files
 
+**Why not `ssh_exec` + `cat`.** A list of paths is one call instead of one per file, and
+an unreadable file costs the list nothing — the others still come back, and the one that
+failed is named. Measured on the lab: five config files cost ≈483 tokens through `cat`
+and ≈253 through this tool.
+
+**Handy.** `sudo` per call for files the profile user cannot open; `binary: true` moves
+the read off the command channel entirely.
+
+**Trap.** A file too large or not text comes back as a named failure, never as a partial
+file — a truncated config is worse than no config. `encoding: base64` still travels
+through the command channel and its size limit; real binary wants `binary: true`.
+
+
 **Note:** For multiple files, use double quotes: `path: ["file1", "file2"]`
 
 **Tilde Support:** Paths with `~` are automatically expanded to `$HOME`
@@ -225,6 +267,18 @@ ssh_file_read({
 ```
 
 ### `ssh_file_write` - Write Files
+
+**Why not `ssh_exec` + `cat > file`.** The write lands beside its target under a temporary
+name and moves into place with one rename, so a whole copy exists at every moment. With
+`verify` the sha256 is compared afterwards, which a heredoc cannot do.
+
+**Handy.** `mode` and `sudo` are decided per file, not per call, so one call can drop a
+config into `/etc` as root and a script into a home directory as the profile user.
+
+**Trap.** `verified: "unavailable"` means the machine has no `sha256sum` — the file was
+delivered, not damaged. Treating it as a failure is how a good write gets rolled back.
+Local files and directories belong to `ssh_upload`.
+
 
 ```typescript
 // Single file
@@ -311,6 +365,14 @@ ssh_file_read({
 
 ### `ssh_file_list` - List Files
 
+**Why not `ssh_exec` + `ls`.** Names, sizes, modes, owner and mtime come back as fields
+instead of a column layout that changes between BusyBox and coreutils.
+
+**Handy.** `pattern` is matched on the machine, so a wide directory is filtered before it
+travels. `recursive` walks the tree, and a tree too deep is cut at the output limit and
+says so rather than ending mid-way in silence.
+
+
 ```typescript
 // List directory
 ssh_file_list({
@@ -335,6 +397,17 @@ ssh_file_list({
 
 ### `ssh_log_tail` - Last Log Lines
 
+**Why not `ssh_exec` + `tail`.** A list of files, or a glob, is one call; file size does
+not matter because only the tail is read.
+
+**Handy.** The glob is expanded by the server's `find`, not by a shell, so a name with a
+space or a newline stays one name.
+
+**Trap.** A glob is allowed in the file name, not in the directory part. Looking for
+something specific is `ssh_log_search`, which filters on the machine instead of shipping
+the tail to you first.
+
+
 **Note:** For multiple logs, use double quotes: `path: ["log1", "log2"]`
 
 ```typescript
@@ -357,6 +430,22 @@ ssh_log_tail({
 ```
 
 ### `ssh_log_search` - Search Logs
+
+**Why not `ssh_exec` + `grep`.** One call covers a list, a glob or a whole tree, and the
+answer separates three outcomes that `grep` merges into an empty output: nothing matched,
+nothing was read, and the file could not be opened at all. Measured on the lab: four logs
+cost ≈402 tokens through `grep` and ≈159 here.
+
+**Handy.** `since` takes the day from the server rather than from your clock. `namesOnly`
+answers with paths alone — the cheapest way to find out where to look. `from` decides
+which end `maxMatches` keeps, and `start` stops reading at the cap instead of scanning a
+multi-gigabyte file to its end.
+
+**Trap.** A directory closed by permissions is not silence: it arrives in
+`files_unreadable`, and that is the signal to retry with `sudo: true`. Under a day, `since`
+filters files rather than lines; a file with undated lines is searched whole and named as
+such.
+
 
 ```typescript
 // Search for errors
@@ -411,6 +500,15 @@ as itself.
 
 ### `ssh_snapshot` - System Health Check
 
+**Why not six commands.** One call answers cpu, memory, disk, containers, ports, services
+and recent errors, already classified.
+
+**Trap that this tool exists to avoid.** What could not be measured comes back as `null`
+with a note in `unavailable` — never as `0`. A device whose shell answers nothing used to
+read as a healthy machine with no load and no connections; a zero you did not measure is
+worse than a gap you did.
+
+
 ```typescript
 // Full system snapshot
 ssh_snapshot({
@@ -431,6 +529,15 @@ ssh_snapshot({
 ```
 
 ### `ssh_monitor` - Monitoring & Diagnostics
+
+**Start here on a machine you have not touched.** `action: "test"` names the state before
+anything else runs: `ready`, `limited` (a shell that answers, but not with a POSIX
+toolset), `no-route`, `rejected`. `action: "list"` names the profiles you may name — it is
+the answer to "which machines do I have", and no secret is ever part of it.
+
+**Handy.** `stats` shows what the multiplexed connection is doing, `close` drops it, and
+`reload` re-reads the profiles file without restarting the server.
+
 
 Every action except `list` and `reload` names its profile: profiles are different
 machines, and none is assumed on your behalf. Ask without a name and the answer lists
@@ -493,10 +600,35 @@ nothing.
 ## Transfer tools (v1.3.0+)
 
 Binary-safe upload/download through the system `scp`, over the same multiplexed connection
-the other tools use. The full parameter tables, architecture and recipes already live in
-[docs/transfer.md](transfer.md) — the README's own Transfer tools section duplicated that
-file almost line for line, so it is not repeated here. One example from the README is not
-in transfer.md's recipes and is kept below.
+the other tools use. The full parameter tables, architecture and recipes live in
+[docs/transfer.md](transfer.md); what follows is what these two tools do that a command
+cannot.
+
+**Why not base64 through `ssh_exec`.** The command channel has a size limit, and a base64
+blob that hits it is cut without a word — you get a file that looks written and is not.
+These tools move the bytes over the transport instead, verify sha256 on both sides per
+file, and put the result in place with one rename.
+
+**`ssh_upload` — handy.** `mode` and `owner` apply to every file sent, a directory is
+recognised without `recursive`, and `sudo` stages the data in `/tmp` before moving it into
+`/etc` or `/opt`. `overwrite: false` refuses rather than replaces — including when the
+target cannot be checked at all, which is the case worth having it for.
+
+**`ssh_upload` — traps.** A sent directory becomes the remote path itself and replaces it
+whole, not file by file. Staging under `sudo` means the machine needs room for a second
+copy. `owner` needs `sudo`; without it the answer says it was not applied rather than
+pretending it was.
+
+**`ssh_download` — handy.** Fetches a file or a whole directory to local disk with the same
+sha256 check. `sudo` stages a root-owned copy in `/tmp`, fetches it and removes it.
+
+**`ssh_download` — trap.** Reading a file to look at it is `ssh_file_read`; downloading it
+first only to open it locally costs a write to your disk for nothing.
+
+**Both — the answer to read.** `verified: "unavailable"` means the machine has no
+`sha256sum`. That is a delivery nobody could check, not a corrupt one, and it is reported
+apart from a real mismatch on purpose: a mismatch is what makes the installer remove what
+it just wrote.
 
 ```typescript
 // Recursive directory download
@@ -510,8 +642,63 @@ ssh_download({
 
 ## Audit tools (v1.3.0+)
 
-Specialized read-only audit primitives that collect evidence in one round-trip each:
-`ssh_audit_baseline`, `ssh_tls_check`, `ssh_disk_breakdown`, `ssh_service_status`. The
-per-tool command tables, red-flag rules, and the recommended audit pipeline already live in
-[docs/audit.md](audit.md) — the README's own Audit tools section duplicated that file, so it
-is not repeated here.
+Four read-only tools that collect evidence in one round trip each. The command tables,
+red-flag rules and the recommended pipeline live in [docs/audit.md](audit.md); what follows
+is what each one is for and where its answer is easy to misread.
+
+These are the tools that cost *more* tokens than the equivalent hand-written commands,
+because they come back with more: every section classified, and the sections nobody could
+measure named as such. What they save is round trips and the reading you would otherwise do
+yourself.
+
+### `ssh_audit_baseline`
+
+How a machine is set up, not how it is doing right now: sshd, firewall, updates, services,
+docker, ports, disk, each marked CRITICAL, WARNING or OK.
+
+**Handy.** `include` picks sections, so a second look at one area does not re-run
+everything. `compact: true` (the default) trims the long sections; `false` returns them
+whole and the answer grows a lot.
+
+**Trap.** `include_sudo_sections: true` reads the sshd config the way sshd itself sees it
+(`sshd -T`). Without it the ssh section says it could not read the effective config rather
+than guessing from the file on disk — a guess that goes wrong wherever an include or a
+`Match` block is in play.
+
+### `ssh_tls_check`
+
+The certificate a domain actually serves, from a handshake made *on the server* — which is
+the point: it sees what that machine sees, including a certificate only reachable from
+inside.
+
+**Handy.** Days left, SAN match and issuer come back as fields; the renewal hook is looked
+for as well.
+
+**Trap.** `null` means the value could not be read, not zero days. And "no hook configured"
+without `sudo: true` only means nobody was allowed to look.
+
+### `ssh_disk_breakdown`
+
+Where the disk went: `df`, the largest directories per path, docker, journald and caches.
+
+**Handy.** Naming the suspect in `paths` beats walking the whole filesystem, and `top_n`
+decides how many entries come back per path.
+
+**Trap.** A directory the profile user cannot enter is left out of the sizes, and a list of
+"largest directories" that is short by exactly the one filling the disk is worse than no
+list. Those directories are named in `unreadable`, and that is the signal to retry with
+`sudo: true` — which also makes the cache section read root's home rather than the profile
+user's. A path that simply does not exist is not listed there: an unmatched pattern is
+absence, not a refusal.
+
+### `ssh_service_status`
+
+One systemd unit: its state plus the tail of its journal.
+
+**Handy.** `since` takes a journalctl window (`"1h ago"`, `"today"`, a date), `log_lines`
+decides how much of the journal comes back.
+
+**Trap.** A machine without systemd answers `no_systemd` and leaves the state `null`. It is
+never reported as stopped — "we did not check" and "it is down" lead to opposite actions.
+Without `sudo: true` the journal arrives trimmed to what the profile user may see, which
+reads as a quiet service.

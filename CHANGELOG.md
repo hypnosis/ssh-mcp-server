@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-19
+
+### Added — the surface explains itself to an agent that has never seen it
+- Every tool description now has one shape: what it does, the parameters that matter with
+  their values, and the antipattern. Three sentences, up to 150 characters. The server
+  instructions became an index of question to tool instead of a retelling of what the
+  descriptions already say.
+- The surface a client loads once per session went from 44 007 to 30 514 characters
+  (≈11 000 → 7 628 tokens, −31%): tool descriptions −76%, parameter descriptions −35%,
+  instructions −59%. Input and output schemas are 23 557 of what remains and are not
+  compressed — they are the validator's contract, not prose.
+- The measurements and the method behind them are written down in
+  `docs/decisions/009-how-an-agent-reads-the-surface.md`.
+
+### Added — sudo where it was missing, and one rule for when to take it
+- `ssh_disk_breakdown` and `ssh_service_status` take `sudo`. Without it the cache section
+  read the wrong home directory and the journal came back trimmed to what the profile user
+  may see, with nothing saying so.
+- The rule for when to take root is written once and shared by every tool that offers it:
+  straight away for places a plain user cannot read, otherwise on retry when the answer
+  names what it could not read.
+
+### Fixed — a directory closed by permissions is named instead of vanishing
+- A search over a tree silently dropped directories the profile user cannot enter: the
+  complaint went to `/dev/null`, so files nobody looked at could not be told from files
+  with nothing in them. They arrive in `files_unreadable` now, in the fields and in the
+  text.
+- A file whose modification time could not be read no longer counts as "not modified" and
+  no longer disappears into `files_skipped`.
+- The disk breakdown hid closed directories the same way and reported a list of the largest
+  directories that was short by exactly the one filling the disk. Those directories are
+  named in the new `unreadable` field.
+- A pattern that matched nothing is not a refusal. Sections are asked for by pattern, and
+  the shell hands the pattern through untouched when nothing answers to it; only the
+  complaint tells that apart from a closed directory, so only "no such file" is dropped.
+
 ### Added — every tool says what it does before it is called
 - All 18 tools now carry the standard MCP annotations: `readOnlyHint`, `destructiveHint`,
   `idempotentHint` and `openWorldHint`. Reading a log and wiping a directory used to look

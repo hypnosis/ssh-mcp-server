@@ -1052,12 +1052,18 @@ export class AuditTool {
 
     // What du was not allowed to open is part of the answer, not noise: a
     // directory left out of the sizes makes the list look complete while it
-    // is short by exactly the place that filled the disk
+    // is short by exactly the place that filled the disk.
+    //
+    // A missing name is not a refusal. Sections are asked for by pattern, and
+    // the shell hands the pattern to du untouched when nothing answers to it;
+    // a closed directory reaches du the same way but complains about
+    // permission instead. Only the complaint tells the two apart, so anything
+    // else is kept: silence would be the worse mistake
     const unreadable = [
       ...new Set(
         r.stderr
           .split('\n')
-          .filter((line) => line.trim().startsWith('du:'))
+          .filter((line) => line.trim().startsWith('du:') && !/no such file/i.test(line))
           .map(unreadablePath)
       ),
     ];

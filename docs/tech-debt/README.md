@@ -32,8 +32,9 @@
 | TD-20 | Половина ответов разобрана, половина — текст | 🔹 отложено | [structured-answers-missing_20.md](structured-answers-missing_20.md) |
 | TD-21 | Готовые сценарии живут в голове, а не в сервере | 🔹 отложено | [scenarios-not-slash-commands_21.md](scenarios-not-slash-commands_21.md) |
 | TD-22 | Про видеокарту сервер не спрашивают | 🔹 отложено | [gpu-not-measured_22.md](gpu-not-measured_22.md) |
-| TD-23 | Двум инструментам нечем взять права, а остальным не сказано, когда их брать | 🔸 в работе, ждёт живой проверки | [sudo-missing-and-unruled_23.md](sudo-missing-and-unruled_23.md) |
-| TD-24 | Закрытый каталог выпадает из поиска молча | 🔸 в работе, ждёт живой проверки | [glob-and-window-swallow-permission_24.md](glob-and-window-swallow-permission_24.md) |
+| TD-23 | Двум инструментам нечем взять права, а остальным не сказано, когда их брать | ✅ закрыт 2026-08-19 | [sudo-missing-and-unruled_23.md](sudo-missing-and-unruled_23.md) |
+| TD-24 | Закрытый каталог выпадает из поиска молча | ✅ закрыт 2026-08-19 | [glob-and-window-swallow-permission_24.md](glob-and-window-swallow-permission_24.md) |
+| TD-25 | Выжившие мутанты в свежем коде CORE_21 | 🔸 отчёт оправдан, проверки не дописаны | [mutants-alive-in-fresh-code_25.md](mutants-alive-in-fresh-code_25.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.
 

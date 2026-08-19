@@ -44,6 +44,52 @@ The everyday jobs it was built for:
 
 **It speaks current MCP.** Built on `@modelcontextprotocol/sdk` 1.30, TypeScript throughout, 2100+ unit tests plus a live suite that runs against real containers rather than mocks.
 
+---
+
+## What changed in 2.1.0
+
+The server now explains itself to an agent that has never seen it. That is not a cosmetic
+change: an agent connected to the previous version solved "show me the app log for the last
+two minutes" with one `ssh_exec` that chained `cd`, `sudo`, `curl`, `sleep`, `docker compose
+logs`, `grep` and `tail`, and parked the output in `/tmp` to read it back with a second
+call. Eighteen tools had collapsed into the one that runs anything.
+
+Every description was rewritten to one shape — what the tool does, the parameters that
+matter with their values, the antipattern — and the server instructions became an index of
+question to tool instead of a retelling of the descriptions.
+
+**The surface costs less.** A client loads it once per session, before any call:
+
+| | before | after | |
+|---|---:|---:|---:|
+| tool descriptions | 9 628 | 2 292 | −76% |
+| parameter descriptions | 10 509 | 6 782 | −35% |
+| server instructions | 3 875 | 1 579 | −59% |
+| input and output schemas | 27 378 | 23 557 | −14% |
+| **whole surface** | **44 007 chars ≈ 11 000 tokens** | **30 514 ≈ 7 628** | **−31%** |
+
+Schemas are what is left, and they stay: they are the validator's contract, not prose.
+
+**The tools cost less per use, which is where it adds up.** Measured against a lab
+container, counting what actually travels to the model — the arguments sent and the answer
+received — for the same task done both ways:
+
+| Task | Through `ssh_exec` | With the tool for it | Difference |
+|---|---|---|---|
+| read 5 config files | 5 calls, ≈483 tokens | 1 call, ≈253 | **−48%**, 4 fewer round trips |
+| find errors across 4 logs | 4 calls, ≈402 tokens | 1 call, ≈159 | **−61%**, 3 fewer round trips |
+| collect machine health | 6 calls, ≈765 tokens | 1 call, ≈1 077 | **+41%** — see below |
+| run a 3-second job and read it | 2 calls, ≈191 tokens | 2 calls, ≈178 | −7% |
+
+The batching tools pay off exactly as expected, and the more often an agent reaches for
+them the larger the gap grows. `ssh_audit_baseline` is the honest exception: it costs more
+than six hand-written commands because it comes back with more — every section classified,
+and the ones that could not be measured named as such rather than reported as zero. What it
+saves there is round trips and the reading you would otherwise do yourself.
+
+The method behind both tables, and what an agent actually reads in a tool surface, is in
+[docs/decisions/009-how-an-agent-reads-the-surface.md](docs/decisions/009-how-an-agent-reads-the-surface.md).
+
 ## Requirements
 
 - **Node.js 18+**
@@ -263,7 +309,7 @@ Two levels of caution, and the difference between them is whether the loss can b
 
 Both are bypassed by an explicit `# CONFIRMED-DESTRUCTIVE` marker, so nothing is permanently forbidden — the guard is there to catch the slip.
 
-**What it deliberately does not see:** a delete and a read split across two separate calls (no state is carried between invocations), and sinks of tools it does not special-case. It is a seatbelt, not a policy engine — the reasoning is written down in [docs/decisions/007-refusal-threshold.md](docs/decisions/007-refusal-threshold.md) (Russian).
+**What it deliberately does not see:** a delete and a read split across two separate calls (no state is carried between invocations), and sinks of tools it does not special-case. It is a seatbelt, not a policy engine: the line between a warning and a refusal is drawn where the loss stops being recoverable, and everything that can still be undone stays your call.
 
 Path handling, quoting rules and per-profile path restrictions: **[docs/security.md](docs/security.md)**.
 

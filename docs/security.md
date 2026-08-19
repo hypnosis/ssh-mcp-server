@@ -1,9 +1,9 @@
 # Security
 
-How the server decides what to run, and how it handles the paths it is given. For the
-reasoning behind where the warning/refusal line sits, see
-[docs/decisions/007-refusal-threshold.md](decisions/007-refusal-threshold.md) (internal,
-Russian).
+How the server decides what to run, and how it handles the paths it is given. The line
+between a warning and a refusal is drawn where the loss stops being recoverable: a command
+that destroys the whole container of the data is refused, everything that can still be
+undone is warned about and left to you.
 
 ## Two levels: warning and refusal
 

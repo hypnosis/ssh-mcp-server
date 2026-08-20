@@ -745,11 +745,15 @@ The shared connection outlives this process on purpose: closing it on exit would
 
 ## SSH MCP server roadmap
 
-- [ ] Server-side SSH cancellation
-- [ ] FreeBSD and macOS server support
-- [ ] Dropbear-only file transfer
+- [ ] Full test run against macOS SSH hosts
+- [ ] End-to-end compatibility run on Windows
+- [ ] Multi-host audits — compare health across several SSH profiles in one call
+- [ ] Import profiles from the existing `~/.ssh/config`
+- [ ] Resumable transfers for large files and unstable connections
+- [ ] Remote operation timeline — commands, transfers and guard decisions in one audit trail
+- [ ] Ready-made SSH troubleshooting playbooks
+
 - [x] ~~Smaller MCP tool schemas~~ — **DONE:** the tool list got 10% lighter, and a detached job now shows the last lines it wrote instead of being polled blind
-- [ ] Ready-made SSH troubleshooting prompts
 
 ## Develop and test the SSH MCP server
 

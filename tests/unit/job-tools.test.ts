@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
+import { jobEntry, jobsSummary } from '../../src/tools/job-output.js';
 
 const { executeMock, passportMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
@@ -91,6 +92,28 @@ describe('ssh_job_status', () => {
     expect(text).toContain('Pid: 4242');
     expect(text).toContain('Output: 128 bytes');
     expect(text).toContain('Command: sleep 120');
+  });
+
+  it('последние строки видны и в тексте, не только в полях', async () => {
+    serverAnswers(
+      'SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=128\n' +
+        'SSH_MCP_JOB_TAIL\nstep-7\nstep-8\nSSH_MCP_JOB_CMD\nsleep 120'
+    );
+
+    const text = await answerOf('ssh_job_status');
+
+    expect(text).toContain('Last lines:');
+    expect(text).toContain('step-7');
+    expect(text).toContain('step-8');
+  });
+
+  it('задача ничего не написала — заголовка окна нет', async () => {
+    serverAnswers(
+      'SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=0\n' +
+        'SSH_MCP_JOB_TAIL\nSSH_MCP_JOB_CMD\nsleep 120'
+    );
+
+    expect(await answerOf('ssh_job_status')).not.toContain('Last lines:');
   });
 
   it('законченная задача отдаёт код возврата', async () => {
@@ -569,5 +592,36 @@ describe('сводка снятия', () => {
       'missing',
       'no-answer',
     ]);
+  });
+});
+
+/**
+ * Окно показывается там, где о нём просили, и объясняется словами: иначе пять
+ * строк читаются как весь вывод задачи.
+ */
+describe('Окно в задачу внутри ответа', () => {
+  it('переданные строки доезжают до полей', () => {
+    const entry = jobEntry('j1', { state: 'running', outputTail: ['step-7', 'step-8'] });
+
+    expect(entry.output_tail).toEqual(['step-7', 'step-8']);
+  });
+
+  it('без окна поля нет вовсе, а не пустой список', () => {
+    expect(jobEntry('j1', { state: 'running' })).not.toHaveProperty('output_tail');
+  });
+
+  it('окно объясняется словами ровно там, где оно есть', () => {
+    const withWindow = jobsSummary([jobEntry('j1', { state: 'running', outputTail: ['step-7'] })]);
+    const withoutWindow = jobsSummary([jobEntry('j1', { state: 'running' })]);
+
+    expect(withWindow.legend['jobs[].output_tail']).toContain('the whole output is in ssh_job_output');
+    expect(withoutWindow.legend['jobs[].output_tail']).toBeUndefined();
+  });
+
+  /** Состояние `running` — не исход, и легенда обязана называть это прямо */
+  it('работающая задача названа незаконченной, а не просто «без кода»', () => {
+    const summary = jobsSummary([jobEntry('j1', { state: 'running' })]);
+
+    expect(summary.legend['jobs[].state=running']).toContain('come back later');
   });
 });

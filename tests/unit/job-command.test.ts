@@ -268,6 +268,9 @@ describe('Текст команд целиком', () => {
         `alive=0; if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi; ` +
         `printf 'SSH_MCP_JOB alive=%s pid=%s code=%s started=%s size=%s\\n' ` +
         `"$alive" "$pid" "$code" "$started" "$size"; ` +
+        `printf 'SSH_MCP_JOB_TAIL\\n'; ` +
+        `tail -c 4096 "$d/output.log" 2>/dev/null | tr '\\r' '\\n' | ` +
+        `tail -n 5 | cut -c1-200; ` +
         `printf 'SSH_MCP_JOB_CMD\\n'; cat "$d/cmd" 2>/dev/null`
     );
   });
@@ -579,5 +582,89 @@ describe('Разбор запуска', () => {
   it('пустой pid — задача себя не назвала', () => {
     expect(parseJobStart('SSH_MCP_JOB pid=')).toBeUndefined();
     expect(parseJobStart('')).toBeUndefined();
+  });
+});
+
+/**
+ * Окно в работающую задачу: последние строки, которые она успела написать.
+ *
+ * Это не весь вывод и не претендует на него — по нему видно, на какой стадии
+ * работа, чтобы решать, возвращаться сейчас или позже.
+ */
+describe('Последние строки задачи', () => {
+  const withTail = (tail: string) =>
+    parseJobStatus(
+      'SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=42\n' +
+        'SSH_MCP_JOB_TAIL\n' +
+        tail +
+        'SSH_MCP_JOB_CMD\nsleep 90'
+    );
+
+  it('строки между своими метками, и только они', () => {
+    expect(withTail('step-7\nstep-8\nstep-9\n').outputTail).toEqual(['step-7', 'step-8', 'step-9']);
+  });
+
+  it('команда задачи в окно не попадает', () => {
+    expect(withTail('step-7\n').command).toBe('sleep 90');
+  });
+
+  /**
+   * Перерисованная строка оставляет после себя пустые, а `rsync` дополняет
+   * свою пробелами до ширины экрана — в окне это одинаковый мусор.
+   */
+  it('пустые строки отброшены', () => {
+    expect(withTail('\nsending 40%\n\n\nsending 45%\n').outputTail).toEqual([
+      'sending 40%',
+      'sending 45%',
+    ]);
+  });
+
+  it('строка из одних пробелов — тоже пустая', () => {
+    expect(withTail('sending 40%\n    \n\t\nsending 45%\n').outputTail).toEqual([
+      'sending 40%',
+      'sending 45%',
+    ]);
+  });
+
+  /**
+   * Обрезанный буфер может начаться прямо с метки окна: строка с полями до неё
+   * не доехала. Строки после метки от этого не перестают быть окном.
+   */
+  it('метка окна первой строкой — окно всё равно читается', () => {
+    const status = parseJobStatus('SSH_MCP_JOB_TAIL\nstep-88\nstep-89\nSSH_MCP_JOB_CMD\nsleep 90');
+
+    expect(status.outputTail).toEqual(['step-88', 'step-89']);
+  });
+
+  it('задача ещё ничего не написала — окно пусто, а не потеряно', () => {
+    expect(withTail('').outputTail).toEqual([]);
+  });
+
+  /** Ответ без метки — сервер постарше или обрезанный вывод: окна нет вовсе */
+  it('без метки окна нет и выдумывать его нечем', () => {
+    const status = parseJobStatus(
+      'SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=42\nSSH_MCP_JOB_CMD\nsleep 90'
+    );
+
+    expect(status.outputTail).toBeUndefined();
+  });
+
+  /**
+   * Обрыв снизу оставляет метку окна без закрывающей: где кончается окно,
+   * сказать нечем, и всё, что после метки, окном не считается.
+   */
+  it('без метки команды окно не закрыто — окна нет', () => {
+    const status = parseJobStatus(
+      'SSH_MCP_JOB alive=1 pid=4242 code= started=1755250000 size=42\n' +
+        'SSH_MCP_JOB_TAIL\nstep-7\nstep-8'
+    );
+
+    expect(status.outputTail).toBeUndefined();
+  });
+
+  it('в списке задач окна нет: тридцать задач по пять строк — не сводка', () => {
+    const listing = parseJobList('SSH_MCP_JOB id=aaa alive=1 code= started=1755250000 size=0\n');
+
+    expect(listing.jobs[0]).not.toHaveProperty('outputTail');
   });
 });

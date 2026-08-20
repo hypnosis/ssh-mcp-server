@@ -286,6 +286,7 @@ describe('Обещанные поля ответа', () => {
       'exit_code',
       'pid',
       'started_at',
+      'output_tail',
     ]);
     expect(schema.properties.jobs.items.properties.state.enum).toEqual([
       'running',

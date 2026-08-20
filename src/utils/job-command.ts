@@ -19,6 +19,20 @@ const JOBS_ROOT = '.ssh-mcp/jobs';
 /** Marker used to find the answer among the banner and the motd */
 const MARKER = 'SSH_MCP_JOB';
 const CMD_MARKER = 'SSH_MCP_JOB_CMD';
+const TAIL_MARKER = 'SSH_MCP_JOB_TAIL';
+
+/**
+ * The window into a running job: the last lines it wrote.
+ *
+ * Read from the end, so the size of the log does not matter. Carriage returns
+ * become newlines first — `rsync`, `curl` and `docker pull` redraw one line
+ * instead of writing new ones, and without that the whole progress history
+ * arrives as a single enormous line. The column cut keeps one long line from
+ * swallowing the answer.
+ */
+const TAIL_BYTES = 4096;
+const TAIL_LINES = 5;
+const TAIL_COLUMNS = 200;
 const REMOVED_MARKER = 'SSH_MCP_JOB_REMOVED';
 
 /** How long a finished job's directory lives, in seconds */
@@ -42,6 +56,8 @@ export interface JobStatus {
   startedAt?: number;
   /** Size of the accumulated output in bytes — also the cursor for reading */
   outputSize?: number;
+  /** The last lines the job wrote; empty while it has written nothing */
+  outputTail?: string[];
   /** The command as it was given */
   command?: string;
 }
@@ -169,6 +185,9 @@ export function buildStatusCommand(dir: string): string {
     `alive=0; if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi; ` +
     `printf '${MARKER} alive=%s pid=%s code=%s started=%s size=%s\\n' ` +
     `"$alive" "$pid" "$code" "$started" "$size"; ` +
+    `printf '${TAIL_MARKER}\\n'; ` +
+    `tail -c ${TAIL_BYTES} "$d/output.log" 2>/dev/null | tr '\\r' '\\n' | ` +
+    `tail -n ${TAIL_LINES} | cut -c1-${TAIL_COLUMNS}; ` +
     `printf '${CMD_MARKER}\\n'; cat "$d/cmd" 2>/dev/null`
   );
 }
@@ -286,12 +305,21 @@ export function parseJobStatus(stdout: string): JobStatus {
   const command = cmdAt >= 0 ? lines.slice(cmdAt + 1).join('\n') : undefined;
   const exitCode = numberOf(fields.get('code'));
 
+  // Blank lines are dropped: turning carriage returns into newlines leaves one
+  // behind after every redraw, and a window of five blanks shows nothing
+  const tailAt = lines.findIndex((line) => line.includes(TAIL_MARKER));
+  const outputTail =
+    tailAt >= 0 && cmdAt > tailAt
+      ? lines.slice(tailAt + 1, cmdAt).filter((line) => line.trim().length > 0)
+      : undefined;
+
   return {
     state: stateOf(fields.get('alive') === '1', exitCode),
     pid: numberOf(fields.get('pid')),
     exitCode,
     startedAt: numberOf(fields.get('started')),
     outputSize: numberOf(fields.get('size')),
+    outputTail,
     command,
   };
 }

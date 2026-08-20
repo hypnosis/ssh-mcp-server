@@ -15,7 +15,7 @@ type OutputSchema = NonNullable<Tool['outputSchema']>;
 
 /** What each state says about the job */
 const STATE_MEANING: Record<JobState, string> = {
-  running: 'started and still running, so there is no exit code yet',
+  running: 'started and still running: this is not the outcome, come back later',
   finished: 'the job ended and reported its exit code',
   lost: 'the job is gone and left no exit code behind',
   missing: 'the server knows no job under this id',
@@ -29,6 +29,11 @@ export interface JobEntry {
   pid: number | null;
   /** Start time in seconds since the epoch; `null` when the server did not record it */
   started_at: number | null;
+  /**
+   * The last lines the job wrote, when they were asked for. A status call
+   * carries them; a listing of thirty jobs does not, and leaves the field out.
+   */
+  output_tail?: string[];
 }
 
 /** The answer of one call about jobs */
@@ -37,18 +42,24 @@ export interface JobsSummary {
   legend: Legend;
 }
 
+/** Said where the window is shown, so the tail is not mistaken for the whole output */
+const TAIL_NOTE = 'the last lines written so far, cut to fit; the whole output is in ssh_job_output';
+
 /**
  * The answer, legend included: a list of thirty jobs in four states costs
  * four explanations, and the caller cannot end up with a state nobody named.
  */
 export function jobsSummary(jobs: JobEntry[]): JobsSummary {
-  return { jobs, legend: legendFor('jobs[].state', STATE_MEANING, jobs.map((job) => job.state)) };
+  const legend = legendFor('jobs[].state', STATE_MEANING, jobs.map((job) => job.state));
+  if (jobs.some((job) => job.output_tail !== undefined)) legend['jobs[].output_tail'] = TAIL_NOTE;
+
+  return { jobs, legend };
 }
 
 /** One job, as its own status line words it */
 export function jobEntry(
   id: string,
-  job: { state: JobState; exitCode?: number; pid?: number; startedAt?: number }
+  job: { state: JobState; exitCode?: number; pid?: number; startedAt?: number; outputTail?: string[] }
 ): JobEntry {
   return {
     id,
@@ -56,6 +67,7 @@ export function jobEntry(
     exit_code: job.exitCode ?? null,
     pid: job.pid ?? null,
     started_at: job.startedAt ?? null,
+    ...(job.outputTail === undefined ? {} : { output_tail: job.outputTail }),
   };
 }
 
@@ -72,6 +84,7 @@ export const JOBS_OUTPUT_SCHEMA: OutputSchema = {
           exit_code: { type: ['number', 'null'] },
           pid: { type: ['number', 'null'] },
           started_at: { type: ['number', 'null'] },
+          output_tail: { type: 'array', items: { type: 'string' } },
         },
       },
     },

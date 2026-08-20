@@ -112,7 +112,7 @@ export class JobTools {
         name: 'ssh_job_status',
         annotations: { title: 'Check a background job', ...READS_REMOTE },
         description:
-          'State of a detached job. id -> running | done | lost | missing. lost = no exit code, but ssh_job_output still has what it wrote.',
+          'State of a detached job, with the last lines it wrote so you can see where it got to. lost = no exit code, but ssh_job_output still has the output.',
         inputSchema: {
           type: 'object',
           properties: { profile, id },
@@ -243,6 +243,10 @@ export class JobTools {
       `Output: ${status.outputSize ?? 0} bytes` +
         (status.outputSize ? ' — read it with ssh_job_output' : '')
     );
+    if (status.outputTail?.length) {
+      lines.push('Last lines:');
+      for (const line of status.outputTail) lines.push(`  ${line}`);
+    }
     if (status.command) lines.push(`Command: ${status.command}`);
 
     return lines.join('\n');

@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/hypnosis/ssh-mcp-server#readme",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@hypnosis/ssh-mcp-server",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-21
+
 ### Fixed — the answer reaches the model, not just the transcript
 - A client that gets a tool answer with a declared output schema shows the model the fields
   alone and drops the text block. Four tools kept their substance in the text, so it reached

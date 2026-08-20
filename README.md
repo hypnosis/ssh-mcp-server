@@ -748,7 +748,7 @@ The shared connection outlives this process on purpose: closing it on exit would
 - [ ] Server-side SSH cancellation
 - [ ] FreeBSD and macOS server support
 - [ ] Dropbear-only file transfer
-- [ ] Smaller MCP tool schemas — **IN PROGRESS**
+- [x] ~~Smaller MCP tool schemas~~ — **DONE:** the tool list got 10% lighter, and a detached job now shows the last lines it wrote instead of being polled blind
 - [ ] Ready-made SSH troubleshooting prompts
 
 ## Develop and test the SSH MCP server

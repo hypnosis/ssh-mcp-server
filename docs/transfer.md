@@ -1,19 +1,24 @@
-# Transfer Guide
+# SSH/MCP file transfer: upload and download
 
-Binary-safe file and directory transfer for SSH MCP Server, available since **v1.3.0**.
+Binary-safe upload and download for SSH MCP Server, available since **v1.3.0**. `ssh_upload`
+and `ssh_download` move files or directories outside the model context, verify file hashes with
+SHA-256 by default, and use an atomic replacement where a target is installed.
 
-Two tools:
+## Which tool to use
 
-- `ssh_upload` — local → remote
-- `ssh_download` — remote → local
+- **A file or directory already on disk, especially binary or large content**: use
+  `ssh_upload` (local → remote) or `ssh_download` (remote → local). Bytes stream directly
+  between disks; they do not travel through the LLM context.
+- **Small text you are composing in a tool call**, such as a config: use `ssh_file_write`.
+  Above 256 KB it switches to the same transfer route automatically.
+- **A protected remote destination**: use `ssh_upload` with `sudo: true` for a single file.
 
-Both ride the same shared connection as `ssh_exec` / `ssh_file_*` — one multiplexed OpenSSH
-channel per destination, no extra handshake — and both default to **atomic** rename +
-**sha256** verification.
+The usual `ssh_upload` and `ssh_download` calls need no special flags: verification is enabled
+by default, and uploads replace a target atomically.
 
 ---
 
-## Why
+## Why a transfer tool exists
 
 `ssh_file_write` sends small content on the command's stdin. That is fine for configs, and
 the write itself is atomic and can be verified — but two limits stay:
@@ -28,9 +33,7 @@ the write itself is atomic and can be verified — but two limits stay:
 use, straight from disk to disk. Over 256 KB `ssh_file_write` hands the content to the same
 route by itself — the difference is where the payload comes from, not how it lands.
 
----
-
-## Architecture
+## How it works internally
 
 ```
 ┌──────────────────┐   one control socket per destination + credentials
@@ -56,7 +59,7 @@ Key choices:
   classic scp protocol once and remembers that destination. A remote path containing a
   newline is refused on that path — the classic protocol cannot carry it safely.
 - **Atomic rename**: write to a temp file next to the target — for `/etc/nginx/site.conf` that's `/etc/nginx/.upload-<rand>.site.conf` — then rename it onto the final path with `mv -T`, which replaces an existing file but refuses to land inside an existing directory instead of nesting into it. Rename within the same filesystem is atomic by POSIX guarantee. The temp file is co-located with the target on purpose — putting it in `/tmp` would cross filesystems on most servers and trigger `EXDEV`, forcing a non-atomic copy.
-- **sha256 verification**: hash the local file with `crypto.createHash('sha256')` (streamed, constant memory), then run `sha256sum <path>` on the remote (fallback to `openssl dgst -sha256 <path>` if `sha256sum` is missing — common on minimal Alpine images). If neither is present, the answer says the check could not be made — "nothing to check with" is a success with a note, not a mismatch, and the file stays where it landed.
+- **sha256 verification**: hash the local file with `crypto.createHash('sha256')` (streamed, constant memory), then run `sha256sum <path>` on the remote (fallback to `openssl dgst -sha256 <path>` if `sha256sum` is missing — common on minimal Alpine images). If neither is present, the result is explicitly **unverified**: the file stays where it landed, rather than being reported as a mismatch.
 - **sudo path**: SFTP under `root` is awkward to enable on hardened servers. Instead the file travels to `/tmp/.ssh-mcp-upload-<rand>` as the SSH user, is copied next to the target with `sudo cp`, gets its `chmod`/`chown` there, and takes the target path by rename. `install` is not used: it copies over the target, destroying the old content before the new one is written, so an interrupted write would leave a truncated file and no intact copy anywhere.
 
 ---
@@ -155,7 +158,10 @@ Flow: `scp` into a temp file next to the target → local sha256 → compare aga
 
 ---
 
-## Caveats
+## Rare limitations
+
+Ordinary file transfers need no special flags: uploads are atomic and SHA-256 verification is
+on by default. The cases below are the uncommon exceptions and platform limits to keep in mind.
 
 ### `recursive` + `sudo` is not supported
 
@@ -182,7 +188,7 @@ A native one-shot recursive-sudo path is still not implemented.
 
 ### sha256 tool fallback
 
-The remote command first tries `sha256sum`. If absent (rare — most distros ship coreutils, but minimal Alpine and some BusyBox-only images do not), it falls back to `openssl dgst -sha256`. If neither is on the remote, the answer says the check could not be made and names why. That is not a failed comparison: the file stays where it landed, and nothing is removed. Treating "nothing to check with" as a mismatch is what used to make a correct upload look corrupt. To skip the check on purpose, pass `verify: false`.
+The remote command first tries `sha256sum`. If absent (rare — most distros ship coreutils, but minimal Alpine and some BusyBox-only images do not), it falls back to `openssl dgst -sha256`. If neither is on the remote, the result is clearly marked **unverified** and names why. That is not a failed comparison: the file stays where it landed, and nothing is removed. To skip the check on purpose, pass `verify: false`.
 
 ### Atomic rename only within the same filesystem
 

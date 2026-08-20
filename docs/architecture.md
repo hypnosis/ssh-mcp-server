@@ -1,7 +1,9 @@
-# Architecture
+# SSH MCP Server Architecture
 
-How the server is put together, for anyone who wants to read or change the code. The
-README covers what the tools do; this file covers how a call moves through the process.
+SSH MCP Server lets Codex, Claude, and other MCP clients administer remote servers over
+SSH. It is a local stdio bridge: it uses the system `ssh`/`scp` clients, and nothing has
+to be installed or kept running on the remote server. The README covers installation and
+what the tools do; this file is for anyone who wants to read or change the code.
 
 ## Overview
 
@@ -23,12 +25,12 @@ Remote Server(s)
 
 ### Key Principles
 
-- **Connection reuse** - one multiplexed connection per destination (ControlMaster), shared with every other process on the machine that uses the same control socket
+- **Connection reuse** - one multiplexed connection per destination (ControlMaster). Other processes on the machine can use it too when they use the same control socket
 - **Session-based metrics** - command and transfer counters live in this server process; the connection itself belongs to `ssh`
 - **NO streaming** - snapshot results only
 - **REST approach** - arrays where logical
 - **Retry logic** - one retry for idempotent commands after a transport failure; a refused multiplexed session falls back to a connection of its own
-- **Cancellation** - a cancelled call drops the local `ssh` client at once instead of sitting out the command's timeout. It does not stop a command already running on the server, and file transfers and `ssh_snapshot` do not take it at all: one has a window where stopping would leave the target empty, the other would answer with blanks instead of a refusal. Work that has to be stoppable is started with `detach: true` and stopped by `ssh_job_kill`
+- **Cancellation** - a cancelled call stops the local `ssh` client immediately, rather than waiting for the command timeout. It cannot stop a command already running on the server. File transfers and `ssh_snapshot` do not support cancellation: stopping a transfer could leave its target empty, while a cancelled snapshot would return blanks. For work that must be stoppable, use `detach: true` and then `ssh_job_kill`
 - **Background jobs** - a detached command keeps its whole state on the server, so nothing is remembered on our side and a restart of this server loses nothing
 
 ## Development
@@ -40,6 +42,9 @@ Remote Server(s)
 - SSH access to remote servers
 
 ### Development Setup
+
+For contributors who want to build or change the server. For regular installation and
+MCP client configuration, see the [README](../README.md).
 
 ```bash
 git clone https://github.com/hypnosis/ssh-mcp-server.git

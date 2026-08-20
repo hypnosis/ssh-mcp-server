@@ -1,17 +1,33 @@
-# Audit Tools Guide
+# Read-only SSH audits for Linux and macOS
 
-Read-only audit primitives for SSH MCP Server, available since **v1.3.0**.
+SSH MCP Server provides four read-only audit tools, available since **v1.3.0**. They give you a quick picture of disk pressure, failed services, effective SSH settings, and TLS health without manually stitching together many SSH commands.
 
-Four tools, all built around the same idea: **collect a lot of evidence in one round-trip** instead of dragging a chatty agent across N separate `ssh_exec` calls.
+> **Security boundary:** these tools only read audit data. They never restart services, change configuration, or delete files. Request sudo only when you need information the current SSH user cannot read — most commonly the effective `sshd` settings.
 
-- `ssh_audit_baseline` — system / disk / mem / net / ssh / services / docker / firewall / updates
-- `ssh_tls_check` — TLS expiry + SAN + chain + Let's Encrypt `renew_hook`
-- `ssh_disk_breakdown` — df + top-N du + docker df + journald + caches
-- `ssh_service_status` — systemctl + journalctl tail in one call
+- `ssh_audit_baseline` — start with the host's system, disk, memory, network, SSH, services, Docker, firewall, and update status
+- `ssh_tls_check` — see whether a public domain's certificate is valid, matches the domain, and is close to expiry
+- `ssh_disk_breakdown` — find which files, logs, caches, or Docker data are consuming space
+- `ssh_service_status` — see a systemd service's state, restart policy, and recent diagnostic logs
 
 ---
 
-## Why
+## First run
+
+Start every audit with one baseline call:
+
+```typescript
+const baseline = ssh_audit_baseline({ profile: "production" });
+```
+
+Read the shortlist before doing anything else:
+
+- **CRITICAL** means an immediate operational or access risk, such as a nearly full filesystem or unsafe SSH setting. Investigate and decide on remediation outside these read-only tools; `ssh_tls_check` applies the same severity scale to certificates.
+- **WARNING** means a condition worth scheduling or investigating, such as disk pressure, failed units, exited containers, or pending reboot.
+- **NOT CHECKED** means the server, installed tools, or current permissions did not provide enough evidence; it is not a healthy result.
+
+Then choose the narrowest follow-up: use `ssh_disk_breakdown` for a flagged filesystem, `ssh_service_status` for a failed unit, and `ssh_tls_check` for every public FQDN. Add `include_sudo_sections: true` to the baseline only if you need the SSH-settings section and the current user cannot read it.
+
+## How the results are assembled
 
 Before v1.3.0 the typical `server-auditor` agent sequence looked like this: one `ssh_exec` for `df -hT`, another for `free -h`, another for `ss -tulpenH`, another for `docker ps -a`, another for `systemctl --failed`, and so on. Five to ten separate round-trips and five to ten disjoint stdout chunks the agent had to merge in its head.
 
@@ -22,6 +38,8 @@ Before v1.3.0 the typical `server-auditor` agent sequence looked like this: one 
 ## Tools
 
 ### `ssh_audit_baseline`
+
+Use the baseline to turn one host check into an actionable shortlist: which filesystem needs attention, whether a service failed, whether SSH posture needs review, and which areas are unavailable rather than silently assumed healthy.
 
 **Sections** (toggle via `include: [...]`):
 
@@ -80,6 +98,8 @@ columns are matched against the header, so `available` on a `free` that has no s
 
 ### `ssh_tls_check`
 
+Use this per public domain to learn whether the certificate is readable and valid for that hostname, how soon it expires, and whether the server exposes a Let's Encrypt deployment hook that can apply renewals.
+
 Pipes `openssl s_client -connect <domain>:<port> -servername <domain> -showcerts` into `openssl x509 -noout -dates -ext subjectAltName -issuer`, parses:
 
 - `notAfter=...` → `not_after` ISO date
@@ -106,6 +126,8 @@ Returns UNKNOWN/CRITICAL/WARNING flags + structured JSON — in the text, and as
 
 ### `ssh_disk_breakdown`
 
+Use this after a disk warning to identify the largest entries under the affected paths, including Docker data, journals, logs, and user caches, so cleanup can be targeted rather than guessed.
+
 Single batched call collecting:
 
 | Section | Command | Printed as |
@@ -129,6 +151,8 @@ empty directory and about one it was not allowed to read, and neither is a repor
 problems.
 
 ### `ssh_service_status`
+
+Use this for a failed or suspicious systemd unit. It combines its current state, enablement and restart policy, and recent logs into the evidence needed to diagnose why the service is unhealthy.
 
 Single batched call collecting, for one systemd unit:
 

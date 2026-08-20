@@ -1,0 +1,6 @@
+# Findings the guard may skip. Format follows .gitignore.
+# A line stores the digest of a finding, never the value behind it.
+
+# README, the scp example in the section about legacy routers and NAS boxes:
+# the address there is made up and points at no machine of ours.
+ssh-target:29b71b2af018

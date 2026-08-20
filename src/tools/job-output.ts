@@ -73,12 +73,10 @@ export const JOBS_OUTPUT_SCHEMA: OutputSchema = {
           pid: { type: ['number', 'null'] },
           started_at: { type: ['number', 'null'] },
         },
-        required: ['id', 'state', 'exit_code', 'pid', 'started_at'],
       },
     },
     legend: LEGEND_SCHEMA,
   },
-  required: ['jobs', 'legend'],
 };
 
 /**
@@ -151,5 +149,4 @@ export const KILL_OUTPUT_SCHEMA: OutputSchema = {
     reason: { type: ['string', 'null'] },
     legend: LEGEND_SCHEMA,
   },
-  required: ['id', 'outcome', 'signal', 'reason', 'legend'],
 };

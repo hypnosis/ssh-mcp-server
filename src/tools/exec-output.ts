@@ -116,16 +116,6 @@ const COMMAND_SUMMARY = {
     not_run: { type: 'boolean' },
     warning: { type: ['string', 'null'] },
   },
-  required: [
-    'command',
-    'exit_code',
-    'truncated',
-    'timed_out',
-    'blocked',
-    'blocked_reason',
-    'not_run',
-    'warning',
-  ],
 };
 
 export const EXEC_OUTPUT_SCHEMA: OutputSchema = {
@@ -134,5 +124,4 @@ export const EXEC_OUTPUT_SCHEMA: OutputSchema = {
     commands: { type: 'array', items: COMMAND_SUMMARY },
     job_id: { type: ['string', 'null'] },
   },
-  required: ['commands', 'job_id'],
 };

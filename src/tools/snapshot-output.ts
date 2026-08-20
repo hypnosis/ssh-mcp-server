@@ -99,15 +99,4 @@ export const SNAPSHOT_OUTPUT_SCHEMA: OutputSchema = {
     recent_errors: { type: ['number', 'null'] },
     unavailable: { type: 'array', items: { type: 'string' } },
   },
-  required: [
-    'disk_pct',
-    'mem_pct',
-    'cpu_pct',
-    'load',
-    'containers',
-    'ports',
-    'services_running',
-    'recent_errors',
-    'unavailable',
-  ],
 };

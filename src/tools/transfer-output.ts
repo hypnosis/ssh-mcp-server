@@ -112,10 +112,8 @@ export const FILES_OUTPUT_SCHEMA: OutputSchema = {
           reason: { type: ['string', 'null'] },
           bytes: { type: ['number', 'null'] },
         },
-        required: ['path', 'written', 'verified', 'reason', 'bytes'],
       },
     },
     legend: LEGEND_SCHEMA,
   },
-  required: ['files', 'legend'],
 };

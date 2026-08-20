@@ -128,16 +128,17 @@ describe('Список инструментов', () => {
 });
 
 /**
- * Схема ответа — обещание клиенту: он сверяет пришедшее с объявленным и на
- * расхождении возвращает ошибку протокола вместо ответа. Поэтому здесь
- * сторожатся сами обязательные поля, а не только факт объявления схемы.
+ * Схема ответа — обещание клиенту: по ней он читает пришедшее и по ней же
+ * агент понимает, что вернётся. Поэтому здесь сторожится сам состав полей, а
+ * не только факт объявления схемы: поле, пропавшее из схемы, пропадает и из
+ * ответа, который видит агент.
  */
 describe('Обещанные поля ответа', () => {
   it('ответ снятия обязан нести исход, сигнал и причину', async () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_job_kill')?.outputSchema as any;
 
-    expect(schema.required).toEqual(['id', 'outcome', 'signal', 'reason', 'legend']);
+    expect(Object.keys(schema.properties)).toEqual(['id', 'outcome', 'signal', 'reason', 'legend']);
     expect(schema.properties.outcome.enum).toEqual([
       'signalled',
       'gone',
@@ -151,7 +152,7 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_service_status')?.outputSchema as any;
 
-    expect(schema.required).toEqual([
+    expect(Object.keys(schema.properties)).toEqual([
       'unit',
       'outcome',
       'enabled',
@@ -169,8 +170,8 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_exec')?.outputSchema as any;
 
-    expect(schema.required).toEqual(['commands', 'job_id']);
-    expect(schema.properties.commands.items.required).toEqual([
+    expect(Object.keys(schema.properties)).toEqual(['commands', 'job_id']);
+    expect(Object.keys(schema.properties.commands.items.properties)).toEqual([
       'command',
       'exit_code',
       'truncated',
@@ -202,7 +203,7 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_monitor')?.outputSchema as any;
 
-    expect(schema.required).toEqual([
+    expect(Object.keys(schema.properties)).toEqual([
       'action',
       'profile',
       'state',
@@ -254,8 +255,8 @@ describe('Обещанные поля ответа', () => {
       const { tools } = await client.listTools();
       const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
 
-      expect(schema.required).toEqual(['files', 'legend']);
-      expect(schema.properties.files.items.required).toEqual([
+      expect(Object.keys(schema.properties)).toEqual(['files', 'legend']);
+      expect(Object.keys(schema.properties.files.items.properties)).toEqual([
         'path',
         'written',
         'verified',
@@ -278,8 +279,8 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
 
-    expect(schema.required).toEqual(['jobs', 'legend']);
-    expect(schema.properties.jobs.items.required).toEqual([
+    expect(Object.keys(schema.properties)).toEqual(['jobs', 'legend']);
+    expect(Object.keys(schema.properties.jobs.items.properties)).toEqual([
       'id',
       'state',
       'exit_code',
@@ -298,7 +299,7 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_snapshot')?.outputSchema as any;
 
-    expect(schema.required).toEqual([
+    expect(Object.keys(schema.properties)).toEqual([
       'disk_pct',
       'mem_pct',
       'cpu_pct',
@@ -315,7 +316,7 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_disk_breakdown')?.outputSchema as any;
 
-    expect(schema.required).toEqual([
+    expect(Object.keys(schema.properties)).toEqual([
       'filesystems',
       'largest',
       'var_log',
@@ -325,7 +326,7 @@ describe('Обещанные поля ответа', () => {
       'unreadable',
       'unavailable',
     ]);
-    expect(schema.properties.filesystems.items.required).toEqual([
+    expect(Object.keys(schema.properties.filesystems.items.properties)).toEqual([
       'filesystem',
       'type',
       'size',

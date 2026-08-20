@@ -104,15 +104,6 @@ const SEARCH_OUTPUT_SCHEMA: NonNullable<Tool['outputSchema']> = {
       description: 'Output was cut mid-answer: incomplete, not empty.',
     },
   },
-  required: [
-    'matches',
-    'files_searched',
-    'files_unreadable',
-    'files_skipped',
-    'files_undated',
-    'limited',
-    'truncated',
-  ],
 };
 
 

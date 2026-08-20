@@ -159,7 +159,6 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
           pct: { type: 'number' },
           mount: { type: 'string' },
         },
-        required: ['filesystem', 'size', 'used', 'avail', 'pct', 'mount'],
       },
     },
     memory: {
@@ -170,7 +169,6 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
         free: { type: 'string' },
         available: { type: 'string' },
       },
-      required: ['total', 'used', 'free', 'available'],
     },
     net: {
       type: 'object',
@@ -184,12 +182,10 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
               address: { type: 'string' },
               pid_program: { type: 'string' },
             },
-            required: ['proto', 'address', 'pid_program'],
           },
         },
         interfaces: STRING_LIST,
       },
-      required: ['listeners', 'interfaces'],
     },
     ssh: {
       type: 'object',
@@ -199,7 +195,6 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
         password_auth: { type: 'string' },
         pubkey_auth: { type: 'string' },
       },
-      required: ['port', 'permit_root_login', 'password_auth', 'pubkey_auth'],
     },
     services: {
       type: 'object',
@@ -207,7 +202,6 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
         failed: STRING_LIST,
         running_count: { type: 'number' },
       },
-      required: ['failed', 'running_count'],
     },
     docker: {
       type: ['object', 'null'],
@@ -222,7 +216,6 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
               status: { type: 'string' },
               names: { type: 'string' },
             },
-            required: ['id', 'image', 'status', 'names'],
           },
         },
         df: { type: 'string' },
@@ -238,7 +231,6 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
             active: { type: 'boolean' },
             text: { type: 'string' },
           },
-          required: ['status', 'text'],
         },
         iptables: {
           type: 'object',
@@ -246,10 +238,8 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
             status: { type: 'string', enum: FIREWALL_STATUS },
             rules: { type: 'number' },
           },
-          required: ['status'],
         },
       },
-      required: ['ufw', 'iptables'],
     },
     updates: {
       type: 'object',
@@ -257,16 +247,13 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
         upgradable: { type: 'number' },
         reboot_required: { type: 'boolean' },
       },
-      required: ['upgradable', 'reboot_required'],
     },
     unavailable: STRING_LIST,
     red_flags: {
       type: 'object',
       properties: { critical: STRING_LIST, warning: STRING_LIST, ok: STRING_LIST },
-      required: ['critical', 'warning', 'ok'],
     },
   },
-  required: ['unavailable', 'red_flags'],
 };
 
 export const TLS_CHECK_OUTPUT_SCHEMA: OutputSchema = {
@@ -282,17 +269,6 @@ export const TLS_CHECK_OUTPUT_SCHEMA: OutputSchema = {
     renew_hook_configured: { type: ['boolean', 'null'] },
     renew_hook_evidence: { type: 'string' },
   },
-  required: [
-    'domain',
-    'port',
-    'not_after',
-    'days_until_expiry',
-    'san_includes_hostname',
-    'san_text',
-    'issuer',
-    'renew_hook_configured',
-    'renew_hook_evidence',
-  ],
 };
 
 const DU_ENTRIES = {
@@ -300,7 +276,6 @@ const DU_ENTRIES = {
   items: {
     type: 'object',
     properties: { size: { type: 'string' }, path: { type: 'string' } },
-    required: ['size', 'path'],
   },
 };
 
@@ -320,7 +295,6 @@ export const DISK_BREAKDOWN_OUTPUT_SCHEMA: OutputSchema = {
           pct: { type: 'number' },
           mount: { type: 'string' },
         },
-        required: ['filesystem', 'type', 'size', 'used', 'avail', 'pct', 'mount'],
       },
     },
     largest: {
@@ -328,7 +302,6 @@ export const DISK_BREAKDOWN_OUTPUT_SCHEMA: OutputSchema = {
       items: {
         type: 'object',
         properties: { path: { type: 'string' }, entries: DU_ENTRIES },
-        required: ['path', 'entries'],
       },
     },
     var_log: DU_ENTRIES,
@@ -341,16 +314,6 @@ export const DISK_BREAKDOWN_OUTPUT_SCHEMA: OutputSchema = {
     },
     unavailable: STRING_LIST,
   },
-  required: [
-    'filesystems',
-    'largest',
-    'var_log',
-    'cache',
-    'docker',
-    'journald',
-    'unreadable',
-    'unavailable',
-  ],
 };
 
 export const SERVICE_STATUS_OUTPUT_SCHEMA: OutputSchema = {
@@ -366,15 +329,4 @@ export const SERVICE_STATUS_OUTPUT_SCHEMA: OutputSchema = {
     status_head: { type: 'string' },
     recent_log: { type: 'string' },
   },
-  required: [
-    'unit',
-    'outcome',
-    'enabled',
-    'active_state',
-    'sub_state',
-    'restart',
-    'restart_after',
-    'status_head',
-    'recent_log',
-  ],
 };

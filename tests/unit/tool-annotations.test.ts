@@ -42,6 +42,24 @@ const EXPECTED: Record<string, Expected> = {
   ssh_monitor: { readOnly: false, destructive: false, idempotent: true, openWorld: false },
 };
 
+/**
+ * Подсказка, которой нет в записи, читается клиентом по спецификации.
+ * Каждое из этих значений — осторожное чтение: не только чтение, разрушает,
+ * повтор не бесплатен, мир открыт.
+ */
+const SPEC_DEFAULTS = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true,
+} as const;
+
+/** Что клиент увидит: записанное значение или умолчание спецификации */
+function effective(name: string, hint: keyof typeof SPEC_DEFAULTS): boolean {
+  const annotations = byName.get(name)!.annotations ?? {};
+  return (annotations[hint] as boolean | undefined) ?? SPEC_DEFAULTS[hint];
+}
+
 const TOOLS = createMcpServer('test').tools;
 const byName = new Map(TOOLS.map((tool) => [tool.name, tool]));
 
@@ -61,30 +79,45 @@ describe('каждый инструмент объявляет своё пове
     expect(byName.get(name)?.annotations).toBeDefined();
   });
 
-  it.each(Object.entries(EXPECTED))('%s объявлен целиком', (name, expected) => {
-    const annotations = byName.get(name)!.annotations!;
-    expect(annotations.readOnlyHint).toBe(expected.readOnly);
-    expect(annotations.openWorldHint).toBe(expected.openWorld);
+  it.each(Object.entries(EXPECTED))('%s читается клиентом целиком', (name, expected) => {
+    expect(effective(name, 'readOnlyHint')).toBe(expected.readOnly);
+    expect(effective(name, 'openWorldHint')).toBe(expected.openWorld);
     if (expected.destructive !== undefined) {
-      expect(annotations.destructiveHint).toBe(expected.destructive);
+      expect(effective(name, 'destructiveHint')).toBe(expected.destructive);
     }
     if (expected.idempotent !== undefined) {
-      expect(annotations.idempotentHint).toBe(expected.idempotent);
+      expect(effective(name, 'idempotentHint')).toBe(expected.idempotent);
     }
+  });
+
+  /*
+   * Подсказка со значением умолчания едет по проводу в каждой сессии и не
+   * говорит клиенту ничего нового. Исключение одно: запись пишущему
+   * инструменту, что он разрушает, — клиент, не знающий умолчаний, не должен
+   * принять запись за добавление.
+   */
+  it.each(Object.keys(EXPECTED))('%s не повторяет умолчания спецификации', (name) => {
+    const annotations = byName.get(name)!.annotations ?? {};
+    const repeated = Object.entries(SPEC_DEFAULTS)
+      .filter(([hint, value]) => hint !== 'destructiveHint')
+      .filter(([hint, value]) => annotations[hint as keyof typeof SPEC_DEFAULTS] === value)
+      .map(([hint]) => hint);
+
+    expect(repeated).toEqual([]);
   });
 });
 
 describe('пишущий инструмент не выдаётся за читающий', () => {
-  it.each(writingNames)('%s не помечен только чтением', (name) => {
-    expect(byName.get(name)!.annotations!.readOnlyHint).toBe(false);
+  it.each(writingNames)('%s не читается как только чтение', (name) => {
+    expect(effective(name, 'readOnlyHint')).toBe(false);
   });
 
-  it.each(writingNames)('%s помечен как разрушающий', (name) => {
+  it.each(writingNames)('%s помечен как разрушающий прямо в записи', (name) => {
     expect(byName.get(name)!.annotations!.destructiveHint).toBe(true);
   });
 
   it('произвольная команда не обещает повтора без последствий', () => {
-    expect(byName.get('ssh_exec')!.annotations!.idempotentHint).toBe(false);
+    expect(effective('ssh_exec', 'idempotentHint')).toBe(false);
   });
 });
 

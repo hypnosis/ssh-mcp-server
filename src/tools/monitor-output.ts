@@ -71,5 +71,4 @@ export const MONITOR_OUTPUT_SCHEMA: OutputSchema = {
     exit_code: { type: ['number', 'null'] },
     legend: LEGEND_SCHEMA,
   },
-  required: ['action', 'profile', 'state', 'latency_ms', 'exit_code', 'legend'],
 };

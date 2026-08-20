@@ -2,13 +2,13 @@
  * Wording that repeats across tools, written once.
  *
  * Every tool takes the same profile, so anything said here is said eighteen
- * times over. What the line has to carry is which machine and where the names
- * come from; that the login is already stored belongs to the server
+ * times over. The line carries which machine, and nothing else: where the
+ * names come from and that the login is already stored both live in the server
  * instructions, which say it once for the whole session.
  */
 
 /** Named by every tool; the answer to "which machine" */
-export const PROFILE_PARAM_DESCRIPTION = 'Machine name. Names: ssh_monitor action:list.';
+export const PROFILE_PARAM_DESCRIPTION = 'Machine name.';
 
 /**
  * When to take root, said the same way everywhere it is offered.

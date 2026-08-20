@@ -89,14 +89,35 @@ describe('сводка ssh_exec: форма не зависит от числа 
     expect(commands.map((entry) => entry.command)).toEqual(['hostname', 'whoami', 'date']);
   });
 
-  /** Правило 6 формата: вывод остаётся в тексте, иначе ответ уедет агенту дважды */
-  it('вывод команды в сводку не попадает', async () => {
+  /**
+   * Клиент со схемой показывает вызывающему одни поля, поэтому вывод,
+   * оставленный в тексте, не доезжает ни до кого.
+   */
+  it('вывод команды едет в сводке', async () => {
     respondWith([[/^hostname/, { stdout: 'debian', stderr: 'noise' }]]);
 
-    const summary = await summaryOf({ command: 'hostname' });
+    const command = (await commandsOf({ command: 'hostname' }))[0];
 
-    expect(JSON.stringify(summary)).not.toContain('debian');
-    expect(JSON.stringify(summary)).not.toContain('noise');
+    expect(command.stdout).toBe('debian');
+    expect(command.stderr).toBe('noise');
+  });
+
+  it('целый вывод помечен нулём вырезанного', async () => {
+    respondWith([[/^hostname/, { stdout: 'debian', stderr: '' }]]);
+
+    expect((await commandsOf({ command: 'hostname' }))[0].clipped_bytes).toBe(0);
+  });
+
+  /** Пустая строка — «отработала молча», отсутствие поля — «не выполнялась» */
+  it('у невыполненной команды полей вывода нет вовсе', async () => {
+    respondWith([[/^hostname/, { stdout: 'debian', stderr: '' }]]);
+
+    const commands = await commandsOf({ command: ['hostname', 'rm -rf /'] });
+    const refused = commands[commands.length - 1];
+
+    expect(refused.stdout).toBeUndefined();
+    expect(refused.stderr).toBeUndefined();
+    expect(refused.clipped_bytes).toBeUndefined();
   });
 });
 

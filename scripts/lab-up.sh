@@ -81,6 +81,11 @@ ensure_pwuser() {
     id pwuser >/dev/null 2>&1 || adduser -D pwuser >/dev/null 2>&1 || useradd -m -s /bin/sh pwuser
     # Alpine рапортует об успехе в stderr, Debian молчит — глушим только этот шум
     echo "pwuser:$LAB_PASSWORD" | chpasswd 2>/dev/null
+    # Права даются с паролем, в отличие от deploy: это единственное место, где
+    # видно, доходит ли пароль профиля до sudo. Без пароля sudo ищет терминал,
+    # не находит и отказывает — ровно то, на чём спотыкался агент
+    echo "pwuser ALL=(ALL) ALL" > /etc/sudoers.d/pwuser
+    chmod 440 /etc/sudoers.d/pwuser
   ' >/dev/null
 }
 

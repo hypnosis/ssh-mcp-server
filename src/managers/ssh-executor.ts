@@ -89,9 +89,26 @@ export class SSHExecutor {
     // with sudo answering "bash: command not found". `sh` exists
     // everywhere, so it's also the answer for "the passport hasn't been read yet".
     let finalCommand = command;
+    let stdin = options.stdin;
     if (options.sudo) {
       const passport = await this.passport(config);
-      finalCommand = `sudo ${passport.bash ? 'bash' : 'sh'} -c ${shellQuote(command)}`;
+      const shell = passport.bash ? 'bash' : 'sh';
+
+      // A machine that asks for a password has no terminal to ask on, and the
+      // profile already holds the one this user logs in with. It travels on
+      // stdin rather than in the command: the arguments of a running process
+      // are readable by anyone on the server.
+      //
+      // Only free stdin carries it. Where the call already sends data, a sudo
+      // configured without a password would never read the line, and it would
+      // arrive as the first line of that data instead.
+      const password = config.password;
+      if (password && stdin === undefined) {
+        finalCommand = `sudo -S -p '' ${shell} -c ${shellQuote(command)}`;
+        stdin = `${password}\n`;
+      } else {
+        finalCommand = `sudo ${shell} -c ${shellQuote(command)}`;
+      }
     }
 
     // Add cd if working directory is specified.
@@ -111,7 +128,7 @@ export class SSHExecutor {
     const result = await runner.exec(finalCommand, {
       timeoutMs: options.timeout ?? DEFAULT_TIMEOUT_MS,
       idempotent: options.idempotent,
-      stdin: options.stdin,
+      stdin,
       signal: options.signal,
     });
 

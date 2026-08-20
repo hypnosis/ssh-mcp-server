@@ -79,6 +79,71 @@ beforeEach(() => {
   getRunnerMock.mockResolvedValue({ exec: execMock, ping: pingMock, passport: passportMock });
 });
 
+/** Профиль, который входит по паролю, а не по ключу */
+const PASSWORD_CONFIG: SSHConfig = {
+  host: 'example.com',
+  port: 22,
+  username: 'pwuser',
+  password: 'letmein',
+};
+
+/**
+ * Пароль до sudo не доходил вовсе: обёртка звала его без `-S`, а терминала,
+ * на котором sudo мог бы спросить, у нас нет. На парольной машине любая
+ * операция с повышением прав отвечала «a terminal is required».
+ */
+describe('SSHExecutor: пароль для sudo', () => {
+  it('парольный профиль подаёт пароль на ввод, а не в аргументы', async () => {
+    passportSays(true);
+
+    await new SSHExecutor().execute(PASSWORD_CONFIG, 'ls /root', { sudo: true });
+
+    expect(lastCommand()).toBe(`sudo -S -p '' bash -c 'ls /root'`);
+    expect(sentOptions().stdin).toBe('letmein\n');
+  });
+
+  /** В argv пароль виден любому, кто смотрит на список процессов сервера */
+  it('пароль не попадает в строку команды', async () => {
+    passportSays(true);
+
+    await new SSHExecutor().execute(PASSWORD_CONFIG, 'ls /root', { sudo: true });
+
+    expect(lastCommand()).not.toContain('letmein');
+  });
+
+  it('профиль по ключу зовёт sudo как прежде', async () => {
+    passportSays(true);
+
+    await new SSHExecutor().execute(CONFIG, 'ls /root', { sudo: true });
+
+    expect(lastCommand()).toBe(`sudo bash -c 'ls /root'`);
+    expect(sentOptions().stdin).toBeUndefined();
+  });
+
+  it('без sudo пароль на ввод не уходит', async () => {
+    await new SSHExecutor().execute(PASSWORD_CONFIG, 'ls');
+
+    expect(lastCommand()).toBe('ls');
+    expect(sentOptions().stdin).toBeUndefined();
+  });
+
+  /**
+   * Занятый ввод пароль не принимает: при беспарольном sudo строка не будет
+   * прочитана и приедет первой строкой самих данных — то есть в файл.
+   */
+  it('где ввод занят данными, пароль не подмешивается', async () => {
+    passportSays(true);
+
+    await new SSHExecutor().execute(PASSWORD_CONFIG, 'cat > /etc/app.conf', {
+      sudo: true,
+      stdin: 'key = value\n',
+    });
+
+    expect(lastCommand()).toBe(`sudo bash -c 'cat > /etc/app.conf'`);
+    expect(sentOptions().stdin).toBe('key = value\n');
+  });
+});
+
 describe('SSHExecutor: сборка команды', () => {
   it('оборачивает sudo в bash -c, чтобы конструкции шелла пережили sudo', async () => {
     passportSays(true);

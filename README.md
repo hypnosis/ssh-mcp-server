@@ -246,6 +246,12 @@ ssh_log_search({ "profile": "production",
 ```json
 {
   "matches": 34,
+  "lines": [
+    { "file": "/var/log/nginx/error.log", "line": 4821,
+      "text": "upstream timed out while reading response header", "context": false },
+    { "file": "/var/log/nginx/error.log", "line": 4822,
+      "text": "client closed connection", "context": true }
+  ],
   "files_searched": 6,
   "files_unreadable": ["/var/log/app/private"],
   "files_skipped": 12,
@@ -352,9 +358,12 @@ ssh_exec({ "profile": "production",
 ```json
 {
   "commands": [
-    { "command": "nginx -t", "exit_code": 0, "truncated": false },
-    { "command": "systemctl is-active nginx", "exit_code": 0, "truncated": false },
-    { "command": "tail -5 /var/log/nginx/error.log", "exit_code": 0, "truncated": false }
+    { "command": "nginx -t", "exit_code": 0, "truncated": false, "clipped_bytes": 0,
+      "stdout": "", "stderr": "nginx: configuration file /etc/nginx/nginx.conf test is successful\n" },
+    { "command": "systemctl is-active nginx", "exit_code": 0, "truncated": false,
+      "clipped_bytes": 0, "stdout": "active\n", "stderr": "" },
+    { "command": "tail -5 /var/log/nginx/error.log", "exit_code": 0, "truncated": false,
+      "clipped_bytes": 0, "stdout": "2026/08/21 09:14:02 [error] upstream timed out\n", "stderr": "" }
   ],
   "job_id": null
 }
@@ -370,6 +379,18 @@ ssh_exec({ "profile": "production",
 
 The destructive-command guard checks the complete list before the first command runs. If one
 entry is refused, every other entry is marked as not run and nothing is sent to the server.
+
+Each command carries its own `stdout` and `stderr`. A command that ran and printed nothing
+has an empty string; a command that never ran has no such field at all, so the two cannot be
+confused. Output over 128 KB per command keeps both ends — the head for tables, the tail for
+logs — with a seam in between naming the amount, and `clipped_bytes` says how much was cut.
+Cutting happens on byte boundaries and steps back to the edge of a character, so a clipped
+answer never carries a replacement mark.
+
+`sudo` reaches the server without a terminal: when the profile has a password, it is handed
+to `sudo` on standard input. A profile that authenticates by key has no password to offer, so
+`sudo` there only works where it is already passwordless — and a command that reads its own
+standard input is never given the password, which would otherwise end up mixed into the data.
 
 ### Run long-lived SSH jobs
 
@@ -741,7 +762,6 @@ The shared connection outlives this process on purpose: closing it on exit would
 
 - **Cancellation:** closing SSH may leave the remote command running. Use detached jobs when control matters.
 - **Atomic writes:** BSD and macOS cannot pre-check cross-filesystem renames.
-- **Client output:** clients that expose only `structuredContent` may omit text details.
 
 ## SSH MCP server roadmap
 
@@ -753,6 +773,7 @@ The shared connection outlives this process on purpose: closing it on exit would
 - [ ] Remote operation timeline — commands, transfers and guard decisions in one audit trail
 - [ ] Ready-made SSH troubleshooting playbooks
 
+- [x] ~~Answers that reach the model~~ — **DONE:** command output, matched log lines, machine names and snapshot sections travel in the fields, not only in the text
 - [x] ~~Smaller MCP tool schemas~~ — **DONE:** the tool list got 10% lighter, and a detached job now shows the last lines it wrote instead of being polled blind
 
 ## Develop and test the SSH MCP server

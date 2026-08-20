@@ -553,6 +553,40 @@ describe('ssh_snapshot: шапка решений', () => {
     expect(header.unavailable).toContain('ports');
   });
 
+  /**
+   * Число отвечает «сколько», а решение принимается по «что именно». Список
+   * едет рядом со своим счётчиком и молчит ровно там же, где молчит он.
+   */
+  it('порты приходят списком, а не только числом', async () => {
+    respondWith([[/ss -tlnp/, '0.0.0.0:22\n127.0.0.1:5432']]);
+
+    const listening = (await summary()).listening;
+
+    expect(listening).toHaveLength(2);
+    expect(listening?.map((entry) => entry.port)).toEqual(['22', '5432']);
+  });
+
+  it('непроверенные порты дают пустоту, а не пустой список', async () => {
+    respondWith([[/ss -tlnp/, 'NO_NET_TOOL']]);
+
+    expect((await summary()).listening).toBeNull();
+  });
+
+  it('машина без docker не выдаёт пустого списка контейнеров', async () => {
+    respondWith([]);
+
+    expect((await summary()).containers_running).toBeNull();
+  });
+
+  it('нечитаемый журнал даёт пустоту вместо списка ошибок', async () => {
+    respondWith([[/journalctl|syslog/, 'SYSLOG_UNREADABLE']]);
+
+    const header = await summary();
+
+    expect(header.recent_errors).toBeNull();
+    expect(header.error_lines).toBeNull();
+  });
+
   it('машина без единого измерения не выдаёт нулей', async () => {
     respondWith([]);
 

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — the answer reaches the model, not just the transcript
+- A client that gets a tool answer with a declared output schema shows the model the fields
+  alone and drops the text block. Four tools kept their substance in the text, so it reached
+  nobody: `ssh_exec` had no output fields at all, `ssh_log_search` reported a count without
+  the lines, `ssh_monitor action:list` answered with empty fields instead of profile names,
+  and `ssh_snapshot` gave eight numbers without the sections behind them.
+- Command output now travels in the fields: `stdout`, `stderr` and `clipped_bytes` per
+  command. An empty string means the command ran and said nothing; a command that never ran
+  carries no such field, so silence and absence stay distinguishable.
+- Matched log lines travel as `lines` — `{file, line, text, context}` — where `context`
+  marks a neighbour brought in by the context option rather than a match. `ssh_monitor
+  action:list` returns `profiles` and `broken`; `ssh_snapshot` returns `listening`,
+  `services`, `containers_running` and `error_lines`, each `null` exactly where its counter
+  is `null`.
+- Output over 128 KB per command keeps both ends with a seam between them naming the amount
+  cut. The cut is made on bytes and stepped back to a character boundary, so a clipped
+  answer never carries a replacement mark. `clipped_bytes` is separate from `truncated`:
+  one means the field was too small, the other means the transport buffer filled up.
+
+### Fixed — sudo without a terminal
+- `sudo` asks a terminal for the password, and there is no terminal on a one-shot command.
+  When the profile has a password, it is now handed to `sudo` on standard input. A command
+  that reads its own standard input is left alone — mixing the password into the data would
+  be worse than the refusal it avoids. A profile authenticating by key still has nothing to
+  offer `sudo`; that half is written down as TD-28.
+
 ## [2.1.1] - 2026-08-19
 
 ### Changed — the release signs itself, with nothing left to steal

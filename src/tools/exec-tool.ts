@@ -16,6 +16,7 @@ import { exitCodeHint, TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../util
 import {
   blockedCommand,
   EXEC_OUTPUT_SCHEMA,
+  execSummary,
   executedCommand,
   notRunCommand,
   startedCommand,
@@ -254,14 +255,14 @@ export class ExecTool {
         // flag rather than the text would otherwise take a blocked wipe for a
         // completed one. The summary names the refused command and says that
         // none of the others ran either — not even those standing before it
-        const summary: ExecSummary = {
-          commands: commands.map((command, index) =>
+        const summary: ExecSummary = execSummary(
+          commands.map((command, index) =>
             index === refusal.index
               ? blockedCommand(command, refusal.reason, warnings[index])
               : notRunCommand(command, warnings[index])
           ),
-          job_id: null,
-        };
+          null
+        );
 
         return {
           content: [{ type: 'text', text: blockedMessage(commands[refusal.index], refusal.reason) }],
@@ -299,10 +300,10 @@ export class ExecTool {
         }
       }
 
-      const summary: ExecSummary = {
-        commands: runs.map((run, index) => executedCommand(run.command, run, warnings[index])),
-        job_id: null,
-      };
+      const summary: ExecSummary = execSummary(
+        runs.map((run, index) => executedCommand(run.command, run, warnings[index])),
+        null
+      );
 
       // Single command - return simple result
       if (runs.length === 1) {
@@ -410,7 +411,7 @@ export class ExecTool {
 
     return {
       ...toolFailure(error),
-      structuredContent: { commands: commands.map(summarize), job_id: null } satisfies ExecSummary,
+      structuredContent: execSummary(commands.map(summarize), null) satisfies ExecSummary,
     };
   }
 
@@ -458,10 +459,10 @@ export class ExecTool {
             '\nFollow it with ssh_job_status and ssh_job_output, stop it with ssh_job_kill.',
         },
       ],
-      structuredContent: {
-        commands: [startedCommand(jobCommand, warning.message)],
-        job_id: id,
-      } satisfies ExecSummary,
+      structuredContent: execSummary(
+        [startedCommand(jobCommand, warning.message)],
+        id
+      ) satisfies ExecSummary,
     };
   }
 

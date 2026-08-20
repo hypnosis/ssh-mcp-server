@@ -19,6 +19,7 @@ import {
   matchLimitNote,
   unreadablePath,
 } from '../utils/output-notes.js';
+import { parseGrepLines, type FoundLine } from '../utils/grep-lines.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
 import { requireText, requireTextList } from '../utils/tool-args.js';
 import { resolveRemotePath } from '../managers/path-guard.js';
@@ -70,6 +71,10 @@ interface SearchOutcome {
   files_undated: string[];
   limited: boolean;
   truncated: boolean;
+  /** The lines themselves: a count alone sends the caller looking for them elsewhere */
+  lines?: FoundLine[];
+  /** Names of the matching files, when only names were asked for */
+  files?: string[];
 }
 
 const SEARCH_OUTPUT_SCHEMA: NonNullable<Tool['outputSchema']> = {
@@ -102,6 +107,24 @@ const SEARCH_OUTPUT_SCHEMA: NonNullable<Tool['outputSchema']> = {
     truncated: {
       type: 'boolean',
       description: 'Output was cut mid-answer: incomplete, not empty.',
+    },
+    lines: {
+      type: 'array',
+      description: 'The matching lines. context:true marks a neighbour shown alongside, not a match.',
+      items: {
+        type: 'object',
+        properties: {
+          file: { type: 'string' },
+          line: { type: 'number' },
+          text: { type: 'string' },
+          context: { type: 'boolean' },
+        },
+      },
+    },
+    files: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Matching file names, for namesOnly.',
     },
   },
 };
@@ -660,6 +683,7 @@ export class LogTools {
           // Only whole files are named here, so there is no per-file cap to hit
           limited: false,
           truncated: result.truncated,
+          files: found,
         } satisfies SearchOutcome,
       };
     }
@@ -680,7 +704,7 @@ export class LogTools {
         throw new Error(`Failed to search log: ${result.stderr || result.stdout}`);
       }
 
-      const outcome = (found: number, limited: boolean): SearchOutcome => ({
+      const outcome = (found: number, limited: boolean, lines: FoundLine[]): SearchOutcome => ({
         matches: found,
         files_searched: 1,
         files_unreadable: refusedDirs,
@@ -688,12 +712,13 @@ export class LogTools {
         files_undated: filesUndated,
         limited,
         truncated: result.truncated,
+        lines,
       });
 
       if (!result.stdout) {
         return {
           content: [{ type: 'text', text: this.withGlobNotes('No matches found', notes) }],
-          structuredContent: outcome(0, false),
+          structuredContent: outcome(0, false, []),
         };
       }
 
@@ -711,7 +736,11 @@ export class LogTools {
             ),
           },
         ],
-        structuredContent: outcome(countLines(limited.text), limited.limited),
+        structuredContent: outcome(
+          countLines(limited.text),
+          limited.limited,
+          parseGrepLines(limited.text, paths[0], { dropLast: result.truncated })
+        ),
       };
     }
 
@@ -724,6 +753,7 @@ export class LogTools {
       truncated?: boolean;
       limited?: boolean;
       error?: string;
+      lines?: FoundLine[];
     }> = [];
     
     for (const path of paths) {
@@ -748,6 +778,7 @@ export class LogTools {
             success: true,
             truncated: result.truncated,
             limited: limited.limited,
+            lines: parseGrepLines(limited.text, path, { dropLast: result.truncated }),
           });
         } else {
           results.push({
@@ -800,6 +831,9 @@ export class LogTools {
         files_undated: filesUndated,
         limited: results.some((result) => result.limited === true),
         truncated: results.some((result) => result.truncated === true),
+        // Flat, in the order the files were searched: each line names its own
+        // file, and grouping is rebuilt from that, while the reverse is not
+        lines: results.flatMap((result) => result.lines ?? []),
       } satisfies SearchOutcome,
     };
   }

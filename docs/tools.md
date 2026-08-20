@@ -9,6 +9,23 @@ machines and none is assumed for you; a call without one is refused and the refu
 the names to choose from. Where the profiles and their secrets live, and what makes a
 profile broken, is in [security.md](security.md#profiles-the-machine-is-always-named).
 
+## Safer SSH work through MCP
+
+The specialised tools make routine SSH work safer and easier to inspect than arbitrary
+shell commands: they return structured results, keep related work in one call, and make
+the boundary between reading, writing, transfer, and audit explicit. Use `ssh_exec` when
+there is no fitting tool, not as the default for work the server already understands.
+
+## Common SSH and audit tasks
+
+- Check a server first: `ssh_audit_baseline`; follow a disk, TLS, or service finding with
+  `ssh_disk_breakdown`, `ssh_tls_check`, or `ssh_service_status`.
+- Inspect files and logs: `ssh_file_read`, `ssh_file_list`, `ssh_log_tail`, and
+  `ssh_log_search`.
+- Move or update files: `ssh_upload`, `ssh_download`, and `ssh_file_write`.
+- Run work that outlives a call: `ssh_exec` with `detach: true`, then
+  `ssh_job_status`, `ssh_job_output`, `ssh_job_list`, or `ssh_job_kill`.
+
 ## What the server says before the first call
 
 On connect the server hands the client a map of the toolset, and the client puts it in the
@@ -28,7 +45,7 @@ Every tool carries the standard MCP annotations, so a client knows what a call d
 it makes it — and can ask you first when it matters. `openWorldHint` is true wherever a
 remote machine answers: which one depends on the profile.
 
-| Tool | Reads only | Can destroy | Same call twice is safe |
+| Tool | Reads only | May change or remove state | Same call twice is safe |
 |---|---|---|---|
 | `ssh_audit_baseline` | yes | — | — |
 | `ssh_disk_breakdown` | yes | — | — |
@@ -49,10 +66,12 @@ remote machine answers: which one depends on the profile.
 | `ssh_exec` | no | yes | **no** |
 | `ssh_monitor` | no | no | yes |
 
-`ssh_exec` is the one tool whose effect cannot be known in advance: it runs whatever it is
-handed, so it promises nothing about a repeat. `ssh_download` writes to your own disk
-rather than the server's. `ssh_monitor` touches neither — only the connection this process
-holds, which is why it is the only tool with `openWorldHint` false.
+Here, “may change or remove state” includes writing a local or remote file and stopping a
+process; it does not mean that every call destroys data. `ssh_exec` is the one tool whose
+effect cannot be known in advance: it runs whatever it is handed, so it promises nothing
+about a repeat. `ssh_download` writes to your own disk rather than the server's.
+`ssh_monitor` touches neither — only the connection this process holds, which is why it is
+the only tool with `openWorldHint` false.
 
 ## Contents
 
@@ -85,6 +104,12 @@ rest of the list. `cwd` applies to every one of them.
 **Trap.** Each command in a list runs in its own shell: no variable and no `cd` survives
 into the next one. `timeout` is per command, not for the list, and a job measured in
 minutes wants `detach` rather than a larger number.
+
+**What comes back.** Every command carries its own `stdout` and `stderr`. An empty string
+means it ran and printed nothing; a command that never ran has no such field, so silence
+and absence cannot be confused. Past 128 KB per command both ends are kept with a seam
+between them, and `clipped_bytes` names how much of the middle went — separately from
+`truncated`, which is about the transport buffer, not the field.
 
 
 **⚠️ Important: Array Syntax**
@@ -446,6 +471,11 @@ multi-gigabyte file to its end.
 filters files rather than lines; a file with undated lines is searched whole and named as
 such.
 
+**What comes back.** The matched lines themselves, as `lines`: `{file, line, text,
+context}`. `context: true` marks a neighbour brought in by the `context` option rather than
+a match of its own — quoting one as a find would be quoting a line that does not answer the
+query.
+
 
 ```typescript
 // Search for errors
@@ -508,6 +538,10 @@ with a note in `unavailable` — never as `0`. A device whose shell answers noth
 read as a healthy machine with no load and no connections; a zero you did not measure is
 worse than a gap you did.
 
+**What comes back.** Besides the counters, the sections behind them: `listening`,
+`services`, `containers_running` and `error_lines`. Each is `null` exactly where its
+counter is `null`, for the same reason.
+
 
 ```typescript
 // Full system snapshot
@@ -537,6 +571,10 @@ the answer to "which machines do I have", and no secret is ever part of it.
 
 **Handy.** `stats` shows what the multiplexed connection is doing, `close` drops it, and
 `reload` re-reads the profiles file without restarting the server.
+
+**What comes back from `list`.** `profiles` — the names themselves — and `broken`: entries
+the profiles file has but the server cannot use, each with the reason. A machine missing
+from both lists is a machine you cannot name.
 
 
 Every action except `list` and `reload` names its profile: profiles are different

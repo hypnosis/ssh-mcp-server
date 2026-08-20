@@ -26,6 +26,15 @@ export interface SnapshotSummary {
   recent_errors: number | null;
   /** Sections there was nothing to measure with */
   unavailable: string[];
+  /**
+   * The sections themselves, beside their counts. Each list is `null` exactly
+   * where its own count is: an empty list says "looked, found nothing", and a
+   * machine nobody could ask must not answer the same way.
+   */
+  listening: Array<{ port: string; service: string }> | null;
+  services: Array<{ name: string; status: string }> | null;
+  containers_running: Array<{ name: string; status: string }> | null;
+  error_lines: Array<{ source: string; message: string }> | null;
 }
 
 /**
@@ -50,10 +59,10 @@ export function snapshotSummary(parts: {
   cpu: { usage: number | null; loadAvg: string | null };
   memory: { percent: number | null };
   disk: { items: Array<{ percent: string }> };
-  docker?: { containers: unknown[] };
-  network: { checked: boolean; listening: unknown[] };
-  services: { checked: boolean; items: Array<{ status: string }> };
-  recentErrors: { checked: boolean; items: unknown[] };
+  docker?: { containers: Array<{ name: string; status: string }> };
+  network: { checked: boolean; listening: Array<{ port: string; service: string }> };
+  services: { checked: boolean; items: Array<{ name: string; status: string }> };
+  recentErrors: { checked: boolean; items: Array<{ source: string; message: string }> };
 }): SnapshotSummary {
   const diskPercents = parts.disk.items
     .map((item) => percentOf(item.percent))
@@ -71,6 +80,16 @@ export function snapshotSummary(parts: {
       : null,
     recent_errors: parts.recentErrors.checked ? parts.recentErrors.items.length : null,
     unavailable: [],
+    listening: parts.network.checked ? parts.network.listening : null,
+    services: parts.services.checked
+      ? parts.services.items.map((item) => ({ name: item.name, status: item.status }))
+      : null,
+    containers_running: parts.docker
+      ? parts.docker.containers.map((item) => ({ name: item.name, status: item.status }))
+      : null,
+    error_lines: parts.recentErrors.checked
+      ? parts.recentErrors.items.map((item) => ({ source: item.source, message: item.message }))
+      : null,
   };
 
   // The list names the field, not the command behind it: the caller reads the
@@ -98,5 +117,33 @@ export const SNAPSHOT_OUTPUT_SCHEMA: OutputSchema = {
     services_running: { type: ['number', 'null'] },
     recent_errors: { type: ['number', 'null'] },
     unavailable: { type: 'array', items: { type: 'string' } },
+    listening: {
+      type: ['array', 'null'],
+      items: {
+        type: 'object',
+        properties: { port: { type: 'string' }, service: { type: 'string' } },
+      },
+    },
+    services: {
+      type: ['array', 'null'],
+      items: {
+        type: 'object',
+        properties: { name: { type: 'string' }, status: { type: 'string' } },
+      },
+    },
+    containers_running: {
+      type: ['array', 'null'],
+      items: {
+        type: 'object',
+        properties: { name: { type: 'string' }, status: { type: 'string' } },
+      },
+    },
+    error_lines: {
+      type: ['array', 'null'],
+      items: {
+        type: 'object',
+        properties: { source: { type: 'string' }, message: { type: 'string' } },
+      },
+    },
   },
 };

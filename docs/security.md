@@ -1,9 +1,13 @@
 # Security
 
-How the server decides what to run, and how it handles the paths it is given. The line
-between a warning and a refusal is drawn where the loss stops being recoverable: a command
-that destroys the whole container of the data is refused, everything that can still be
-undone is warned about and left to you.
+SSH MCP Server helps an AI work over SSH with an explicitly chosen machine, predictable
+path handling and checks around the most destructive commands. It is a safety aid, not a
+sandbox: use a separate SSH account with only the permissions the task needs, and treat
+every command as work on the real server.
+
+The line between a warning and a refusal is drawn where the loss stops being recoverable: a
+command that destroys the whole container of the data is refused, everything that can still
+be undone is warned about and left to you.
 
 ## Two levels: warning and refusal
 
@@ -49,10 +53,12 @@ back:
 - `DROP TABLE`, `TRUNCATE`, `DELETE FROM` — only when a database client
   (`psql`, `mysql`, `sqlite3`, …) is the command being run
 
-A refusal is not a dead end: repeating the command with the `# CONFIRMED-DESTRUCTIVE`
-marker sends it as written. Rebooting a router guarded by the `router-no-reboot.sh` hook
-needs **two** markers in one command — that hook has its own, `# CONFIRMED-REBOOT`, and
-the two belong to different systems.
+A refusal is deliberately not a permanent ban: repeating the command with the
+`# CONFIRMED-DESTRUCTIVE` marker sends it as written. The marker records an explicit choice;
+it does not make the command safe or replace backups, least-privilege access, or a review of
+the target profile. Rebooting a router guarded by the `router-no-reboot.sh` hook needs
+**two** markers in one command — that hook has its own, `# CONFIRMED-REBOOT`, and the two
+belong to different systems.
 
 ## What the guard does not see
 
@@ -84,6 +90,10 @@ A profile is a machine. There is no profile the server falls back to, and none i
 on your behalf — every call names the profile it talks to. A call without a name is
 refused, and the refusal lists the names available to choose from.
 
+For a safe first start, add one profile for the intended server, use a dedicated SSH user
+with minimal permissions, and begin with a read-only command such as `hostname` or `pwd`.
+Name that profile explicitly in every later call; do not rely on a remembered target.
+
 This is deliberate. When a default existed, the machine a command reached depended on the
 order of entries in the profiles file: adding an entry at the top silently moved every
 unnamed call to a different server. A command that ran on the wrong machine cannot be
@@ -102,10 +112,9 @@ Two consequences worth knowing:
 
 ## Credentials: keep the secret out of the profiles file
 
-Prefer keys. Where a password or an encrypted key is unavoidable, the secret does not
-belong in the profiles file — that file gets copied, pasted into issues and committed by
-accident. Point at a separate file instead, with `secretsFile` at the top level, per
-profile, or both:
+Prefer keys. Where a password or an encrypted key is unavoidable, keep the secret out of
+the profiles file — that file gets copied, pasted into issues and committed by accident.
+Point at a separate file instead, with `secretsFile` at the top level, per profile, or both:
 
 ```json
 {
@@ -150,6 +159,14 @@ askpass helper that reads it from the environment of that one child process, so 
 the machine does not show it. It is not written to disk, and it is masked in this server's
 logs. With multiplexing on, it is asked for once per connection window rather than once
 per command. All of this is checked by the live suite, not only by unit tests.
+
+**The same secret is what `sudo` gets.** `sudo` asks a terminal for the password, and a
+one-shot command has no terminal. Where the profile has a password, it is written to the
+command's standard input for `sudo -S` to read — still never in `argv`, still masked in the
+logs. Two limits are deliberate: a command that reads its own standard input is never given
+the password, because it would arrive mixed into the data, and a profile that authenticates
+by key has nothing to hand over, so `sudo` there works only where it is already
+passwordless.
 
 ## Recommendations
 
@@ -198,7 +215,9 @@ the destructive-command guard described above, not quoting.
 
 ## Path security
 
-Add `pathSecurity` to profiles for additional protection:
+Add `pathSecurity` to a profile to put extra limits around file and log tools. It is useful
+for keeping routine work inside known directories, but it does not limit arbitrary commands
+sent through `ssh_exec`; the SSH account's permissions remain the boundary there.
 
 ```json
 {

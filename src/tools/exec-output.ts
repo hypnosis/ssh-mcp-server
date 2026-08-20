@@ -1,13 +1,15 @@
 /**
- * Shape of the ssh_exec summary: what became of every command that was sent.
+ * Shape of the ssh_exec summary: what became of every command that was sent,
+ * and what it printed.
  *
- * The summary travels beside the text, never instead of it, and carries only
- * facts about the output — the code, the truncation, the reason a command
- * never ran. The output itself stays in the text: in the summary it would
- * reach the agent twice.
+ * The summary travels beside the text, and the output rides in it rather than
+ * only in the text: a client that declares a schema shows the caller the
+ * fields alone, so output left in the text reaches nobody.
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { clipForField } from '../utils/clip-output.js';
+import { LEGEND_SCHEMA, type Legend } from './legend.js';
 import { killedByTimeoutGuard } from '../utils/output-notes.js';
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
@@ -33,6 +35,15 @@ export interface CommandSummary {
   not_run: boolean;
   /** Warning about what this command does, tied to the command it speaks about */
   warning: string | null;
+  /**
+   * What the command printed. Only a command that ran carries these: an empty
+   * string means it ran and said nothing, while a command that never ran has
+   * no field at all — otherwise the two would read the same.
+   */
+  stdout?: string;
+  stderr?: string;
+  /** Bytes cut out of the middle to fit; `0` — both streams arrived whole */
+  clipped_bytes?: number;
 }
 
 /** The answer of one ssh_exec call */
@@ -40,6 +51,22 @@ export interface ExecSummary {
   commands: CommandSummary[];
   /** Job started by detach; `null` when the call waited for the answer itself */
   job_id: string | null;
+  legend: Legend;
+}
+
+/** Said where output was cut, so the two halves are not read as one run */
+const CLIPPED_NOTE =
+  'the middle of the output was cut to fit the field; the seam names the amount, ' +
+  'and a rerun with a filter brings back what is missing';
+
+/** The answer, with an explanation only for what this one actually did */
+export function execSummary(commands: CommandSummary[], jobId: string | null): ExecSummary {
+  const legend: Legend = {};
+  if (commands.some((entry) => (entry.clipped_bytes ?? 0) > 0)) {
+    legend['commands[].clipped_bytes'] = CLIPPED_NOTE;
+  }
+
+  return { commands, job_id: jobId, legend };
 }
 
 /** A command nothing is known about yet: every field says "no fact here" */
@@ -56,17 +83,30 @@ function blank(command: string, warning: string | null): CommandSummary {
   };
 }
 
-/** A command that ran and reported back */
+/**
+ * A command that ran and reported back, output included.
+ *
+ * Output cut by the transport buffer keeps only its head: there the end of
+ * what arrived is not the end of what the command printed, and a tail would
+ * pass the buffer's edge off as the command's own last word.
+ */
 export function executedCommand(
   command: string,
-  result: { exitCode: number; truncated: boolean },
+  result: { exitCode: number; truncated: boolean; stdout?: string; stderr?: string },
   warning: string | null
 ): CommandSummary {
+  const keepTail = !result.truncated;
+  const stdout = clipForField(result.stdout ?? '', { keepTail });
+  const stderr = clipForField(result.stderr ?? '', { keepTail });
+
   return {
     ...blank(command, warning),
     exit_code: result.exitCode,
     truncated: result.truncated,
     timed_out: killedByTimeoutGuard(result.exitCode),
+    stdout: stdout.text,
+    stderr: stderr.text,
+    clipped_bytes: stdout.clippedBytes + stderr.clippedBytes,
   };
 }
 
@@ -115,6 +155,9 @@ const COMMAND_SUMMARY = {
     blocked_reason: { type: ['string', 'null'] },
     not_run: { type: 'boolean' },
     warning: { type: ['string', 'null'] },
+    stdout: { type: 'string' },
+    stderr: { type: 'string' },
+    clipped_bytes: { type: 'number' },
   },
 };
 
@@ -123,5 +166,6 @@ export const EXEC_OUTPUT_SCHEMA: OutputSchema = {
   properties: {
     commands: { type: 'array', items: COMMAND_SUMMARY },
     job_id: { type: ['string', 'null'] },
+    legend: LEGEND_SCHEMA,
   },
 };

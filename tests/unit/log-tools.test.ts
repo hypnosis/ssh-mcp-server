@@ -1049,7 +1049,22 @@ describe('ssh_log_search: поля исхода', () => {
       files_undated: [],
       limited: false,
       truncated: false,
+      lines: [{ file: '/var/log/syslog', line: 2, text: 'ERROR disk full', context: false }],
     });
+  });
+
+  /**
+   * Число совпадений отвечает «сколько», а вопрос был «что именно». Клиент со
+   * схемой показывает вызывающему одни поля, поэтому строки, оставленные в
+   * тексте, до него не доезжают вовсе.
+   */
+  it('найденные строки едут в полях, а не только их число', async () => {
+    const outcome = await outcomeOf({ path: '/var/log/syslog', query: 'ERROR' });
+    const lines = outcome.lines as Array<Record<string, unknown>>;
+
+    expect(lines[0].text).toBe('ERROR disk full');
+    expect(lines[0].file).toBe('/var/log/syslog');
+    expect(lines[0].line).toBe(2);
   });
 
   it('ни одного совпадения — это ноль строк при прочитанном файле', async () => {

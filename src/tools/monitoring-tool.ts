@@ -22,7 +22,12 @@ import {
 import { describeBrokenProfile } from '../utils/profiles-file.js';
 import { logger } from '../utils/logger.js';
 import type { PingResult, PingState } from '../runner/types.js';
-import { actionSummary, MONITOR_OUTPUT_SCHEMA, pingSummary } from './monitor-output.js';
+import {
+  actionSummary,
+  listSummary,
+  MONITOR_OUTPUT_SCHEMA,
+  pingSummary,
+} from './monitor-output.js';
 import type { ToolResult } from '../utils/tool-result.js';
 
 /** ssh_monitor arguments, matching its inputSchema */
@@ -358,7 +363,10 @@ export class MonitoringTool {
 
     return {
       content: [{ type: 'text', text: output }],
-      structuredContent: actionSummary('list', null),
+      structuredContent: listSummary(
+        profiles,
+        broken.map((entry) => ({ name: entry.name, reason: describeBrokenProfile(entry) }))
+      ),
     };
   }
 }

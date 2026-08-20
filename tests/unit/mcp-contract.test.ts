@@ -170,7 +170,7 @@ describe('Обещанные поля ответа', () => {
     const { tools } = await client.listTools();
     const schema = tools.find((tool: Tool) => tool.name === 'ssh_exec')?.outputSchema as any;
 
-    expect(Object.keys(schema.properties)).toEqual(['commands', 'job_id']);
+    expect(Object.keys(schema.properties)).toEqual(['commands', 'job_id', 'legend']);
     expect(Object.keys(schema.properties.commands.items.properties)).toEqual([
       'command',
       'exit_code',
@@ -180,6 +180,9 @@ describe('Обещанные поля ответа', () => {
       'blocked_reason',
       'not_run',
       'warning',
+      'stdout',
+      'stderr',
+      'clipped_bytes',
     ]);
   });
 
@@ -209,6 +212,8 @@ describe('Обещанные поля ответа', () => {
       'state',
       'latency_ms',
       'exit_code',
+      'profiles',
+      'broken',
       'legend',
     ]);
     expect(schema.properties.state.enum).toEqual(['ready', 'limited', 'no-route', 'rejected', null]);
@@ -310,6 +315,10 @@ describe('Обещанные поля ответа', () => {
       'services_running',
       'recent_errors',
       'unavailable',
+      'listening',
+      'services',
+      'containers_running',
+      'error_lines',
     ]);
   });
 

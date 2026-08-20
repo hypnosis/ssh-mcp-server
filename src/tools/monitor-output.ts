@@ -41,12 +41,29 @@ export interface MonitorSummary {
   latency_ms: number | null;
   /** Probe's exit code: only `limited` carries one, and `null` means the probe never got to run */
   exit_code: number | null;
+  /** Machines this server can be asked about; only the listing carries them */
+  profiles?: string[];
+  /** Entries that name a machine but cannot be used, and what is wrong with each */
+  broken?: Array<{ name: string; reason: string }>;
   legend: Legend;
 }
 
 /** An action that did not go to a server: there is nothing to say about reachability */
 export function actionSummary(action: MonitorAction, profile: string | null): MonitorSummary {
   return { action, profile, state: null, latency_ms: null, exit_code: null, legend: {} };
+}
+
+/**
+ * The listing: names are the answer itself, not a note beside it.
+ *
+ * Broken entries travel apart from working ones — mixed into one list, a name
+ * that cannot be connected to would be indistinguishable from one that can.
+ */
+export function listSummary(
+  profiles: string[],
+  broken: Array<{ name: string; reason: string }>
+): MonitorSummary {
+  return { ...actionSummary('list', null), profiles, broken };
 }
 
 /** The outcome of a connection test, as the headline says it */
@@ -69,6 +86,14 @@ export const MONITOR_OUTPUT_SCHEMA: OutputSchema = {
     state: { type: ['string', 'null'], enum: ['ready', 'limited', 'no-route', 'rejected', null] },
     latency_ms: { type: ['number', 'null'] },
     exit_code: { type: ['number', 'null'] },
+    profiles: { type: 'array', items: { type: 'string' } },
+    broken: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { name: { type: 'string' }, reason: { type: 'string' } },
+      },
+    },
     legend: LEGEND_SCHEMA,
   },
 };

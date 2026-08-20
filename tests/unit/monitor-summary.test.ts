@@ -30,10 +30,14 @@ vi.mock('../../src/runner/control-sockets.js', () => ({
   idleWindowSec: () => 600,
 }));
 
+const { brokenProfilesMock } = vi.hoisted(() => ({
+  brokenProfilesMock: vi.fn<() => Array<Record<string, unknown>>>(() => []),
+}));
+
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: resolveConfigMock,
   getAvailableProfiles: () => ['production', 'office-router'],
-  getBrokenProfiles: () => [],
+  getBrokenProfiles: brokenProfilesMock,
   reloadProfiles: () => undefined,
 }));
 
@@ -54,6 +58,9 @@ function ping(overrides: Partial<PingResult> = {}): PingResult {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks сбрасывает вызовы, но не подменённый ответ: без этой строки
+  // сломанный профиль из одного теста доживал бы до следующих
+  brokenProfilesMock.mockReturnValue([]);
   resolveConfigMock.mockReturnValue({ host: 'example.com', username: 'deploy', port: 22 });
   pingMock.mockResolvedValue(ping());
   statsMock.mockResolvedValue({
@@ -136,6 +143,49 @@ describe('сводка ssh_monitor: действия, которые до сер
     ['reload', { action: 'reload' }, null],
   ])('%s показывает машину, если действие вообще про машину', async (_action, args, expected) => {
     expect((await summaryOf(args)).profile).toBe(expected);
+  });
+});
+
+describe('сводка ssh_monitor: имена машин', () => {
+  /**
+   * Список имён и есть ответ этого действия. Оставленный в тексте, он не
+   * доезжает до вызывающего вовсе — клиент со схемой показывает одни поля.
+   */
+  it('листинг несёт имена, а не одно слово «list»', async () => {
+    expect((await summaryOf({ action: 'list' })).profiles).toEqual(['production', 'office-router']);
+  });
+
+  it('сломанные записи едут отдельным списком с причиной', async () => {
+    brokenProfilesMock.mockReturnValue([
+      { name: 'old-vps', field: 'host', reason: 'must be a string', value: 42 },
+    ]);
+
+    const broken = (await summaryOf({ action: 'list' })).broken;
+
+    expect(broken).toHaveLength(1);
+    expect(broken?.[0].name).toBe('old-vps');
+    expect(broken?.[0].reason).toContain('host');
+  });
+
+  it('сломанное имя не попадает в список рабочих', async () => {
+    brokenProfilesMock.mockReturnValue([
+      { name: 'old-vps', field: 'host', reason: 'must be a string', value: 42 },
+    ]);
+
+    expect((await summaryOf({ action: 'list' })).profiles).not.toContain('old-vps');
+  });
+
+  /** Действие не про имена — полей нет вовсе: пустой список читался бы как «машин нет» */
+  it.each([
+    ['stats', { action: 'stats', profile: 'production' }],
+    ['test', { action: 'test', profile: 'production' }],
+    ['close', { action: 'close', profile: 'production' }],
+    ['reload', { action: 'reload' }],
+  ])('%s имён не перечисляет', async (_action, args) => {
+    const summary = await summaryOf(args);
+
+    expect(summary.profiles).toBeUndefined();
+    expect(summary.broken).toBeUndefined();
   });
 });
 

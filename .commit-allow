@@ -4,3 +4,7 @@
 # README, the scp example in the section about legacy routers and NAS boxes:
 # the address there is made up and points at no machine of ours.
 ssh-target:29b71b2af018
+
+# scripts/lab-up.sh, the home directory of the unprivileged user it creates:
+# the machine is a throwaway lab container built by that script, not a host of ours.
+home-path:70610edc4d73

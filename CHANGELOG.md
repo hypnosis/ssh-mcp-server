@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are listed. The rule lived in the code; the eight tools that declare a legend now say it in
   the surface itself.
 
+### Changed — a missing profiles file no longer stops the server
+- `SSH_PROFILES_FILE` left unset, or pointing at a file that will not load, used to end the
+  process at startup. The server now starts, answers `tools/list`, and puts the diagnosis in
+  the first tool call instead: what is missing and where the file format is written down
+  (`ssh://profiles/example`). A catalogue that reads a tool list by starting the server finally
+  gets one, and a person who forgot the variable reads the reason in their client rather than
+  watching the connection die.
+- The `mcpb` bundle marks the profiles file optional and the Docker image no longer carries a
+  placeholder profile: neither needed a stand-in once the server starts on its own.
+
 
 ## [2.2.2] - 2026-08-21
 

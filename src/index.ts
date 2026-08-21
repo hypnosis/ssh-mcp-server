@@ -25,24 +25,23 @@ async function main() {
   const version = packageJson.version || '1.0.0';
   logger.info(`Starting SSH MCP Server v${version}`);
 
-  // Load SSH profiles from SSH_PROFILES_FILE
+  // Profiles are read at startup to report them, not to gate it: a server that
+  // exits over a missing file cannot answer tools/list, and the machine to
+  // reach is named per call anyway
   logger.debug(`[MCP Server] Checking SSH_PROFILES_FILE environment variable...`);
   const profilesFile = process.env.SSH_PROFILES_FILE;
   if (profilesFile) {
     logger.debug(`[MCP Server] SSH_PROFILES_FILE=${profilesFile}`);
-  } else {
-    logger.error(`[MCP Server] ❌ SSH_PROFILES_FILE environment variable not set`);
   }
-  
+
   try {
     logger.debug(`[MCP Server] Loading SSH profiles...`);
     const profiles = getAvailableProfiles();
     logger.info(`[MCP Server] Loaded ${profiles.length} SSH profiles: ${profiles.join(', ')}`);
   } catch (error: any) {
-    logger.error(`[MCP Server] ❌ Failed to load SSH profiles: ${error.message}`);
-    logger.error(`[MCP Server] Please set SSH_PROFILES_FILE environment variable`);
+    logger.warn(`[MCP Server] No usable SSH profiles: ${error.message}`);
+    logger.warn(`[MCP Server] Tools stay listed; every call fails with that message until profiles load`);
     logger.debug(`[MCP Server] Error details:`, error);
-    process.exit(1);
   }
 
   const { server, tools } = createMcpServer(version);

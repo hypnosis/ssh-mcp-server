@@ -109,8 +109,13 @@ function loadProfilesFromFile(profilesFile: string): ProfilesConfig {
 function getProfiles(): ProfilesConfig {
   const rawProfilesFile = process.env.SSH_PROFILES_FILE;
 
+  // The whole diagnosis travels in this message: the server starts without a
+  // profiles file, so the first call is where anyone learns the file is missing
   if (!rawProfilesFile) {
-    throw new Error('SSH_PROFILES_FILE not set');
+    throw new Error(
+      'SSH_PROFILES_FILE is not set: point it at a JSON file listing the machines this ' +
+        'agent may reach. The resource ssh://profiles/example shows the shape of that file.'
+    );
   }
 
   const profilesFile = expandTilde(rawProfilesFile)!;
@@ -211,13 +216,19 @@ function watchProfilesFile(filePath: string): void {
   }
 }
 
-// Initialize: load profiles and start watching
+// Initialize: load profiles and start watching. A file that will not load must not end
+// the process here — this runs on import, where nothing can catch it yet, and the same
+// error reaches whoever calls a tool, with its message intact
 if (process.env.SSH_PROFILES_FILE) {
-  // Initial load resolves and tilde-expands the path, caching it
-  getProfiles();
+  try {
+    // Initial load resolves and tilde-expands the path, caching it
+    getProfiles();
 
-  // Watch the same resolved path the cache and loader used
-  watchProfilesFile(PROFILES_CACHE!.filePath);
+    // Watch the same resolved path the cache and loader used
+    watchProfilesFile(PROFILES_CACHE!.filePath);
+  } catch (error: any) {
+    logger.warn(`[Profiles] Profiles file did not load: ${error.message}`);
+  }
 }
 
 /**

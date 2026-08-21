@@ -19,10 +19,8 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
 
-# Placeholder profile: the server refuses to start without a usable one, and nothing connects until a call names it
-RUN printf '{"profiles":{"example":{"host":"example.invalid","username":"mcp"}}}' > /app/profiles.json
-ENV SSH_PROFILES_FILE=/app/profiles.json
-
+# No profiles file is baked in: the server starts and lists its tools without one, and a run
+# that connects anywhere mounts its own and points SSH_PROFILES_FILE at it
 USER node
 
 ENTRYPOINT ["node", "dist/index.js"]

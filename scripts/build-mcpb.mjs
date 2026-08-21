@@ -68,7 +68,7 @@ try {
         type: 'file',
         title: 'SSH profiles file',
         description: 'JSON file describing the machines this agent may reach.',
-        required: true,
+        required: false,
       },
       log_level: {
         type: 'string',

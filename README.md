@@ -1,24 +1,17 @@
 # SSH MCP Server — Remote server tools for AI agents
 
-<table>
-  <tr>
-    <td width="160" valign="top">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-dark-128.png">
-        <img src="https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-128.png" width="128" alt="SSH MCP Server">
-      </picture>
-    </td>
-    <td valign="top">
-      <strong>An SSH MCP server — a Swiss army knife that saves you and your AI agent time and tokens on debugging, development and server maintenance.</strong> Run commands, move files, read logs and audit machines over SSH — a cloud VPS, a bare-metal box, or the BusyBox router sitting in your closet.
-    </td>
-  </tr>
-</table>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-dark-128.png">
+  <img src="https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-128.png" align="left" width="72" hspace="12" alt="SSH MCP Server">
+</picture>
+
+**An SSH MCP server — a Swiss army knife that saves you and your AI agent time and tokens on debugging, development and server maintenance.** Run commands, move files, read logs and audit machines over SSH — a cloud VPS, a bare-metal box, or the BusyBox router sitting in your closet.<br clear="left">
 
 It uses the OpenSSH client already on your machine: your keys, your `~/.ssh/config`, your jump hosts, your agent forwarding. Nothing bundled, nothing to compile, no native bindings.
 
 Works with Claude Code, Codex CLI, opencode, Gemini CLI, Qwen Code, Hermes and other MCP clients.
 
-[![MCP Registry](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fregistry.modelcontextprotocol.io%2Fv0%2Fservers%3Fsearch%3Dio.github.hypnosis%2Fssh-mcp-server%26version%3Dlatest&query=%24.servers%5B0%5D.server.version&style=flat-square&logo=modelcontextprotocol&logoColor=white&label=MCP%20Registry&color=0F172A)](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.hypnosis/ssh-mcp-server&version=latest) [![Glama](https://glama.ai/mcp/servers/hypnosis/ssh-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/g2gfxta0ou) [![npm downloads](https://img.shields.io/npm/dm/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=2EA043&label=downloads)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server) [![tests](https://img.shields.io/github/actions/workflow/status/hypnosis/ssh-mcp-server/test.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=tests)](https://github.com/hypnosis/ssh-mcp-server/actions/workflows/test.yml)
+[![MCP Registry](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fregistry.modelcontextprotocol.io%2Fv0%2Fservers%3Fsearch%3Dio.github.hypnosis%2Fssh-mcp-server%26version%3Dlatest&query=%24.servers%5B0%5D.server.version&style=flat-square&logo=modelcontextprotocol&logoColor=white&label=MCP%20Registry&color=0F172A)](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.hypnosis/ssh-mcp-server&version=latest) [![Glama](https://glama.ai/mcp/servers/hypnosis/ssh-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/hypnosis/ssh-mcp-server) [![npm downloads](https://img.shields.io/npm/dm/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=2EA043&label=downloads)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server) [![tests](https://img.shields.io/github/actions/workflow/status/hypnosis/ssh-mcp-server/test.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=tests)](https://github.com/hypnosis/ssh-mcp-server/actions/workflows/test.yml)
 
 **[Install](#install-in-30-seconds) · [Tools](#ssh-mcp-tools-for-server-operations) · [Setup](#set-up-the-ssh-mcp-server) · [Security](#destructive-command-protection-for-ai-agents) · [Roadmap](#ssh-mcp-server-roadmap) · [Docs](docs/tools.md) · [Changelog](CHANGELOG.md)**
 

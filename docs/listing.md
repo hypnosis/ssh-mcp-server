@@ -68,7 +68,7 @@
 | mcpmarket | подхватил сам | карточка `/server/ssh-19`, значка Official нет |
 | mcp.so | форма `/submit`, только платно ($39) | отложено; имя `ssh-mcp-server` там занято чужим проектом |
 | Cursor Directory | только через сайт, вход GitHub или Google | манифест в репозитории готов — `plugin.json` и `mcp.json` |
-| Smithery | MCPB-бандл, не `smithery.yaml` | `npm run build:mcpb`, затем публикация под своей учётной записью |
+| Smithery | MCPB-бандл, не `smithery.yaml` | уже там; новую версию — `npm run build:mcpb` и публикация под своей учётной записью |
 | awesome-mcp-servers | PR в `README.md` | строка выше |
 
 ## Знаки в README
@@ -79,8 +79,10 @@
 |---|---|---|
 | `MCP Registry` | shields поверх `registry.modelcontextprotocol.io`, запрос с `version=latest` | версию последней записи, обновляется сам |
 | `A - B Glama` | `glama.ai/mcp/servers/hypnosis/ssh-mcp-server/badges/score.svg` | их оценку качества |
+| `Smithery install` | shields со ссылкой на `smithery.ai/servers/hypnosis/ssh-mcp-server` | что сервер есть в каталоге; он же и есть бэклинк, которого Smithery ждёт |
 
-Знак Smithery отдаёт 500, пока сервер там не опубликован; MseeP — 404, нас у них нет.
+Собственный знак Smithery отдаёт 500 всем, включая серверы самой Smithery, — поэтому в ряду
+стоит свой знак на shields со ссылкой на их страницу. MseeP — 404, нас у них нет.
 
 Две двери закрыты: галерея VS Code берёт из реестра не всё подряд, а каталог Claude принимает
 только удалённые серверы. Заново не пробовать.

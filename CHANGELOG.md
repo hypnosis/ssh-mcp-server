@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-21
+
 ### Added — a profile can answer sudo without a login password
 - New profile field `sudoPassword`: what `sudo` is answered with on that machine. Until now
   the only answer available was the login password, so a profile that logs in by key — the
@@ -49,9 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   watching the connection die.
 - The `mcpb` bundle marks the profiles file optional and the Docker image no longer carries a
   placeholder profile: neither needed a stand-in once the server starts on its own.
-
-
-## [2.2.2] - 2026-08-21
 
 ### Added — more ways to install the same server
 - `mcpb` bundle: `npm run build:mcpb` produces `releases/ssh-mcp-server-<version>.mcpb`, a

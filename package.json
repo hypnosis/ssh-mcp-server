@@ -1,6 +1,6 @@
 {
   "name": "@hypnosis/ssh-mcp-server",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "mcpName": "io.github.hypnosis/ssh-mcp-server",
   "description": "SSH MCP server for AI agents — remote commands, file transfer, log search and server audits through OpenSSH, with destructive-command checks. Works with Claude Code, Codex, Gemini CLI and any MCP client.",
   "type": "module",
@@ -33,6 +33,7 @@
     "lab:up": "bash scripts/lab-up.sh",
     "test:watch": "vitest",
     "mutate": "node scripts/mutate-changed.mjs",
+    "bump": "node scripts/bump-version.mjs",
     "prepublishOnly": "npm run build && npm run test:unit",
     "publish:dry": "npm pack --dry-run",
     "publish:check": "npm pack && tar -tzf *.tgz | head -20 && rm -f *.tgz",

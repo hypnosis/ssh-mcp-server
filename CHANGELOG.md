@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-08-21
+
+### Added — the server has a face in the catalogues
+- The registry entry carries an icon now: a rack with a key, drawn for light and dark
+  themes in three sizes each. Listings that show icons no longer fall back to a blank
+  square. The registry only picks up an entry with a new version, so the icon travels
+  with this release.
+
+### Added — one command moves the version everywhere
+- `npm run bump -- patch|minor|major|X.Y.Z` raises the version in every place at once:
+  `package.json`, both fields in `package-lock.json`, both fields in `server.json`, and
+  the `[Unreleased]` section of this file. It refuses before writing anything if the
+  places have drifted apart, and re-reads the files afterwards to confirm the new number
+  arrived everywhere. Commit and tag stay manual.
+
 ## [2.2.0] - 2026-08-21
 
 ### Fixed — the answer reaches the model, not just the transcript

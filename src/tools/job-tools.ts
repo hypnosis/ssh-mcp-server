@@ -105,7 +105,9 @@ export class JobTools {
     };
     const id = {
       type: 'string',
-      description: 'Job id returned by ssh_exec with detach: true',
+      description:
+        'Job id returned by ssh_exec with detach: true. A job started with sudo is reached as root ' +
+        'from the id alone — nothing extra to pass.',
     };
 
     return [
@@ -146,8 +148,8 @@ export class JobTools {
         name: 'ssh_job_list',
         annotations: { title: 'List background jobs', ...READS_REMOTE },
         description:
-          'Lists the detached jobs on a machine with their state, for when an id was not kept. Ids and ' +
-          'states only — for what a job printed, use ssh_job_output.',
+          'Lists the detached jobs on a machine with their state, for when an id was not kept, jobs started ' +
+          'with sudo included. Ids and states only — for what a job printed, use ssh_job_output.',
         inputSchema: {
           type: 'object',
           properties: { profile },

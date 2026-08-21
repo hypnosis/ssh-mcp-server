@@ -416,16 +416,17 @@ if (unavailable && LAB_REQUIRED) {
         await client.close();
       });
 
+      // Права задачи и опрос под ними — в job-as-root.live.test.ts, на профиле
+      // без них; здесь важно одно: запуск с sudo не отвергается
+      it('вместе с sudo задача запускается', async () => {
+        const before = await jobCount();
+        const answer = await answerOf({ command: 'sleep 5', detach: true, sudo: true });
+
+        expect(jobIdOf(answer).startsWith('root-')).toBe(true);
+        expect(await jobCount()).toBe(before + 1);
+      });
+
       describe('отказы: ничего не запускается', () => {
-        it('вместе с sudo', async () => {
-          const before = await jobCount();
-          const result = await run({ command: 'sleep 5', detach: true, sudo: true });
-
-          expect(result.isError).toBe(true);
-          expect(result.content[0].text).toContain('cannot be combined with sudo');
-          expect(await jobCount()).toBe(before);
-        });
-
         it('с несколькими командами', async () => {
           const before = await jobCount();
           const result = await run({ command: ['sleep 5', 'echo done'], detach: true });

@@ -202,7 +202,8 @@ or skip a byte. `ssh_job_list` finds jobs when the id was not kept. `ssh_job_kil
 the whole process group, and a job already gone is reported rather than refused.
 
 **Trap.** `lost` is not `done`: the exit code is gone, but what the job wrote is still
-readable through `ssh_job_output`. Detach takes one command and no `sudo`.
+readable through `ssh_job_output`. Detach takes one command, and with `sudo` the whole
+protocol goes as root — the id says so, nothing extra is passed.
 
 
 A command that runs longer than the timeout used to be impossible: the client was killed and
@@ -237,8 +238,14 @@ failure, because it is neither.
 send it back on the next read and you get exactly what appeared since. The offset counts what
 was actually read, so an answer cut off at the transport buffer does not skip the middle.
 
-**Limits.** One command per job (arrays are refused), and `detach` cannot be combined with
-`sudo` — a background job has nowhere to take a password from. Jobs that are no longer running
+**A job under root stays under root.** `detach` and `sudo` go together: the job runs as root,
+and its id carries that, so `ssh_job_status`, `ssh_job_output`, `ssh_job_kill` and `ssh_job_list`
+reach it as root by themselves. Without that they would call a root job lost and fail to stop it —
+the process is not theirs to signal. What `sudo` still needs is something to answer with: a
+password in the profile, or a `sudoers` line that asks for none. A key-only profile whose `sudo`
+demands a password gets a refusal saying exactly that, and no job is started.
+
+**Limits.** One command per job (arrays are refused). Jobs that are no longer running
 are cleaned up by `ssh_job_list` seven days after they started; running ones are never touched.
 
 ### `ssh_file_read` - Read Files

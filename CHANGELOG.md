@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — a background job can run as root
+- `detach` and `sudo` used to be refused together, and the refusal offered two ways out that a
+  long job under root has neither of: drop `sudo` and the command fails, drop `detach` and the
+  call dies before the work ends. Now the job starts as root — a package upgrade, an image
+  rebuild, a migration finally has a way to run.
+- The whole protocol follows it there. A job's id says it belongs to root, so `ssh_job_status`,
+  `ssh_job_output`, `ssh_job_kill` and `ssh_job_list` elevate by themselves and nothing extra is
+  passed on later calls. Without that they would report a live job as `lost` and fail to stop it:
+  someone else's process is not theirs to signal.
+- What `sudo` needs is something to answer with — a password in the profile, or a `sudoers` line
+  that asks for none. A key-only profile whose `sudo` demands a password gets a refusal saying
+  exactly that, in place of sudo's own words about a missing terminal, and no job is started.
+
 ### Changed — the legend says what its keys look like
 - The `legend` in a structured answer now carries a description: a key names the field before
   the value (`state=limited`, `jobs[].state=lost`), and only values the answer actually used

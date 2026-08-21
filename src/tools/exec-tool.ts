@@ -207,7 +207,9 @@ export class ExecTool {
             type: 'boolean',
             description:
               'Background job on the server: returns an id at once, outlives this call, timeout does not apply. ' +
-              'Follow with ssh_job_status / ssh_job_output, stop with ssh_job_kill. One command, no sudo. Default: false',
+              'Follow with ssh_job_status / ssh_job_output, stop with ssh_job_kill. One command. With sudo the job ' +
+              'runs as root and every later call follows it as root, provided the profile has a password or sudo ' +
+              'needs none. Default: false',
             default: false,
           },
         },

@@ -1,0 +1,17 @@
+{
+  "name": "ssh-mcp-server",
+  "description": "Remote server tools for AI agents, delivered over the OpenSSH client already on your machine.",
+  "owner": {
+    "name": "hypnosis",
+    "url": "https://github.com/hypnosis"
+  },
+  "plugins": [
+    {
+      "name": "ssh-mcp-server",
+      "displayName": "SSH MCP Server",
+      "description": "Run commands, move files, search logs and audit machines over SSH from your agent.",
+      "source": "./",
+      "version": "2.2.2"
+    }
+  ]
+}

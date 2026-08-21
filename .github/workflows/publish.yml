@@ -47,12 +47,18 @@ jobs:
           SERVER_VERSION=$(node -p "require('./server.json').version")
           PACKAGE_ENTRY_VERSION=$(node -p "require('./server.json').packages[0].version")
           PLUGIN_VERSION=$(node -p "require('./plugin.json').version")
+          CLAUDE_PLUGIN_VERSION=$(node -p "require('./.claude-plugin/plugin.json').version")
+          MARKETPLACE_VERSION=$(node -p "require('./.claude-plugin/marketplace.json').plugins[0].version")
           if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
             echo "Error: Tag version ($TAG_VERSION) does not match package.json version ($PACKAGE_VERSION)"
             exit 1
           fi
           if [ "$TAG_VERSION" != "$PLUGIN_VERSION" ]; then
             echo "Error: Tag version ($TAG_VERSION) does not match plugin.json version ($PLUGIN_VERSION)"
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$CLAUDE_PLUGIN_VERSION" ] || [ "$TAG_VERSION" != "$MARKETPLACE_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) does not match .claude-plugin ($CLAUDE_PLUGIN_VERSION / $MARKETPLACE_VERSION)"
             exit 1
           fi
           # server.json carries the version twice — the server and the npm package it

@@ -29,7 +29,7 @@ const RELEASE_KINDS = ['major', 'minor', 'patch'];
 // Разойтись они не имеют права, поэтому замена ждёт ровно столько вхождений.
 const SERVER_JSON_VERSION_FIELDS = 2;
 
-// В манифесте плагина — один раз.
+// В манифестах плагина — по одному разу в каждом.
 const PLUGIN_JSON_VERSION_FIELDS = 1;
 
 const args = process.argv.slice(2);
@@ -46,6 +46,8 @@ const paths = {
   packageLock: join(ROOT, 'package-lock.json'),
   serverJson: join(ROOT, 'server.json'),
   pluginJson: join(ROOT, 'plugin.json'),
+  claudePluginJson: join(ROOT, '.claude-plugin', 'plugin.json'),
+  marketplaceJson: join(ROOT, '.claude-plugin', 'marketplace.json'),
   changelog: join(ROOT, 'CHANGELOG.md'),
 };
 
@@ -64,6 +66,11 @@ function collectVersions() {
     { where: 'server.json → version', value: server.version },
     { where: 'server.json → packages[0].version', value: server.packages?.[0]?.version },
     { where: 'plugin.json → version', value: readJson(paths.pluginJson).version },
+    { where: '.claude-plugin/plugin.json → version', value: readJson(paths.claudePluginJson).version },
+    {
+      where: '.claude-plugin/marketplace.json → plugins[0].version',
+      value: readJson(paths.marketplaceJson).plugins?.[0]?.version,
+    },
   ];
 }
 
@@ -133,9 +140,13 @@ const unreleasedBody = changelog
 const versionField = new RegExp(`"version": "${current.replace(/\./g, '\\.')}"`, 'g');
 const serverText = read(paths.serverJson);
 const pluginText = read(paths.pluginJson);
+const claudePluginText = read(paths.claudePluginJson);
+const marketplaceText = read(paths.marketplaceJson);
 const counted = [
   { name: 'server.json', text: serverText, expected: SERVER_JSON_VERSION_FIELDS },
   { name: 'plugin.json', text: pluginText, expected: PLUGIN_JSON_VERSION_FIELDS },
+  { name: '.claude-plugin/plugin.json', text: claudePluginText, expected: PLUGIN_JSON_VERSION_FIELDS },
+  { name: '.claude-plugin/marketplace.json', text: marketplaceText, expected: PLUGIN_JSON_VERSION_FIELDS },
 ];
 for (const file of counted) {
   const found = file.text.match(versionField)?.length ?? 0;
@@ -162,6 +173,8 @@ execFileSync('npm', ['version', next, '--no-git-tag-version'], { cwd: ROOT, stdi
 
 writeFileSync(paths.serverJson, serverText.replace(versionField, `"version": "${next}"`));
 writeFileSync(paths.pluginJson, pluginText.replace(versionField, `"version": "${next}"`));
+writeFileSync(paths.claudePluginJson, claudePluginText.replace(versionField, `"version": "${next}"`));
+writeFileSync(paths.marketplaceJson, marketplaceText.replace(versionField, `"version": "${next}"`));
 
 // Накопленное под Unreleased становится разделом релиза, а сам Unreleased остаётся
 // пустым сверху — следующему спринту есть куда писать.
@@ -186,7 +199,7 @@ if (unreleasedBody === '') {
 }
 console.log('');
 console.log('Дальше по порядку — тег последним, он запускает публикацию:');
-console.log('  1. git diff package.json package-lock.json server.json plugin.json CHANGELOG.md');
+console.log('  1. git diff package.json package-lock.json server.json plugin.json .claude-plugin CHANGELOG.md');
 console.log('  2. записи под новым разделом CHANGELOG — если их там нет');
 console.log('  3. коммит — через git-committer');
 console.log('  4. git push origin main');
@@ -196,4 +209,4 @@ console.log(`     npm view @hypnosis/ssh-mcp-server version                     
 console.log('     registry.modelcontextprotocol.io/v0/servers?search=io.github.hypnosis/ssh-mcp-server&version=latest');
 console.log(`     gh release view v${next} --json assets                           → бандл .mcpb на месте`);
 console.log(`  7. Smithery — вручную, под своей учётной записью:`);
-console.log(`     npx @smithery/cli mcp publish releases/ssh-mcp-server-${next}.mcpb -n hypnosis/ssh-mcp-server`);
+console.log(`     npm run build:mcpb && smithery mcp publish releases/ssh-mcp-server-${next}.mcpb -n hypnosis/ssh-mcp-server`);

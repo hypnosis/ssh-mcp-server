@@ -52,6 +52,18 @@ That is enough to connect.
 Codex, opencode, Qwen Code and other clients are covered in
 [Set up the SSH MCP server](#set-up-the-ssh-mcp-server).
 
+### Install as a plugin
+
+Claude Code can take the whole thing as a plugin instead:
+
+```
+/plugin marketplace add hypnosis/ssh-mcp-server
+/plugin install ssh-mcp-server@ssh-mcp-server
+```
+
+The plugin reads `~/.claude/ssh-profiles.json` unless `SSH_PROFILES_FILE` says otherwise, so
+create that file first and the server comes up with your machines already loaded.
+
 ### Requirements
 
 **Node.js 18+** and a system `ssh` client on `PATH`. On Windows, use a key-based profile;

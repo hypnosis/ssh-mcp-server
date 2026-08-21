@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — a second way to install, and a plugin manifest
+## [2.2.2] - 2026-08-21
+
+### Added — more ways to install the same server
 - `mcpb` bundle: `npm run build:mcpb` produces `releases/ssh-mcp-server-<version>.mcpb`, a
   self-contained bundle carrying the built server and its runtime dependencies. Clients that
   install in one click read it, and so does Smithery. The release workflow builds it after the
@@ -16,14 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `plugin.json` and `mcp.json` at the repository root, conforming to the Agent Plugins 1.0
   schemas. Cursor, VS Code, Copilot, Codex and Kiro all read this pair, so the server can be
   installed from a repository URL rather than a hand-written config block.
-- `npm run bump` now moves the version in `plugin.json` too, and the release workflow refuses
-  a tag that disagrees with it.
+- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and `.mcp.json`: Claude Code
+  installs the repository as a plugin — `/plugin marketplace add hypnosis/ssh-mcp-server`, then
+  `/plugin install ssh-mcp-server@ssh-mcp-server`. The plugin reads `~/.claude/ssh-profiles.json`
+  unless `SSH_PROFILES_FILE` points elsewhere.
+- `Dockerfile` and `.dockerignore`: catalogues that read a server's tool list by starting it can
+  now do so. The image carries a placeholder profile file, because the server refuses to start
+  without one, and it reaches nothing until a call names a profile.
+- `npm run bump` now moves the version in all three plugin manifests as well; the release
+  workflow refuses a tag that disagrees with `plugin.json`.
 
 ### Changed — badges say who vouches for what
 - The README badge row is split in two: what others vouch for (MCP registry entry with its
   live version, Glama quality score, monthly downloads) above what the project reports about
   itself (npm version, tests, Node, MCP SDK, license). The TypeScript badge is gone — it
   showed the version of a dev dependency, which tells a reader nothing.
+- The README header no longer sits in a table: the project mark floats beside the opening
+  paragraph, so the block reflows on a phone instead of holding its columns.
 
 ## [2.2.1] - 2026-08-21
 

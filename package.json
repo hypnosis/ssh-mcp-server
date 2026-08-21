@@ -1,6 +1,6 @@
 {
   "name": "@hypnosis/ssh-mcp-server",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "mcpName": "io.github.hypnosis/ssh-mcp-server",
   "description": "SSH MCP server for AI agents — remote commands, file transfer, log search and server audits through OpenSSH, with destructive-command checks. Works with Claude Code, Codex, Gemini CLI and any MCP client.",
   "type": "module",

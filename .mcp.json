@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "ssh": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@hypnosis/ssh-mcp-server"
+      ],
+      "env": {
+        "SSH_PROFILES_FILE": "${SSH_PROFILES_FILE:-~/.claude/ssh-profiles.json}"
+      }
+    }
+  }
+}

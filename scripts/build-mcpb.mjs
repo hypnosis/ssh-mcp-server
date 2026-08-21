@@ -78,6 +78,9 @@ try {
         required: false,
       },
     },
+    // Списка инструментов здесь нет намеренно: схема манифеста разрешает в нём
+    // только имя и описание, а приёмник Smithery требует у каждого inputSchema и
+    // отвергает бандл без него. Подробности — docs/listing.md.
     compatibility: {
       runtimes: { node: pkg.engines?.node ?? '>=18.0.0' },
     },

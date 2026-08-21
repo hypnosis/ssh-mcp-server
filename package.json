@@ -11,6 +11,12 @@
   },
   "files": [
     "dist",
+    "assets/icon-48.png",
+    "assets/icon-128.png",
+    "assets/icon-512.png",
+    "assets/icon-dark-48.png",
+    "assets/icon-dark-128.png",
+    "assets/icon-dark-512.png",
     "README.md",
     "LICENSE",
     "secrets.json.example"

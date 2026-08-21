@@ -8,6 +8,56 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/hypnosis/ssh-mcp-server#readme",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-512.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "512x512"
+      ],
+      "theme": "light"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-128.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "128x128"
+      ],
+      "theme": "light"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-48.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "48x48"
+      ],
+      "theme": "light"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-dark-512.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "512x512"
+      ],
+      "theme": "dark"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-dark-128.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "128x128"
+      ],
+      "theme": "dark"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-dark-48.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "48x48"
+      ],
+      "theme": "dark"
+    }
+  ],
   "version": "2.2.0",
   "packages": [
     {

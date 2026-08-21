@@ -12,3 +12,8 @@ home-path:70610edc4d73
 # scripts/lab-up.sh and the live sudo test, the home directory of the user that
 # logs in by key and answers sudo with a password: the same throwaway container.
 home-path:30e238709813
+
+# tests/unit/resources.test.ts, the password and the passphrase the test puts in
+# a profile to check they never leave it: made-up strings, no machine takes them.
+secret-assign:7f89adf9bed1
+secret-assign:3a85d65910ab

@@ -100,3 +100,6 @@ CLAUDE.md
 *.profiles.json
 ssh-profiles.json
 docker-profiles.json
+
+# Каталог вывода сборки: MCPB-бандлы
+releases/

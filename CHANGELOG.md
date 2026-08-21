@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — a second way to install, and a plugin manifest
+- `mcpb` bundle: `npm run build:mcpb` produces `releases/ssh-mcp-server-<version>.mcpb`, a
+  self-contained bundle carrying the built server and its runtime dependencies. Clients that
+  install in one click read it, and so does Smithery. The release workflow builds it after the
+  tag-version check and attaches it to the GitHub release, so the number inside it cannot
+  disagree with the tag.
+- `plugin.json` and `mcp.json` at the repository root, conforming to the Agent Plugins 1.0
+  schemas. Cursor, VS Code, Copilot, Codex and Kiro all read this pair, so the server can be
+  installed from a repository URL rather than a hand-written config block.
+- `npm run bump` now moves the version in `plugin.json` too, and the release workflow refuses
+  a tag that disagrees with it.
+
+### Changed — badges say who vouches for what
+- The README badge row is split in two: what others vouch for (MCP registry entry with its
+  live version, Glama quality score, monthly downloads) above what the project reports about
+  itself (npm version, tests, Node, MCP SDK, license). The TypeScript badge is gone — it
+  showed the version of a dev dependency, which tells a reader nothing.
+
 ## [2.2.1] - 2026-08-21
 
 ### Added — the server has a face in the catalogues

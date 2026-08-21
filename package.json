@@ -37,7 +37,8 @@
     "prepublishOnly": "npm run build && npm run test:unit",
     "publish:dry": "npm pack --dry-run",
     "publish:check": "npm pack && tar -tzf *.tgz | head -20 && rm -f *.tgz",
-    "publish:npm": "npm publish --access public"
+    "publish:npm": "npm publish --access public",
+    "build:mcpb": "node scripts/build-mcpb.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0"

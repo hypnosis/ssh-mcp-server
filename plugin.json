@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ssh-mcp-server",
+  "version": "2.2.1",
+  "description": "Remote server work over the OpenSSH client already on your machine: run commands, move files with checksum verification, search logs and audit hosts, with destructive commands blocked before they reach the shell.",
+  "author": {
+    "name": "hypnosis",
+    "url": "https://github.com/hypnosis"
+  },
+  "homepage": "https://github.com/hypnosis/ssh-mcp-server#readme",
+  "repository": "https://github.com/hypnosis/ssh-mcp-server",
+  "license": "MIT",
+  "keywords": [
+    "ssh",
+    "devops",
+    "server-management",
+    "remote-execution",
+    "sysadmin"
+  ]
+}

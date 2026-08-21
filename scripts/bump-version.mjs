@@ -29,6 +29,9 @@ const RELEASE_KINDS = ['major', 'minor', 'patch'];
 // Разойтись они не имеют права, поэтому замена ждёт ровно столько вхождений.
 const SERVER_JSON_VERSION_FIELDS = 2;
 
+// В манифесте плагина — один раз.
+const PLUGIN_JSON_VERSION_FIELDS = 1;
+
 const args = process.argv.slice(2);
 const isDryRun = args.includes('--dry-run');
 const spec = args.find((arg) => !arg.startsWith('--'));
@@ -42,6 +45,7 @@ const paths = {
   packageJson: join(ROOT, 'package.json'),
   packageLock: join(ROOT, 'package-lock.json'),
   serverJson: join(ROOT, 'server.json'),
+  pluginJson: join(ROOT, 'plugin.json'),
   changelog: join(ROOT, 'CHANGELOG.md'),
 };
 
@@ -59,6 +63,7 @@ function collectVersions() {
     { where: 'package-lock.json → packages[""].version', value: lock.packages?.['']?.version },
     { where: 'server.json → version', value: server.version },
     { where: 'server.json → packages[0].version', value: server.packages?.[0]?.version },
+    { where: 'plugin.json → version', value: readJson(paths.pluginJson).version },
   ];
 }
 
@@ -125,13 +130,20 @@ const unreleasedBody = changelog
 // server.json правится текстом, а не через JSON.stringify: пересборка объекта
 // переписала бы форматирование всего файла и утопила правку в шумном диффе. Формат
 // полей проверяется до первой записи — иначе отказ застаёт версию поднятой наполовину.
-const serverText = read(paths.serverJson);
 const versionField = new RegExp(`"version": "${current.replace(/\./g, '\\.')}"`, 'g');
-const found = serverText.match(versionField)?.length ?? 0;
-if (found !== SERVER_JSON_VERSION_FIELDS) {
-  console.error(`В server.json ожидалось ${SERVER_JSON_VERSION_FIELDS} поля версии, нашлось ${found}.`);
-  console.error('Ничего не менял — привести server.json к обычному виду и повторить.');
-  process.exit(1);
+const serverText = read(paths.serverJson);
+const pluginText = read(paths.pluginJson);
+const counted = [
+  { name: 'server.json', text: serverText, expected: SERVER_JSON_VERSION_FIELDS },
+  { name: 'plugin.json', text: pluginText, expected: PLUGIN_JSON_VERSION_FIELDS },
+];
+for (const file of counted) {
+  const found = file.text.match(versionField)?.length ?? 0;
+  if (found !== file.expected) {
+    console.error(`В ${file.name} ожидалось ${file.expected} поля версии, нашлось ${found}.`);
+    console.error(`Ничего не менял — привести ${file.name} к обычному виду и повторить.`);
+    process.exit(1);
+  }
 }
 
 console.log(`${current} → ${next}${isDryRun ? '  (сухой прогон, ничего не пишу)' : ''}`);
@@ -149,6 +161,7 @@ if (isDryRun) {
 execFileSync('npm', ['version', next, '--no-git-tag-version'], { cwd: ROOT, stdio: 'ignore' });
 
 writeFileSync(paths.serverJson, serverText.replace(versionField, `"version": "${next}"`));
+writeFileSync(paths.pluginJson, pluginText.replace(versionField, `"version": "${next}"`));
 
 // Накопленное под Unreleased становится разделом релиза, а сам Unreleased остаётся
 // пустым сверху — следующему спринту есть куда писать.
@@ -172,7 +185,15 @@ if (unreleasedBody === '') {
   console.log('Внимание: под [Unreleased] не было ни строки — раздел релиза пустой.');
 }
 console.log('');
-console.log('Дальше:');
-console.log('  git diff package.json package-lock.json server.json CHANGELOG.md');
-console.log('  коммит — через git-committer');
-console.log(`  тег ставить отдельно: git tag v${next} && git push origin v${next}  (запускает публикацию)`);
+console.log('Дальше по порядку — тег последним, он запускает публикацию:');
+console.log('  1. git diff package.json package-lock.json server.json plugin.json CHANGELOG.md');
+console.log('  2. записи под новым разделом CHANGELOG — если их там нет');
+console.log('  3. коммит — через git-committer');
+console.log('  4. git push origin main');
+console.log(`  5. git tag v${next} && git push origin v${next}`);
+console.log('  6. дождаться workflow и проверить, что доехало:');
+console.log(`     npm view @hypnosis/ssh-mcp-server version                        → ${next}`);
+console.log('     registry.modelcontextprotocol.io/v0/servers?search=io.github.hypnosis/ssh-mcp-server&version=latest');
+console.log(`     gh release view v${next} --json assets                           → бандл .mcpb на месте`);
+console.log(`  7. Smithery — вручную, под своей учётной записью:`);
+console.log(`     npx @smithery/cli mcp publish releases/ssh-mcp-server-${next}.mcpb -n hypnosis/ssh-mcp-server`);

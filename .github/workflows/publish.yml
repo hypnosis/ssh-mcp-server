@@ -46,8 +46,13 @@ jobs:
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
           SERVER_VERSION=$(node -p "require('./server.json').version")
           PACKAGE_ENTRY_VERSION=$(node -p "require('./server.json').packages[0].version")
+          PLUGIN_VERSION=$(node -p "require('./plugin.json').version")
           if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
             echo "Error: Tag version ($TAG_VERSION) does not match package.json version ($PACKAGE_VERSION)"
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$PLUGIN_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) does not match plugin.json version ($PLUGIN_VERSION)"
             exit 1
           fi
           # server.json carries the version twice — the server and the npm package it
@@ -57,6 +62,9 @@ jobs:
             exit 1
           fi
           echo "Version match confirmed: $TAG_VERSION"
+
+      - name: Build MCPB bundle
+        run: npm run build:mcpb
       
       - name: Check if version already published
         id: check_version
@@ -99,6 +107,7 @@ jobs:
       - name: Create GitHub Release
         run: |
           gh release create "${{ github.ref_name }}" \
+            releases/ssh-mcp-server-${{ steps.version.outputs.version }}.mcpb \
             --title "Release ${{ steps.version.outputs.version }}" \
             --notes "## Changes in ${{ steps.version.outputs.version }}
           

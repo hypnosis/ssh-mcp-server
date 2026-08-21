@@ -1,6 +1,18 @@
 # SSH MCP Server — Remote server tools for AI agents
 
-**An SSH MCP server — a Swiss army knife that saves you and your AI agent time and tokens on debugging, development and server maintenance.** Run commands, move files, read logs and audit machines over SSH — a cloud VPS, a bare-metal box, or the BusyBox router sitting in your closet.
+<table>
+  <tr>
+    <td width="160" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-dark-128.png">
+        <img src="https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-128.png" width="128" alt="SSH MCP Server">
+      </picture>
+    </td>
+    <td valign="top">
+      <strong>An SSH MCP server — a Swiss army knife that saves you and your AI agent time and tokens on debugging, development and server maintenance.</strong> Run commands, move files, read logs and audit machines over SSH — a cloud VPS, a bare-metal box, or the BusyBox router sitting in your closet.
+    </td>
+  </tr>
+</table>
 
 It uses the OpenSSH client already on your machine: your keys, your `~/.ssh/config`, your jump hosts, your agent forwarding. Nothing bundled, nothing to compile, no native bindings.
 

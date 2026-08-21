@@ -38,6 +38,10 @@
 | TD-26 | Ответ приходит агенту без содержания там, где объявлена схема | ✅ закрыт 2026-08-21 | [archive/content-lost-when-schema-declared_26.md](archive/content-lost-when-schema-declared_26.md) |
 | TD-27 | Фоновую задачу опрашивают вслепую | ✅ закрыт 2026-08-20 | [archive/job-polled-blind_27.md](archive/job-polled-blind_27.md) |
 | TD-28 | Профилю по ключу нечем предъявить пароль на `sudo` | 🔹 отложено, разбирается в CORE_14 | [sudo-needs-a-password-nobody-has_28.md](sudo-needs-a-password-nobody-has_28.md) |
+| TD-29 | Долгую работу под root запустить нечем | 🔹 отложено, в следующий спринт | [detached-work-cannot-be-root_29.md](detached-work-cannot-be-root_29.md) |
+| TD-30 | Каталог доставляется только заменой целиком | 🔹 отложено, в следующий спринт | [directory-upload-replaces-whole_30.md](directory-upload-replaces-whole_30.md) |
+| TD-31 | Легенда ответа объявлена, но правило её ключей нигде не сказано | 🔹 отложено, в следующий спринт | [legend-keys-not-declared_31.md](legend-keys-not-declared_31.md) |
+| TD-32 | Поверхность читают кусками, и связи между кусками не держатся | 🔹 отложено, в следующий спринт | [surface-read-in-pieces_32.md](surface-read-in-pieces_32.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.
 

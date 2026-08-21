@@ -159,7 +159,12 @@ export class ExecTool {
       name: 'ssh_exec',
       annotations: { title: 'Run commands', ...RUNS_COMMANDS },
       description:
-          'Run command(s). command (one or a list), sudo, cwd, timeout, detach. Last resort: files, logs, transfers, health and jobs have their own tools.',
+          'Runs one command or a list of them on a server and returns the exit code, stdout and stderr of ' +
+          'each. Every command gets its own shell, so a variable set or a directory entered in one is gone ' +
+          'in the next. Work measured in minutes should be detached rather than given a longer timeout: a ' +
+          'detached call returns a job id at once and outlives this request. Reach for it last — files, ' +
+          'logs, transfers, health and jobs each have a tool that batches the round trips and parses the ' +
+          'answer.',
       inputSchema: {
         type: 'object',
         properties: {

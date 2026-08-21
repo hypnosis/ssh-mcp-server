@@ -5,7 +5,7 @@
   <img src="https://raw.githubusercontent.com/hypnosis/ssh-mcp-server/main/assets/icon-128.png" align="left" width="72" hspace="12" alt="SSH MCP Server">
 </picture>
 
-**An SSH MCP server — a Swiss army knife that saves you and your AI agent time and tokens on debugging, development and server maintenance.** Run commands, move files, read logs and audit machines over SSH — a cloud VPS, a bare-metal box, or the BusyBox router sitting in your closet.<br clear="left">
+**An SSH MCP server — a multitool that saves you and your AI agent time and tokens on debugging, development and server maintenance.** Run commands, move files, read logs and audit machines over SSH — a cloud VPS, a bare-metal box, or the BusyBox router sitting in your closet.<br clear="left">
 
 It uses the OpenSSH client already on your machine: your keys, your `~/.ssh/config`, your jump hosts, your agent forwarding. Nothing bundled, nothing to compile, no native bindings.
 
@@ -25,7 +25,7 @@ No global installation required. `npx` downloads the package on first use:
 npx -y @hypnosis/ssh-mcp-server
 ```
 
-Add it to **Claude Code** for every project:
+Add it to your MCP client — **Claude Code**, for example — for every project:
 
 ```bash
 claude mcp add ssh -s user \
@@ -54,7 +54,7 @@ Codex, opencode, Qwen Code and other clients are covered in
 
 ### Install as a plugin
 
-Claude Code can take the whole thing as a plugin instead:
+Some clients — **Claude Code**, for example — can take the whole thing as a plugin instead:
 
 ```
 /plugin marketplace add hypnosis/ssh-mcp-server
@@ -66,10 +66,10 @@ create that file first and the server comes up with your machines already loaded
 
 ### Requirements
 
+[![npm version](https://img.shields.io/npm/v/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server) [![Node.js](https://img.shields.io/node/v/@hypnosis/ssh-mcp-server?style=flat-square&logo=nodedotjs&logoColor=white&color=5FA04E)](https://nodejs.org/) [![TypeScript](https://img.shields.io/npm/dependency-version/@hypnosis/ssh-mcp-server/dev/typescript?style=flat-square&logo=typescript&logoColor=white&color=3178C6&label=typescript)](https://www.typescriptlang.org/) [![MCP SDK](https://img.shields.io/npm/dependency-version/@hypnosis/ssh-mcp-server/@modelcontextprotocol/sdk?style=flat-square&logo=modelcontextprotocol&logoColor=white&color=0F172A&label=MCP%20SDK)](https://modelcontextprotocol.io/)
+
 **Node.js 18+** and a system `ssh` client on `PATH`. On Windows, use a key-based profile;
 password and passphrase profiles are not currently available.
-
-[![npm version](https://img.shields.io/npm/v/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server) [![Node.js](https://img.shields.io/node/v/@hypnosis/ssh-mcp-server?style=flat-square&logo=nodedotjs&logoColor=white&color=5FA04E)](https://nodejs.org/) [![TypeScript](https://img.shields.io/npm/dependency-version/@hypnosis/ssh-mcp-server/dev/typescript?style=flat-square&logo=typescript&logoColor=white&color=3178C6&label=typescript)](https://www.typescriptlang.org/) [![MCP SDK](https://img.shields.io/npm/dependency-version/@hypnosis/ssh-mcp-server/@modelcontextprotocol/sdk?style=flat-square&logo=modelcontextprotocol&logoColor=white&color=0F172A&label=MCP%20SDK)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/npm/l/@hypnosis/ssh-mcp-server?style=flat-square&color=2563EB)](LICENSE)
 
 Prefer a pinned version, offline work, or one less registry check per launch:
 `npm install -g @hypnosis/ssh-mcp-server`, then use `ssh-mcp-server` as the command instead

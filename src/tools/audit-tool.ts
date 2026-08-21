@@ -89,7 +89,11 @@ export class AuditTool {
         name: 'ssh_audit_baseline',
         annotations: { title: 'Audit a server', ...READS_REMOTE },
         description:
-          'How a machine is set up: sshd, firewall, updates, services, docker, ports, disk + CRITICAL/WARNING/OK. include picks sections. Now -> ssh_snapshot.',
+          'Reports how a machine is set up: sshd, firewall, pending updates, failed services, docker, ' +
+          'listening ports and disk, each section marked CRITICAL, WARNING or OK. Reads only, in one round ' +
+          'trip instead of a dozen commands; without sudo the sshd section is read from the config file '  +
+          'rather than from sshd itself. Use it on a machine you have not audited yet; for load and ' +
+          'health at this moment, use ssh_snapshot.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -124,7 +128,12 @@ export class AuditTool {
         name: 'ssh_tls_check',
         annotations: { title: 'Check a TLS certificate', ...READS_REMOTE },
         description:
-          'TLS cert of a domain, handshake made from the server. domain, port, sudo -> days left, SAN match, issuer, renew hook. null = could not read.',
+          'Checks the TLS certificate a domain serves, with the handshake made from the server itself — so ' +
+          'it sees what that machine sees, including hosts closed to the outside. Reports days left, ' +
+          'whether the name matches a SAN, the issuer and whether renewal is configured — without sudo a ' +
+          'missing renewal hook only means the config could not be read. A null field means the check ' +
+          'could not run, not that the certificate is bad. Run it per domain, once ssh_audit_baseline ' +
+          'has named the sites.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -155,7 +164,9 @@ export class AuditTool {
         name: 'ssh_disk_breakdown',
         annotations: { title: 'Break down disk usage', ...READS_REMOTE },
         description:
-          'What filled the disk: df, largest dirs, docker, journald, caches. paths, top_n, sudo. How full it is at all -> ssh_snapshot.',
+          'Finds what filled a disk. Reports free space per filesystem, the largest directories under each ' +
+          'path given, and what docker, journald and package caches hold. Reads only, nothing is deleted. ' +
+          'Use it after a disk alarm; for how full the disks are at all, ssh_snapshot answers in one line.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -189,7 +200,10 @@ export class AuditTool {
         name: 'ssh_service_status',
         annotations: { title: 'Check a service', ...READS_REMOTE },
         description:
-          'One systemd unit: state + journal tail. unit, log_lines, since, sudo. No systemd -> NOT CHECKED, never reported as stopped.',
+          'Reports one systemd unit: whether it is loaded, active and enabled, with the tail of its ' +
+          'journal. A machine without systemd comes back as NOT CHECKED, never as a stopped service — that ' +
+          'would read as an outage which is not there. Without sudo the journal is trimmed to what the ' +
+          'profile user may see. For every failed unit at once, ssh_audit_baseline names them.',
         inputSchema: {
           type: 'object',
           properties: {

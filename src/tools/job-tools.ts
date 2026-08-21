@@ -112,7 +112,7 @@ export class JobTools {
         name: 'ssh_job_status',
         annotations: { title: 'Check a background job', ...READS_REMOTE },
         description:
-          'State of a detached job, with the last lines it wrote so you can see where it got to. lost = no exit code, but ssh_job_output still has the output.',
+          'Reports the state of a detached job, with the last lines it wrote so you can see where it got to. lost = no exit code, but ssh_job_output still has the output.',
         inputSchema: {
           type: 'object',
           properties: { profile, id },
@@ -124,7 +124,9 @@ export class JobTools {
         name: 'ssh_job_output',
         annotations: { title: 'Read job output', ...READS_REMOTE },
         description:
-          'stdout+stderr of a detached job. id, offset -> the next offset, so repeated reads never overlap or skip.',
+          'Returns what a detached job has written so far, stdout and stderr together, from a byte offset ' +
+          'you choose. The answer names the next offset, so reading again never overlaps or skips a line. ' +
+          'For whether the job is still running, ssh_job_status answers in one line.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -143,7 +145,8 @@ export class JobTools {
         name: 'ssh_job_list',
         annotations: { title: 'List background jobs', ...READS_REMOTE },
         description:
-          'Detached jobs on a machine. profile only. Use when the id was not kept.',
+          'Lists the detached jobs on a machine with their state, for when an id was not kept. Ids and ' +
+          'states only — for what a job printed, use ssh_job_output.',
         inputSchema: {
           type: 'object',
           properties: { profile },
@@ -155,7 +158,9 @@ export class JobTools {
         name: 'ssh_job_kill',
         annotations: { title: 'Stop a background job', ...WRITES_REMOTE },
         description:
-          'Stop a detached job. id, signal. Reaches the whole process group; a job already gone is reported, not refused.',
+          'Stops a detached job. The signal reaches the whole process group, so anything the job started ' +
+          'goes with it, and a job that already finished is reported as gone rather than refused. TERM is ' +
+          'the default; KILL is for a job that ignored it.',
         inputSchema: {
           type: 'object',
           properties: {

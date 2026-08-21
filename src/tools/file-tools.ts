@@ -139,7 +139,11 @@ export class FileTools {
         name: 'ssh_file_read',
         annotations: { title: 'Read a remote file', ...READS_REMOTE },
         description:
-          'Read text files. path = one or a list, all in one call. Too large or not text -> a named failure, never a partial file. Logs -> ssh_log_search.',
+          'Reads text files from a server, several of them in one call. A file too large or not text comes ' +
+          'back as a named failure rather than a partial file, and one unreadable path costs the others ' +
+          'nothing. Real binary should travel over the transport instead of the command channel, which has ' +
+          'a size limit. To look for something inside logs, ssh_log_search greps on the server rather than ' +
+          'shipping the file here.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -186,7 +190,10 @@ export class FileTools {
         name: 'ssh_file_write',
         annotations: { title: 'Write a remote file', ...WRITES_REMOTE },
         description:
-          'Write text files. files[] of path, content, mode, sudo, verify. Atomic rename; verify compares sha256. Local file or dir -> ssh_upload.',
+          'Writes text files on a server, several in one call, each with its own permissions. Content lands ' +
+          'under a temporary name and takes its place in one rename, so a half-written file never appears ' +
+          'at the target, and an optional sha256 check confirms what arrived. A file is replaced whole; ' +
+          'there is no append. For something that already exists on this machine, use ssh_upload.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -216,7 +223,9 @@ export class FileTools {
         name: 'ssh_file_list',
         annotations: { title: 'List a remote directory', ...READS_REMOTE },
         description:
-          'List a directory. path, pattern, recursive, sudo -> names, sizes, modes, owner, mtime. What is inside the files -> ssh_file_read.',
+          'Lists a directory on a server: every entry with its size, mode, owner and modification time. A ' +
+          'glob narrows the answer, and a recursive walk that hits the output limit says so instead of ' +
+          'returning a shortened list silently. To see what is inside a file, use ssh_file_read.',
         inputSchema: {
           type: 'object',
           properties: {

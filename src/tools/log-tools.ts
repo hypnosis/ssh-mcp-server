@@ -267,7 +267,10 @@ export class LogTools {
         name: 'ssh_log_tail',
         annotations: { title: 'Tail a log file', ...READS_REMOTE },
         description:
-          'Last lines of file(s). path (list | glob), lines, sudo. File size irrelevant. Looking for something -> ssh_log_search.',
+          'Returns the last lines of one or more log files, whatever their size — nothing is shipped here ' +
+          'to be trimmed locally. Globs are expanded by the server\'s find rather than a shell, so a name ' +
+          'holding a space or a newline stays one path. To look for something instead of reading the end, ' +
+          'use ssh_log_search.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -292,7 +295,11 @@ export class LogTools {
         name: 'ssh_log_search',
         annotations: { title: 'Search log files', ...READS_REMOTE },
         description:
-          'grep on the server. path (list | glob | tree), query, since:today, from:end, namesOnly, recursive. Empty = no match; unreadable files listed apart.',
+          'Greps log files on the server and returns the matching lines with their paths, or the paths ' +
+          'alone when line bodies are not wanted. An empty answer means no match, never a failed search: ' +
+          'files that could not be read are listed apart. A time window first skips files untouched in it ' +
+          'and then keeps only lines dated inside it, which is what lets a year of logs finish. For the ' +
+          'tail of a file, ssh_log_tail is cheaper.',
         inputSchema: {
           type: 'object',
           properties: {

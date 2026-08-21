@@ -93,7 +93,11 @@ export class MonitoringTool {
       name: 'ssh_monitor',
       annotations: { title: 'Manage connections', ...MANAGES_CONNECTION },
       description:
-        'The connection, not the machine. action: list (profile names) | test (ready|limited|no-route|rejected) | stats | close | reload.',
+        'Looks after the SSH connections, not the machines behind them: lists the configured profiles, ' +
+        'tests one and names the state (ready, limited, no-route, rejected), reports pool statistics, ' +
+        'closes a connection or reloads the profile file. Close and reload drop live connections; the ' +
+        'other actions only read. Start here on a machine you have not used yet — test says whether ' +
+        'anything else will work.',
       inputSchema: {
         type: 'object',
         properties: {

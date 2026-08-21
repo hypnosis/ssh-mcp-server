@@ -37,7 +37,10 @@ export class SnapshotTool {
       name: 'ssh_snapshot',
       annotations: { title: 'Snapshot system health', ...READS_REMOTE },
       description:
-        'Health right now: cpu, mem, disk, containers, ports, services, recent errors. profile only. Unmeasured -> null + unavailable, never 0.',
+        'Reports how a machine is doing right now: cpu, memory, disk, containers, listening ports, ' +
+        'services and recent errors, in one round trip. Whatever could not be measured comes back null ' +
+        'and marked unavailable, never as a zero that reads like an idle machine. For how the machine is ' +
+        'set up rather than how it is running, use ssh_audit_baseline.',
       inputSchema: {
         type: 'object',
         properties: {

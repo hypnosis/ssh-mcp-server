@@ -8,3 +8,7 @@ ssh-target:29b71b2af018
 # scripts/lab-up.sh, the home directory of the unprivileged user it creates:
 # the machine is a throwaway lab container built by that script, not a host of ours.
 home-path:70610edc4d73
+
+# scripts/lab-up.sh and the live sudo test, the home directory of the user that
+# logs in by key and answers sudo with a password: the same throwaway container.
+home-path:30e238709813

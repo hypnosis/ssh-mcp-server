@@ -89,6 +89,24 @@ ensure_pwuser() {
   ' >/dev/null
 }
 
+# Третья группа: входит по ключу, а sudo у него спрашивает пароль. Ни deploy
+# (ключ и NOPASSWD), ни pwuser (пароль на вход) этот случай не покрывают, а он и
+# есть тот, где вход и повышение прав требуют разных секретов: пароля входа у
+# такого профиля нет вовсе, и sudo отвечает ему только `sudoPassword`.
+ensure_keyuser() {
+  docker exec -e LAB_PASSWORD "$1" sh -c '
+    id keyuser >/dev/null 2>&1 || adduser -D keyuser >/dev/null 2>&1 || useradd -m -s /bin/sh keyuser
+    echo "keyuser:$LAB_PASSWORD" | chpasswd 2>/dev/null
+    mkdir -p /home/keyuser/.ssh
+    cp /root/.ssh/authorized_keys /home/keyuser/.ssh/authorized_keys
+    chown -R keyuser /home/keyuser/.ssh
+    chmod 700 /home/keyuser/.ssh
+    chmod 600 /home/keyuser/.ssh/authorized_keys
+    echo "keyuser ALL=(ALL) ALL" > /etc/sudoers.d/keyuser
+    chmod 440 /etc/sudoers.d/keyuser
+  ' >/dev/null
+}
+
 # Пользователь с вендорской оболочкой: команд POSIX она не знает и на любую
 # отвечает кодом 127 со своим текстом — так ведут себя роутеры и встраиваемые
 # устройства с собственным CLI. На нём проверяется состояние `limited`:
@@ -121,6 +139,7 @@ SHELL
 ensure_users() {
   ensure_deploy "$1"
   ensure_pwuser "$1"
+  ensure_keyuser "$1"
   ensure_vendorcli "$1"
 }
 

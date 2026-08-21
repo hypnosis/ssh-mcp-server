@@ -85,6 +85,16 @@ export function labPasswordConfig(server: LabServer, password = LAB_PASSWORD): S
 }
 
 /**
+ * Профиль третьей группы: вход по ключу, а `sudo` на сервере требует пароль.
+ *
+ * Пароля входа у него нет намеренно — иначе `sudo` получил бы его и случай,
+ * ради которого профиль заведён, остался бы непроверенным.
+ */
+export function labSudoPasswordConfig(server: LabServer, sudoPassword = LAB_PASSWORD): SSHConfig {
+  return { ...labConfig(server, 'keyuser'), sudoPassword };
+}
+
+/**
  * Профиль сервера с вендорской оболочкой.
  *
  * Вход проходит, а команды POSIX серверу неизвестны — так отвечают роутеры и

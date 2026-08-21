@@ -136,7 +136,8 @@ The secrets file is a flat JSON keyed by profile name:
 ```json
 {
   "production": { "password": "..." },
-  "staging": { "passphrase": "..." }
+  "staging": { "passphrase": "..." },
+  "buildbox": { "sudoPassword": "..." }
 }
 ```
 
@@ -160,13 +161,18 @@ the machine does not show it. It is not written to disk, and it is masked in thi
 logs. With multiplexing on, it is asked for once per connection window rather than once
 per command. All of this is checked by the live suite, not only by unit tests.
 
-**The same secret is what `sudo` gets.** `sudo` asks a terminal for the password, and a
-one-shot command has no terminal. Where the profile has a password, it is written to the
-command's standard input for `sudo -S` to read — still never in `argv`, still masked in the
-logs. Two limits are deliberate: a command that reads its own standard input is never given
-the password, because it would arrive mixed into the data, and a profile that authenticates
-by key has nothing to hand over, so `sudo` there works only where it is already
-passwordless.
+**What `sudo` gets.** `sudo` asks a terminal for the password, and a one-shot command has
+no terminal. The answer is written to the command's standard input for `sudo -S` to read —
+still never in `argv`, still masked in the logs. Which secret goes there is `sudoPassword`
+if the profile names one, and the login password otherwise: a profile logging in by key has
+no login password at all, and where a machine keeps the two apart the login one is the wrong
+answer. `sudoPassword` belongs in the secrets file like the rest.
+
+One limit is deliberate: a command that reads its own standard input is never given the
+password, because it would arrive mixed into the data. And where there is nothing to answer
+with, the tool says so in place of sudo's own advice about `-S` and askpass helpers, neither
+of which a caller can reach. Why this is a profile field rather than an askpass helper on the
+server: [ADR-010](decisions/010-what-sudo-is-answered-with.md).
 
 ## Recommendations
 

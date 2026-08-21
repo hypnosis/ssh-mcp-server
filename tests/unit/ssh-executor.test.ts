@@ -142,6 +142,44 @@ describe('SSHExecutor: пароль для sudo', () => {
     expect(lastCommand()).toBe(`sudo bash -c 'cat > /etc/app.conf'`);
     expect(sentOptions().stdin).toBe('key = value\n');
   });
+
+  it('профиль по ключу отвечает sudo своим паролем', async () => {
+    passportSays(true);
+
+    await new SSHExecutor().execute({ ...CONFIG, sudoPassword: 'root-secret' }, 'ls /root', {
+      sudo: true,
+    });
+
+    expect(lastCommand()).toBe(`sudo -S -p '' bash -c 'ls /root'`);
+    expect(sentOptions().stdin).toBe('root-secret\n');
+  });
+
+  /** Спрашивают здесь пароль sudo, а не пароль входа: совпадают они не всегда */
+  it('где есть оба, уходит пароль для sudo', async () => {
+    passportSays(true);
+
+    await new SSHExecutor().execute(
+      { ...PASSWORD_CONFIG, sudoPassword: 'root-secret' },
+      'ls /root',
+      { sudo: true }
+    );
+
+    expect(sentOptions().stdin).toBe('root-secret\n');
+    expect(lastCommand()).not.toContain('root-secret');
+    expect(lastCommand()).not.toContain('letmein');
+  });
+
+  it('и он тоже не подмешивается, где ввод занят данными', async () => {
+    passportSays(true);
+
+    await new SSHExecutor().execute({ ...CONFIG, sudoPassword: 'root-secret' }, 'cat > /etc/app.conf', {
+      sudo: true,
+      stdin: 'key = value\n',
+    });
+
+    expect(lastCommand()).toBe(`sudo bash -c 'cat > /etc/app.conf'`);
+    expect(sentOptions().stdin).toBe('key = value\n');
+  });
 });
 
 describe('SSHExecutor: сборка команды', () => {

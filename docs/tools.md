@@ -160,6 +160,13 @@ ssh_exec({
 back with a non-zero exit code. A typo in `cwd` can no longer send `rm -rf ./cache` into
 your home directory and call it a success.
 
+**`sudo` answers without a terminal.** The secret goes to `sudo -S` on standard input, never
+in `argv`: `sudoPassword` from the profile if it names one, the login `password` otherwise.
+A profile with neither gets a note saying what to do — give it a `sudoPassword`, allow the
+command in `sudoers`, or drop `sudo` — beside sudo's own words, not instead of them. One
+limit stands: a command that reads its own standard input is never handed the password,
+because it would arrive as the first line of that data.
+
 **Recursive deletes that would destroy the server are refused, not warned about.**
 
 Nothing is sent to the server when a `rm -r` in the call targets:
@@ -241,9 +248,9 @@ was actually read, so an answer cut off at the transport buffer does not skip th
 **A job under root stays under root.** `detach` and `sudo` go together: the job runs as root,
 and its id carries that, so `ssh_job_status`, `ssh_job_output`, `ssh_job_kill` and `ssh_job_list`
 reach it as root by themselves. Without that they would call a root job lost and fail to stop it —
-the process is not theirs to signal. What `sudo` still needs is something to answer with: a
-password in the profile, or a `sudoers` line that asks for none. A key-only profile whose `sudo`
-demands a password gets a refusal saying exactly that, and no job is started.
+the process is not theirs to signal. What `sudo` still needs is something to answer with: the
+profile's `sudoPassword` (or its login `password`), or a `sudoers` line that asks for none. A
+profile with neither gets a refusal saying exactly that, and no job is started.
 
 **Limits.** One command per job (arrays are refused). Jobs that are no longer running
 are cleaned up by `ssh_job_list` seven days after they started; running ones are never touched.

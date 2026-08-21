@@ -20,13 +20,16 @@ const FORBIDDEN_MODE_BITS = 0o077;
  */
 export const SECRETS_FILE_EXAMPLE = `{
   "<profile name>": { "password": "..." },
-  "<other profile>": { "passphrase": "..." }
+  "<other profile>": { "passphrase": "..." },
+  "<third profile>": { "sudoPassword": "..." }
 }`;
 
 /** Secrets for one profile */
 export interface ProfileSecrets {
   password?: string;
   passphrase?: string;
+  /** What `sudo` is answered with on the server, where that differs from the login password */
+  sudoPassword?: string;
 }
 
 export interface SecretsFileProblem {
@@ -133,7 +136,7 @@ export function readSecretsFile(secretsFile: string, profilesFilePath: string): 
     const entry = value as Record<string, unknown>;
     const collected: ProfileSecrets = {};
 
-    for (const field of ['password', 'passphrase'] as const) {
+    for (const field of ['password', 'passphrase', 'sudoPassword'] as const) {
       const secret = entry[field];
       if (secret === undefined) {
         continue;

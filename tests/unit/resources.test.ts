@@ -224,6 +224,17 @@ describe('Образец файла профилей', () => {
     expect(await textOf(EXAMPLE)).toContain(field);
   });
 
+  /**
+   * Разбор полей, а не весь образец: слово `sudoPassword` встречается и в примере
+   * файла секретов ниже, поэтому поиск по всему тексту зеленел бы и без описания.
+   */
+  it('объясняет sudoPassword там, где разбирает поля профиля', async () => {
+    const text = await textOf(EXAMPLE);
+    const fields = text.slice(text.indexOf('## Fields of a profile'), text.indexOf('## Secrets file'));
+
+    expect(fields).toContain('sudoPassword');
+  });
+
   it('называет переменную, из которой берётся путь к файлу', async () => {
     expect(await textOf(EXAMPLE)).toContain('SSH_PROFILES_FILE');
   });
@@ -233,6 +244,8 @@ describe('Образец файла профилей', () => {
 
     expect(text).toContain('chmod 600');
     expect(text).toContain('"passphrase"');
+    // Пароль для sudo — такой же секрет: образец секретов показывает и его
+    expect(text).toContain('"sudoPassword"');
   });
 
   it('образец не притворяется настройкой этой машины', async () => {

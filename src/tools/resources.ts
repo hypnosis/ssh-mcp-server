@@ -87,8 +87,11 @@ names one profile from here; there is no default profile.
 - \`port\` — defaults to 22.
 - \`privateKeyPath\` — path to the private key; \`~\` stands for the home directory.
 - \`passphrase\`, \`password\` — accepted here, but they belong in the secrets file.
-- \`secretsFile\` — where this profile's password and passphrase are kept, overriding
-  the file-level \`secretsFile\`. A relative path is taken from the profiles file.
+- \`sudoPassword\` — what \`sudo\` is answered with on the server. A profile logging in by
+  key has no login password to offer, and where the two differ the login one is the wrong
+  answer. Left out, \`password\` is used. Belongs in the secrets file too.
+- \`secretsFile\` — where this profile's secrets are kept, overriding the file-level
+  \`secretsFile\`. A relative path is taken from the profiles file.
 - \`strictHostKeyChecking\` — \`yes\`, \`accept-new\` or \`no\`; defaults to \`accept-new\`.
 - \`ignoreUserConfig\` — ignore the user's ~/.ssh/config for this profile.
 - \`pathSecurity\` — \`{ "allowedPaths": [...], "deniedPaths": [...] }\`, absolute paths only.

@@ -160,6 +160,29 @@ export function killedByTimeoutGuard(exitCode: number): boolean {
   return TIMEOUT_GUARD_EXIT_CODES.includes(exitCode);
 }
 
+/**
+ * What sudo says when it wants a password and has no terminal to ask on.
+ *
+ * BusyBox and coreutils sudo phrase it differently, and a machine with an
+ * askpass helper configured says a third thing.
+ */
+const SUDO_WANTS_A_PASSWORD = /a terminal is required|no askpass|a password is required/i;
+
+/**
+ * What to do about it, in place of sudo's own advice.
+ *
+ * Sudo names the mechanism — «use the -S option», «configure an askpass
+ * helper» — and neither is reachable from the other side of a tool call.
+ */
+export const SUDO_HAS_NOTHING_TO_ANSWER_WITH =
+  'sudo asked for a password and this profile has none to give. Give the profile a ' +
+  'sudoPassword, allow this command without one in sudoers, or run it without sudo.';
+
+/** Whether sudo stopped on a password it could not ask for */
+export function sudoAskedForAPassword(stderr: string): boolean {
+  return SUDO_WANTS_A_PASSWORD.test(stderr);
+}
+
 /** Hint for the exit code, when the bare number alone would mislead */
 export function exitCodeHint(exitCode: number): string {
   if (killedByTimeoutGuard(exitCode)) {

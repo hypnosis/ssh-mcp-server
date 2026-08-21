@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — a profile can answer sudo without a login password
+- New profile field `sudoPassword`: what `sudo` is answered with on that machine. Until now
+  the only answer available was the login password, so a profile that logs in by key — the
+  common shape for an unprivileged deploy user — had nothing to hand over, and every call
+  with `sudo: true` came back with sudo's words about a missing terminal. It is read from
+  the profile and from the secrets file alike, masked in logs, and travels on standard input
+  rather than in `argv`, exactly as the login password does.
+- Where a machine keeps the two secrets apart, `sudoPassword` wins; left out, `password` is
+  used, so existing profiles behave as before.
+- When there is nothing to answer with, both `ssh_exec` and a detached job now say the same
+  thing — give the profile a `sudoPassword`, allow the command in `sudoers`, or drop `sudo`
+  — in place of sudo's own advice about `-S` and askpass helpers, neither of which a caller
+  can reach. Sudo's own output is still shown; the note is added beside it.
+
 ### Added — a background job can run as root
 - `detach` and `sudo` used to be refused together, and the refusal offered two ways out that a
   long job under root has neither of: drop `sudo` and the command fails, drop `detach` and the

@@ -155,6 +155,13 @@ export interface SSHProfileData {
   /** Password for authentication (not recommended for production) */
   password?: string;
   /**
+   * What `sudo` is answered with on the server.
+   *
+   * A profile that logs in by key has no login password to offer, and where the two
+   * differ the login one is the wrong answer. Left out, `password` is used.
+   */
+  sudoPassword?: string;
+  /**
    * Where this profile's password and passphrase are kept, instead of in this file.
    * Overrides the file-level `secretsFile`. A relative path is taken from the profiles file.
    */
@@ -270,6 +277,7 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
       // its password is real and must not reach the log under any outcome
       hideFromLogs(typeof profile.password === 'string' ? profile.password : undefined);
       hideFromLogs(typeof profile.passphrase === 'string' ? profile.passphrase : undefined);
+      hideFromLogs(typeof profile.sudoPassword === 'string' ? profile.sudoPassword : undefined);
 
       // Skip profiles with mode: "local" - they're for Docker local mode, SSH doesn't use them
       if (profile.mode === 'local') {
@@ -331,6 +339,11 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
         logger.debug(`[Profiles File] Profile "${name}" has password authentication configured`);
       }
 
+      if (profile.sudoPassword && typeof profile.sudoPassword === 'string') {
+        profileData.sudoPassword = profile.sudoPassword;
+        logger.debug(`[Profiles File] Profile "${name}" has a password for sudo`);
+      }
+
       // A secret kept outside this file wins: the inline fields stay supported for
       // compatibility, but this file gets copied and shown, and a password should not
       // travel with it
@@ -360,6 +373,9 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
         if (secrets?.passphrase) {
           profileData.passphrase = secrets.passphrase;
         }
+        if (secrets?.sudoPassword) {
+          profileData.sudoPassword = secrets.sudoPassword;
+        }
 
         // Only worth saying when the profile named a file of its own: with a shared file,
         // key-based profiles legitimately have no entry
@@ -370,7 +386,10 @@ export function loadProfilesFile(filePath: string): ProfilesFileResult {
         }
       }
 
-      if ((profileData.password || profileData.passphrase) && (profile.password || profile.passphrase)) {
+      if (
+        (profileData.password || profileData.passphrase || profileData.sudoPassword) &&
+        (profile.password || profile.passphrase || profile.sudoPassword)
+      ) {
         logger.warn(
           `[Profiles File] Profile "${name}" keeps a secret inline. Move it to a secrets file ` +
           `(see "secretsFile") — this file is not the place for one.`

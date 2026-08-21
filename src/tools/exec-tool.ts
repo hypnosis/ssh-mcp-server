@@ -12,7 +12,13 @@ import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { DEFAULT_TIMEOUT_MS, SSHExecutor } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { requireTextList } from '../utils/tool-args.js';
-import { exitCodeHint, TRUNCATED_OUTPUT_NOTE, withTruncationNote } from '../utils/output-notes.js';
+import {
+  exitCodeHint,
+  sudoAskedForAPassword,
+  SUDO_HAS_NOTHING_TO_ANSWER_WITH,
+  TRUNCATED_OUTPUT_NOTE,
+  withTruncationNote,
+} from '../utils/output-notes.js';
 import {
   blockedCommand,
   EXEC_OUTPUT_SCHEMA,
@@ -119,12 +125,23 @@ function warningBlock(command: string, message: string): string {
  * name the mechanism rather than the way out, so the refusal is said here.
  */
 function noPasswordForSudo(error: Error): boolean {
-  return /a terminal is required|no askpass|sudo: a password is required/i.test(error.message);
+  return sudoAskedForAPassword(error.message);
 }
 
-const SUDO_HAS_NOTHING_TO_ANSWER_WITH =
-  'The job was not started: sudo asked for a password and this profile has none to give. ' +
-  'Give the profile a password, allow this command without one in sudoers, or run it without sudo.';
+const JOB_NOT_STARTED_WITHOUT_SUDO_PASSWORD =
+  `The job was not started: ${SUDO_HAS_NOTHING_TO_ANSWER_WITH}`;
+
+/**
+ * The same answer for a command that ran and got stopped by sudo.
+ *
+ * Sudo's own stderr stays where it is — it is what the server said. What it
+ * advises («use the -S option») is out of reach from a tool call, so the note
+ * says what is in reach instead.
+ */
+function sudoPasswordNote(config: SSHConfig, sudo: boolean | undefined, stderr: string): string {
+  if (!sudo || config.sudoPassword || config.password) return '';
+  return sudoAskedForAPassword(stderr) ? `\n\n${SUDO_HAS_NOTHING_TO_ANSWER_WITH}` : '';
+}
 
 /**
  * What a background job cannot do. The refusal happens before anything is sent.
@@ -346,6 +363,8 @@ export class ExecTool {
           output += `\n\nExit code: ${run.exitCode}${exitCodeHint(run.exitCode)}`;
         }
 
+        output += sudoPasswordNote(sshConfig, args.sudo, run.stderr);
+
         return {
           content: [
             {
@@ -385,6 +404,9 @@ export class ExecTool {
         }
 
         output += `Exit code: ${run.exitCode}${exitCodeHint(run.exitCode)}\n`;
+
+        const sudoNote = sudoPasswordNote(sshConfig, args.sudo, run.stderr);
+        if (sudoNote) output += `${sudoNote.trim()}\n`;
 
         if (run.truncated) {
           output += `${TRUNCATED_OUTPUT_NOTE}\n`;
@@ -470,7 +492,7 @@ export class ExecTool {
     const started = await this.executor
       .executeChecked(config, buildStartCommand(dir, jobCommand, passport.setsid), { sudo })
       .catch((error: Error) => {
-        throw noPasswordForSudo(error) ? new Error(SUDO_HAS_NOTHING_TO_ANSWER_WITH) : error;
+        throw noPasswordForSudo(error) ? new Error(JOB_NOT_STARTED_WITHOUT_SUDO_PASSWORD) : error;
       });
 
     const pid = parseJobStart(started.stdout);

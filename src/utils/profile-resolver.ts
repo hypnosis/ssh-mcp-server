@@ -261,6 +261,7 @@ function toSSHConfig(profileData: SSHProfileData): SSHConfig {
     privateKeyPath: expandTilde(profileData.privateKeyPath),
     passphrase: profileData.passphrase,
     password: profileData.password,
+    sudoPassword: profileData.sudoPassword,
     strictHostKeyChecking: profileData.strictHostKeyChecking,
     ignoreUserConfig: profileData.ignoreUserConfig,
     pathSecurity: profileData.pathSecurity,

@@ -29,6 +29,8 @@ export interface SSHConfig {
   passphrase?: string;
   /** Password for authentication (not recommended for production) */
   password?: string;
+  /** What `sudo` is answered with on the server; without it the login password is used */
+  sudoPassword?: string;
   /** Host key verification policy (default accept-new; openssh backend only) */
   strictHostKeyChecking?: StrictHostKeyChecking;
   /** Ignore the user's ~/.ssh/config (openssh backend only) */

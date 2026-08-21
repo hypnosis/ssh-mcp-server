@@ -358,3 +358,59 @@ describe('ssh_exec: список, записанный строкой', () => {
     expect(await answer({ command: '[[ -f /etc/hosts ]] && echo exists' })).toBe('exists');
   });
 });
+
+/**
+ * Отказ `sudo` звучит одинаково на обоих путях.
+ *
+ * Сам `sudo` советует то, до чего с этой стороны не дотянуться, — `-S` и
+ * askpass, — и агент, прочитав его слова, уходит гадать вместо того, чтобы
+ * дать профилю пароль или разрешить команду в sudoers.
+ */
+describe('ssh_exec: sudo просит пароль, а его нет', () => {
+  const SUDO_ASKED =
+    'sudo: a terminal is required to read the password; either use the -S option ' +
+    'to read from standard input or configure an askpass helper';
+
+  it('к словам sudo добавляется то, что делать', async () => {
+    respondWith([[/^ls/, { stderr: SUDO_ASKED, exitCode: 1 }]]);
+
+    const text = await answer({ command: 'ls /root', sudo: true });
+
+    // Ответ сервера остаётся на месте: это то, что он сказал
+    expect(text).toContain('a terminal is required');
+    expect(text).toContain('this profile has none to give');
+    expect(text).toContain('sudoPassword');
+  });
+
+  it('в разборе пачки — так же', async () => {
+    respondWith([[/^ls/, { stderr: SUDO_ASKED, exitCode: 1 }]]);
+
+    const text = await answer({ command: ['ls /root', 'whoami'], sudo: true });
+
+    expect(text).toContain('this profile has none to give');
+  });
+
+  it('у профиля с паролем такого примечания нет — отвечать ему есть чем', async () => {
+    resolveMock.mockReturnValueOnce({
+      host: 'example.com',
+      username: 'deploy',
+      port: 22,
+      sudoPassword: 'root-secret',
+    } as never);
+    respondWith([[/^ls/, { stderr: SUDO_ASKED, exitCode: 1 }]]);
+
+    expect(await answer({ command: 'ls /root', sudo: true })).not.toContain('none to give');
+  });
+
+  it('без sudo примечания нет, чей бы вывод ни пришёл', async () => {
+    respondWith([[/^ls/, { stderr: SUDO_ASKED, exitCode: 1 }]]);
+
+    expect(await answer({ command: 'ls /root' })).not.toContain('none to give');
+  });
+
+  it('обычная ошибка команды примечания не получает', async () => {
+    respondWith([[/^ls/, { stderr: 'ls: /nope: No such file or directory', exitCode: 2 }]]);
+
+    expect(await answer({ command: 'ls /nope', sudo: true })).not.toContain('none to give');
+  });
+});

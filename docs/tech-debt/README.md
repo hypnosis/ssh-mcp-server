@@ -37,7 +37,7 @@
 | TD-25 | Выжившие мутанты в свежем коде CORE_21 | ✅ закрыт 2026-08-19 | [archive/mutants-alive-in-fresh-code_25.md](archive/mutants-alive-in-fresh-code_25.md) |
 | TD-26 | Ответ приходит агенту без содержания там, где объявлена схема | ✅ закрыт 2026-08-21 | [archive/content-lost-when-schema-declared_26.md](archive/content-lost-when-schema-declared_26.md) |
 | TD-27 | Фоновую задачу опрашивают вслепую | ✅ закрыт 2026-08-20 | [archive/job-polled-blind_27.md](archive/job-polled-blind_27.md) |
-| TD-28 | Профилю по ключу нечем предъявить пароль на `sudo` | 🔹 отложено, разбирается в CORE_14 | [sudo-needs-a-password-nobody-has_28.md](sudo-needs-a-password-nobody-has_28.md) |
+| TD-28 | Профилю по ключу нечем предъявить пароль на `sudo` | ✅ закрыт 2026-08-22 | [archive/sudo-needs-a-password-nobody-has_28.md](archive/sudo-needs-a-password-nobody-has_28.md) |
 | TD-29 | Долгую работу под root запустить нечем | ✅ закрыт 2026-08-21 | [archive/detached-work-cannot-be-root_29.md](archive/detached-work-cannot-be-root_29.md) |
 | TD-30 | Каталог доставляется только заменой целиком | 🔹 отложено, в следующий спринт | [directory-upload-replaces-whole_30.md](directory-upload-replaces-whole_30.md) |
 | TD-31 | Легенда ответа объявлена, но правило её ключей нигде не сказано | ✅ закрыт 2026-08-21 | [archive/legend-keys-not-declared_31.md](archive/legend-keys-not-declared_31.md) |

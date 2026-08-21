@@ -411,10 +411,13 @@ logs — with a seam in between naming the amount, and `clipped_bytes` says how 
 Cutting happens on byte boundaries and steps back to the edge of a character, so a clipped
 answer never carries a replacement mark.
 
-`sudo` reaches the server without a terminal: when the profile has a password, it is handed
-to `sudo` on standard input. A profile that authenticates by key has no password to offer, so
-`sudo` there only works where it is already passwordless — and a command that reads its own
-standard input is never given the password, which would otherwise end up mixed into the data.
+`sudo` reaches the server without a terminal: the profile's answer is handed to `sudo` on
+standard input. Which secret that is comes from `sudoPassword` when the profile names one and
+from `password` otherwise — a profile that logs in by key has no login password at all, and
+where a machine keeps the two apart the login one is the wrong answer. Where there is nothing
+to answer with, the reply says so and names the ways out, instead of leaving sudo's own advice
+about `-S` and askpass helpers. A command that reads its own standard input is never given the
+password, which would otherwise end up mixed into the data.
 
 ### Run long-lived SSH jobs
 
@@ -677,6 +680,8 @@ A profile the server cannot use for SSH — no `host`, no `username`, or `mode: 
 
 Each profile optionally takes a `pathSecurity` block that whitelists or blacklists the paths file tools may touch — see [docs/security.md](docs/security.md#path-security).
 
+A profile that logs in by key but needs `sudo` on the far side takes a `sudoPassword` — the secret `sudo` is answered with, which on many machines is not the login password. Keep it in the secrets file rather than here.
+
 ### Keep SSH passwords and passphrases out of profiles
 
 Prefer keys. If a password or encrypted-key passphrase is unavoidable, keep it in a separate
@@ -698,9 +703,14 @@ The secrets file is keyed by profile name — see [secrets.json.example](secrets
 
 ```json
 {
-  "production": { "password": "..." }
+  "production": { "password": "..." },
+  "buildbox": { "sudoPassword": "..." }
 }
 ```
+
+`sudoPassword` is what `sudo` is answered with on that machine. A profile logging in by key
+has no login password to offer, and where the two differ the login one is the wrong answer;
+without it, `password` is used.
 
 The secrets file must be readable only by you (`chmod 600`). Relative paths resolve from the
 profiles file; secrets stay out of `argv` and are masked in logs. See
@@ -799,6 +809,7 @@ The shared connection outlives this process on purpose: closing it on exit would
 
 - [x] ~~Answers that reach the model~~ — **DONE:** command output, matched log lines, machine names and snapshot sections travel in the fields, not only in the text
 - [x] ~~Smaller MCP tool schemas~~ — **DONE:** the tool list got 10% lighter, and a detached job now shows the last lines it wrote instead of being polled blind
+- [x] ~~Long work under root~~ — **DONE:** a detached job runs with `sudo` and is followed as root, and a key-only profile answers `sudo` with its own `sudoPassword`
 
 ## Develop and test the SSH MCP server
 

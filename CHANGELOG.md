@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the legend says what its keys look like
+- The `legend` in a structured answer now carries a description: a key names the field before
+  the value (`state=limited`, `jobs[].state=lost`), and only values the answer actually used
+  are listed. The rule lived in the code; the eight tools that declare a legend now say it in
+  the surface itself.
+
+
 ## [2.2.2] - 2026-08-21
 
 ### Added — more ways to install the same server

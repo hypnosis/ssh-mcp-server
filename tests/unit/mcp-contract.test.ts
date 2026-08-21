@@ -235,10 +235,12 @@ describe('Обещанные поля ответа', () => {
    * поле, а не расшифрует слово.
    */
   it.each([
-    ['ssh_monitor'],
-    ['ssh_job_status'],
-    ['ssh_job_list'],
+    ['ssh_exec'],
     ['ssh_file_write'],
+    ['ssh_job_kill'],
+    ['ssh_job_list'],
+    ['ssh_job_status'],
+    ['ssh_monitor'],
     ['ssh_upload'],
     ['ssh_download'],
   ])('%s объявляет легенду словарём строк', async (name) => {
@@ -247,6 +249,32 @@ describe('Обещанные поля ответа', () => {
 
     expect(schema.properties.legend.type).toBe('object');
     expect(schema.properties.legend.additionalProperties).toEqual({ type: 'string' });
+  });
+
+  /**
+   * Форма ключа — имя поля, знак равенства, значение — живёт в коде, а
+   * читатель поверхности её не видит: словарь строк не говорит, какие это
+   * строки. Пример в описании сторожится дословно, иначе он пропадёт при
+   * первой же переписке текста.
+   */
+  it.each([
+    ['ssh_exec'],
+    ['ssh_file_write'],
+    ['ssh_job_kill'],
+    ['ssh_job_list'],
+    ['ssh_job_status'],
+    ['ssh_monitor'],
+    ['ssh_upload'],
+    ['ssh_download'],
+  ])('%s показывает в описании легенды форму ключа и её границу', async (name) => {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
+    const description = schema.properties.legend.description as string;
+
+    expect(description).toContain('What the words in this answer mean');
+    expect(description).toContain('state=limited');
+    expect(description).toContain('jobs[].state=lost');
+    expect(description).toContain('only the values this answer actually used');
   });
 
   /**

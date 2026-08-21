@@ -39,5 +39,8 @@ export function legendFor<Value extends string>(
 /** Declared with every summary, empty where there was nothing to explain */
 export const LEGEND_SCHEMA: OutputSchema = {
   type: 'object',
+  description:
+    'What the words in this answer mean. A key names the field before the value — ' +
+    '"state=limited", "jobs[].state=lost" — and only the values this answer actually used are listed.',
   additionalProperties: { type: 'string' },
 };

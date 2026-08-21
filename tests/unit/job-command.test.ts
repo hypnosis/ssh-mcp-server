@@ -15,6 +15,7 @@ import {
   buildStartCommand,
   buildStatusCommand,
   createJobId,
+  isElevatedJobId,
   jobPaths,
   jobsRoot,
   JOB_TTL_SEC,
@@ -38,6 +39,28 @@ describe('Идентификатор задачи', () => {
   it('свой идентификатор проходит проверку', () => {
     const id = createJobId();
     expect(assertJobId(id)).toBe(id);
+  });
+
+  it('задача под повышением прав несёт это в самом идентификаторе', () => {
+    const id = createJobId(true);
+
+    expect(isElevatedJobId(id)).toBe(true);
+    expect(assertJobId(id)).toBe(id);
+  });
+
+  it('обычная задача признака не несёт', () => {
+    const id = createJobId();
+
+    expect(isElevatedJobId(id)).toBe(false);
+    expect(assertJobId(id)).toBe(id);
+  });
+
+  it('признак не повторяется дважды и не липнет к следующей задаче', () => {
+    createJobId(true);
+
+    expect(isElevatedJobId(createJobId())).toBe(false);
+    expect(createJobId(true).indexOf('root-')).toBe(0);
+    expect(createJobId(true).slice(5)).not.toContain('root-');
   });
 
   it.each([

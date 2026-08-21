@@ -84,14 +84,27 @@ export interface JobOutput {
   missing: boolean;
 }
 
+/** Marks a job that runs as root, so every later call knows to ask as root too */
+const ELEVATED_PREFIX = 'root-';
+
 /**
  * Job id: start time plus a random tail.
  *
  * Time up front keeps the list readable in order, and the random tail rules
  * out a collision between two jobs launched in the same millisecond.
+ *
+ * A job started under sudo carries that in its own id. The caller hands the
+ * id back on every question about the job, so nothing else has to be
+ * remembered — not by the caller, and not by this server between calls.
  */
-export function createJobId(): string {
-  return `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+export function createJobId(elevated = false): string {
+  const prefix = elevated ? ELEVATED_PREFIX : '';
+  return `${prefix}${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+}
+
+/** Whether this job's process belongs to root, and its protocol needs sudo */
+export function isElevatedJobId(id: string): boolean {
+  return id.startsWith(ELEVATED_PREFIX);
 }
 
 /**

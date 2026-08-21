@@ -625,3 +625,85 @@ describe('Окно в задачу внутри ответа', () => {
     expect(summary.legend['jobs[].state=running']).toContain('come back later');
   });
 });
+
+/**
+ * Задача под root отвечает только root: без повышения прав `kill -0` по чужому
+ * процессу запрещён, и живая задача выглядела бы потерянной, а снятие молча
+ * не срабатывало бы. Признак едет в идентификаторе, поэтому оба случая —
+ * обычная задача и задача под root — проверяются каждый своим ожиданием.
+ */
+describe('задача под повышением прав опрашивается так же', () => {
+  const ROOT_ID = `root-${JOB_ID}`;
+
+  /** Права, с которыми ушёл вызов номер n */
+  const sudoOf = (n = 0): boolean | undefined =>
+    (executeMock.mock.calls[n]?.[2] as { sudo?: boolean } | undefined)?.sudo;
+
+  it.each([['ssh_job_status'], ['ssh_job_output'], ['ssh_job_kill']])(
+    '%s спрашивает под sudo, когда задача запущена под root',
+    async (name) => {
+      await new JobTools().handleCall(call(name, { id: ROOT_ID }));
+
+      expect(sudoOf()).toBe(true);
+    }
+  );
+
+  it.each([['ssh_job_status'], ['ssh_job_output'], ['ssh_job_kill']])(
+    '%s обычную задачу прав не поднимает',
+    async (name) => {
+      await new JobTools().handleCall(call(name, { id: JOB_ID }));
+
+      expect(sudoOf()).toBeFalsy();
+    }
+  );
+
+  it('путь задачи под root ведёт в каталог с признаком', async () => {
+    await new JobTools().handleCall(call('ssh_job_status', { id: ROOT_ID }));
+
+    expect(sentCommand()).toContain(`/home/deploy/.ssh-mcp/jobs/${ROOT_ID}`);
+  });
+
+  it('список повторяется под sudo, когда среди задач есть работающая под root', async () => {
+    executeMock.mockResolvedValue({
+      stdout: `SSH_MCP_JOB id=${ROOT_ID} alive=0 code= started=1787341511 size=0\n`,
+      stderr: '',
+      exitCode: 0,
+      truncated: false,
+    });
+
+    await new JobTools().handleCall(call('ssh_job_list', {}));
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(sudoOf(0)).toBeFalsy();
+    expect(sudoOf(1)).toBe(true);
+  });
+
+  it('второй проход отвечает за всех: состояние берётся из него', async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        stdout: `SSH_MCP_JOB id=${ROOT_ID} alive=0 code= started=1787341511 size=0\n`,
+        stderr: '',
+        exitCode: 0,
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        stdout: `SSH_MCP_JOB id=${ROOT_ID} alive=1 code= started=1787341511 size=0\n`,
+        stderr: '',
+        exitCode: 0,
+        truncated: false,
+      });
+
+    const result = await new JobTools().handleCall(call('ssh_job_list', {}));
+    const summary = result.structuredContent as JobsSummary;
+
+    expect(summary.jobs[0].state).toBe('running');
+  });
+
+  it('без задач под root список идёт одним вызовом', async () => {
+    serverAnswers(`SSH_MCP_JOB id=${JOB_ID} alive=1 code= started=1787341511 size=0\n`);
+
+    await new JobTools().handleCall(call('ssh_job_list', {}));
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+});

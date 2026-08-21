@@ -114,19 +114,25 @@ function warningBlock(command: string, message: string): string {
 }
 
 /**
+ * `sudo` asks a terminal for the password on a profile that logs in by key,
+ * and a background job has no terminal to answer from. The server's own words
+ * name the mechanism rather than the way out, so the refusal is said here.
+ */
+function noPasswordForSudo(error: Error): boolean {
+  return /a terminal is required|no askpass|sudo: a password is required/i.test(error.message);
+}
+
+const SUDO_HAS_NOTHING_TO_ANSWER_WITH =
+  'The job was not started: sudo asked for a password and this profile has none to give. ' +
+  'Give the profile a password, allow this command without one in sudoers, or run it without sudo.';
+
+/**
  * What a background job cannot do. The refusal happens before anything is sent.
  *
  * Each case is not strictness for its own sake but a place where detach would
  * silently behave differently from what the caller expects.
  */
 function assertDetachable(args: { sudo?: boolean; interactive?: boolean }, commands: string[]): void {
-  if (args.sudo) {
-    throw new Error(
-      'detach cannot be combined with sudo: a background job has nowhere to take a password from. ' +
-        'Run the command without sudo, or run it without detach and wait for it.'
-    );
-  }
-
   if (args.interactive) {
     throw new Error(
       'detach cannot be combined with interactive: a background job has no terminal to answer from.'
@@ -279,10 +285,13 @@ export class ExecTool {
       // Starting the job happens after the deletion guard: a root wipe cancels
       // the whole call, and there is no reason to set up a job directory for it
       if (detach) {
-        return await this.startJob(sshConfig, commands[0], args.cwd, {
-          message: warnings[0],
-          text: warningText,
-        });
+        return await this.startJob(
+          sshConfig,
+          commands[0],
+          args.cwd,
+          { message: warnings[0], text: warningText },
+          Boolean(args.sudo)
+        );
       }
 
       const runs: CommandRun[] = [];
@@ -431,24 +440,36 @@ export class ExecTool {
     config: SSHConfig,
     command: string,
     cwd: string | undefined,
-    warning: { message: string | null; text: string }
+    warning: { message: string | null; text: string },
+    sudo = false
   ): Promise<ToolResult> {
     const passport = await this.executor.passport(config);
-    const id = createJobId();
-    const { dir } = jobPaths(passport.home, id);
+    const id = createJobId(sudo);
+    const { root, dir } = jobPaths(passport.home, id);
 
     // The working directory goes inside the job command: applied to the
     // launch itself, it would change the directory of the job's own service
     // files, while the command would stay wherever it was
     const jobCommand = cwd ? `cd ${shellQuote(cwd)} || exit 1; ${command}` : command;
 
+    // The shared root is created by the login user even when the job itself
+    // runs as root. Left to the elevated launch, the root would belong to
+    // root, and every ordinary job afterwards would fail to create its own
+    // directory inside it.
+    if (sudo) {
+      await this.executor.executeChecked(config, `mkdir -p ${shellQuote(root)}`, {
+        idempotent: true,
+      });
+    }
+
     // The call's cancellation is deliberately not passed in here: an abort
     // between starting the job and answering would leave it running without
     // an id — that is, with no way to stop it
-    const started = await this.executor.executeChecked(
-      config,
-      buildStartCommand(dir, jobCommand, passport.setsid)
-    );
+    const started = await this.executor
+      .executeChecked(config, buildStartCommand(dir, jobCommand, passport.setsid), { sudo })
+      .catch((error: Error) => {
+        throw noPasswordForSudo(error) ? new Error(SUDO_HAS_NOTHING_TO_ANSWER_WITH) : error;
+      });
 
     const pid = parseJobStart(started.stdout);
     const head = warning.text ? `${warning.text}\n\n` : '';

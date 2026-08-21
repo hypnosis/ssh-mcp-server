@@ -163,12 +163,14 @@ describe('ssh_exec: detach', () => {
    * Ни срока, ни отмены: задача живёт дольше вызова, а обрыв между её стартом и
    * ответом оставил бы её работать без идентификатора, то есть без снятия.
    */
-  it('запуск идёт без опций вызова', async () => {
+  it('запуск идёт без срока и без отмены', async () => {
     const controller = new AbortController();
 
     await new ExecTool().handleCall(call('sleep 120', { timeout: 1000 }), controller.signal);
+    const options = executeCheckedMock.mock.calls[0]?.[2] ?? {};
 
-    expect(executeCheckedMock.mock.calls[0]?.[2]).toBeUndefined();
+    expect(options.timeout).toBeUndefined();
+    expect(options.signal).toBeUndefined();
   });
 
   it('detach: false — обычный путь, а не задача', async () => {
@@ -190,14 +192,66 @@ describe('ssh_exec: detach', () => {
   });
 });
 
-describe('ssh_exec: чего detach не умеет', () => {
-  it('вместе с sudo — отказ до отправки', async () => {
-    const result = await new ExecTool().handleCall(call('sleep 120', { sudo: true }));
+describe('ssh_exec: задача под повышением прав', () => {
+  /**
+   * Задача под root опрашивается тоже под root, и спрашивающий об этом помнить
+   * не обязан: признак уезжает в идентификатор, который ему и так возвращают.
+   */
+  it('идентификатор задачи несёт признак повышения прав', async () => {
+    const result = await new ExecTool().handleCall(call('make build', { sudo: true }));
+
+    expect(result.isError).toBeUndefined();
+    expect((result.structuredContent as { job_id: string }).job_id).toMatch(/^root-/);
+  });
+
+  it('запуск уходит под sudo', async () => {
+    await new ExecTool().handleCall(call('make build', { sudo: true }));
+
+    expect(executeCheckedMock.mock.calls.at(-1)?.[2]).toMatchObject({ sudo: true });
+  });
+
+  /**
+   * Корень задач заводит обычный пользователь. Отдай его повышенному запуску —
+   * он достанется root, и следующая обычная задача не создаст в нём каталог.
+   */
+  it('общий корень создаётся до повышения прав', async () => {
+    await new ExecTool().handleCall(call('make build', { sudo: true }));
+    const [, command, options] = executeCheckedMock.mock.calls[0];
+
+    expect(String(command)).toBe("mkdir -p '/home/deploy/.ssh-mcp/jobs'");
+    expect(options).not.toMatchObject({ sudo: true });
+  });
+
+  it('обычная задача корень отдельно не заводит и признака не несёт', async () => {
+    const result = await new ExecTool().handleCall(call('make build'));
+
+    expect(executeCheckedMock).toHaveBeenCalledTimes(1);
+    expect(startCommand()).not.toContain('mkdir -p \'/home/deploy/.ssh-mcp/jobs\'');
+    expect((result.structuredContent as { job_id: string }).job_id).not.toMatch(/^root-/);
+  });
+
+  /**
+   * Профиль по ключу предъявить `sudo` нечего. Сырой текст про терминал
+   * объясняет механизм, а не выход, поэтому отказ говорится своими словами.
+   */
+  it('sudo без пароля — отказ словами, а не текстом sudo', async () => {
+    executeCheckedMock.mockImplementation(async (_c: unknown, command: string) => {
+      // Команда запуска тоже начинается с mkdir, поэтому корень узнаётся точно
+      if (String(command) === "mkdir -p '/home/deploy/.ssh-mcp/jobs'") {
+        return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+      }
+      throw new Error('Command failed (exit 1): … — sudo: a terminal is required to read the password');
+    });
+
+    const result = await new ExecTool().handleCall(call('make build', { sudo: true }));
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('cannot be combined with sudo');
-    expect(sentCommands()).toEqual([]);
+    expect(result.content[0].text).toContain('this profile has none to give');
+    expect(result.content[0].text).not.toContain('a terminal is required');
   });
+});
+
+describe('ssh_exec: чего detach не умеет', () => {
 
   it('вместе с interactive — отказ до отправки', async () => {
     const result = await new ExecTool().handleCall(call('sleep 120', { interactive: true }));

@@ -29,6 +29,7 @@ import {
   buildListCommand,
   buildOutputCommand,
   buildStatusCommand,
+  isElevatedJobId,
   jobPaths,
   jobsRoot,
   parseJobKill,
@@ -208,21 +209,27 @@ export class JobTools {
    * `jobPaths` validates the id's format: it travels into a path on the
    * server, and the check lives where the path is built, not in every tool.
    */
-  private async locate(args: any): Promise<{ config: SSHConfig; id: string; dir: string }> {
+  private async locate(
+    args: any
+  ): Promise<{ config: SSHConfig; id: string; dir: string; sudo: boolean }> {
     const config = resolveSSHConfig({ profile: args.profile });
     const id = requireText(args.id, 'id', '"mst0f2q1-9ab3c4d5"');
     const home = (await this.executor.passport(config)).home;
 
-    return { config, id, dir: jobPaths(home, id).dir };
+    // A job running as root answers to root only: without elevation `kill -0`
+    // on someone else's process is refused, and a live job would be reported
+    // lost while a kill would quietly fail.
+    return { config, id, dir: jobPaths(home, id).dir, sudo: isElevatedJobId(id) };
   }
 
   private async handleStatus(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     const args = (request.params.arguments ?? {}) as JobArgs;
-    const { config, id, dir } = await this.locate(args);
+    const { config, id, dir, sudo } = await this.locate(args);
 
     const result = await this.executor.execute(config, buildStatusCommand(dir), {
       idempotent: true,
       signal,
+      sudo,
     });
 
     const status = parseJobStatus(result.stdout);
@@ -259,12 +266,13 @@ export class JobTools {
 
   private async handleOutput(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     const args = (request.params.arguments ?? {}) as JobArgs;
-    const { config, id, dir } = await this.locate(args);
+    const { config, id, dir, sudo } = await this.locate(args);
     const offset = Math.max(0, Math.floor(Number(args.offset ?? 0) || 0));
 
     const result = await this.executor.execute(config, buildOutputCommand(dir, offset), {
       idempotent: true,
       signal,
+      sudo,
     });
 
     const output = parseJobOutput(result.stdout);
@@ -308,7 +316,25 @@ export class JobTools {
       signal,
     });
 
-    const listing = parseJobList(result.stdout);
+    let listing = parseJobList(result.stdout);
+
+    // Jobs belonging to root answer only to root: the first pass names them
+    // but calls every one of them lost. The second pass costs a round trip
+    // and happens only where such a job actually turned up.
+    if (listing.jobs.some((job) => isElevatedJobId(job.id))) {
+      const elevated = await this.executor.execute(config, buildListCommand(root), {
+        idempotent: true,
+        signal,
+        sudo: true,
+      });
+      const seen = parseJobList(elevated.stdout);
+
+      listing = {
+        jobs: seen.jobs,
+        removed: [...new Set([...listing.removed, ...seen.removed])],
+      };
+    }
+
     const lines: string[] = [];
 
     if (listing.jobs.length === 0) {
@@ -340,10 +366,13 @@ export class JobTools {
 
   private async handleKill(request: CallToolRequest, signal?: AbortSignal): Promise<ToolResult> {
     const args = (request.params.arguments ?? {}) as JobArgs;
-    const { config, id, dir } = await this.locate(args);
+    const { config, id, dir, sudo } = await this.locate(args);
     const which = args.signal === 'KILL' ? 'KILL' : 'TERM';
 
-    const result = await this.executor.execute(config, buildKillCommand(dir, which), { signal });
+    const result = await this.executor.execute(config, buildKillCommand(dir, which), {
+      signal,
+      sudo,
+    });
     const killed = parseJobKill(result.stdout);
 
     return {

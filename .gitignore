@@ -103,3 +103,7 @@ docker-profiles.json
 
 # Каталог вывода сборки: MCPB-бандлы
 releases/
+
+# Lightpanda: история REPL и настройки агента по каталогу
+.lp-history
+.lp-agent.zon

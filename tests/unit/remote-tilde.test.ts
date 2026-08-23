@@ -90,7 +90,7 @@ describe('чтение файла', () => {
 describe('список файлов', () => {
   it('раскрывает ~ и оставляет шаблон рабочим', async () => {
     await new FileTools().handleCall(call('ssh_file_list', { path: '~', pattern: '*.log' }));
-    expect(sentCommands()[0]).toBe(`ls -lah '/home/deploy'/*.log`);
+    expect(sentCommands()[0]).toContain(`find '/home/deploy' -mindepth 1 -maxdepth 1 -name '*.log'`);
   });
 });
 

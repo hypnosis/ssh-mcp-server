@@ -269,6 +269,6 @@ describe('чтение файлов: пометка о безопасности 
   it('список файлов помечен как безопасный для повтора', async () => {
     await new FileTools().handleCall(call('ssh_file_list', { path: '/srv' }));
 
-    expect(optionsFor(/^ls /)?.idempotent).toBe(true);
+    expect(optionsFor(/find .*-exec stat/)?.idempotent).toBe(true);
   });
 });

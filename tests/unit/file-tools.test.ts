@@ -47,6 +47,12 @@ const { profile, resolveConfigMock } = vi.hoisted(() => ({
   resolveConfigMock: vi.fn(),
 }));
 
+const { loggerMock } = vi.hoisted(() => ({
+  loggerMock: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../../src/utils/logger.js', () => ({ logger: loggerMock }));
+
 vi.mock('../../src/utils/profile-resolver.js', () => ({
   resolveSSHConfig: (...args: unknown[]) => {
     resolveConfigMock(...args);
@@ -140,6 +146,43 @@ function globMatches(pattern: string, name: string): boolean {
   return new RegExp(`^${expression}$`).test(name);
 }
 
+/** Маркер записи, которым инструмент режет вывод обхода */
+const LIST_MARK = '__SSH_MCP_LS__';
+
+/** Время правки, одно на все записи: разбору важно число, а не его величина */
+const LIST_MTIME = 1787503958;
+
+/**
+ * Обход каталога так, как его делает сервер.
+ *
+ * Дерево настоящее: пропавший `-maxdepth` покажет вложенные пути, а чужой путь
+ * вернёт отказ. Заготовленный ответ на любую команду скрыл бы и то и другое.
+ */
+function listing(command: string, directory: string): SSHExecuteResult {
+  if (!server.has(directory)) {
+    return fail(`find: '${directory}': No such file or directory`, 1);
+  }
+
+  const deep = !command.includes('-maxdepth 1');
+  const pattern = (command.match(/-name '([^']*)'/) || [])[1];
+  const paths = (deep ? subtree(directory) : childrenOf(directory)).filter(
+    (path) => path !== directory
+  );
+  const shown = pattern
+    ? paths.filter((path) => globMatches(pattern, path.slice(path.lastIndexOf('/') + 1)))
+    : paths;
+
+  const records = shown.map((path, index) => {
+    const node = server.get(path)!;
+    const kind = node.kind === 'dir' ? 'directory' : 'regular file';
+    const size = node.kind === 'dir' ? 4096 : node.content.length;
+    const mode = node.kind === 'dir' ? '755' : '644';
+    return `${LIST_MARK}${size}|${LIST_MTIME}|deploy|deploy|${mode}|${kind}|2049:${index + 1}|${path}`;
+  });
+
+  return ok(records.length > 0 ? `${records.join('\n')}\n` : '');
+}
+
 /**
  * Ответ сервера на команду.
  *
@@ -181,6 +224,12 @@ function answer(command: string, options?: SSHExecuteOptions): SSHExecuteResult 
   if (command.startsWith('rm -rf --') || command.startsWith('rm -f ')) {
     removeTree(paths[0]);
     return ok();
+  }
+
+  // Обход каталога: тот же find, но со stat в -exec. Отвечает по дереву, а не
+  // заготовкой — иначе пропавший из команды -maxdepth или чужой путь пройдут молча
+  if (command.includes(`-exec stat -c '${LIST_MARK}`)) {
+    return listing(command, paths[0]);
   }
 
   if (command.startsWith('find ')) {
@@ -881,41 +930,89 @@ describe('ssh_file_list', () => {
     putFile('/var/log/syslog', 'boot\n');
   });
 
-  it('обычный список идёт одной командой и печатается как пришёл', async () => {
-    const text = await list({ path: '/var/log' });
-    expect(commandFor(/^ls /)![0]).toBe("ls -lah '/var/log'");
-    expect(text).toContain('nginx.log');
-    expect(text).toContain('syslog');
+  /** Разобранная сводка ответа */
+  const listed = async (args: Record<string, unknown>): Promise<any> => {
+    const response = await new FileTools().handleCall(call('ssh_file_list', args));
+    return response.structuredContent;
+  };
+
+  it('обход идёт одной командой, а поля берутся у stat', async () => {
+    await list({ path: '/var/log' });
+    const [command] = commandFor(/find /)!;
+
+    expect(command).toContain("LC_ALL=C find '/var/log' -mindepth 1 -maxdepth 1 -exec stat");
+    expect(command).toContain('%s|%Y|%U|%G|%a|%F|%d:%i|%n');
   });
 
-  it('рекурсивный обход просит у сервера другой набор флагов', async () => {
-    await list({ path: '/var/log', recursive: true });
-    expect(commandFor(/^ls /)![0]).toBe("ls -lRah '/var/log'");
+  /** Второй проход добирает цели ссылок: без него у каждой ссылки target пуст */
+  it('за целями ссылок уходит второй обход, в той же команде', async () => {
+    await list({ path: '/var/log' });
+
+    expect(commandFor(/find /)![0]).toContain(
+      "-type l -exec stat -c '__SSH_MCP_LN__%d:%i' {} \\; -exec readlink -- {} \\;"
+    );
+  });
+
+  it('каталог приезжает записями, а не строками вывода', async () => {
+    const summary = await listed({ path: '/var/log' });
+
+    expect(summary.entries.map((entry: any) => entry.name)).toEqual(['nginx.log', 'syslog']);
+    expect(summary.entries[0]).toMatchObject({
+      type: 'file',
+      size: 6,
+      mode: '644',
+      owner: 'deploy',
+      group: 'deploy',
+      target: null,
+    });
+    expect(summary.path).toBe('/var/log');
+  });
+
+  /** Имя внутри каталога, а не полный путь: иначе каждое поле повторяет заголовок */
+  it('рекурсивный обход называет вложенное относительно запрошенного', async () => {
+    putFile('/var/log/nginx/access.log', 'x\n');
+
+    const summary = await listed({ path: '/var/log', recursive: true });
+
+    expect(commandFor(/find /)![0]).toContain("LC_ALL=C find '/var/log' -mindepth 1 -exec stat");
+    expect(commandFor(/find /)![0]).not.toContain('-maxdepth');
+    expect(summary.entries.map((entry: any) => entry.name)).toContain('nginx/access.log');
   });
 
   it('под sudo список идёт от root — иначе закрытый каталог не посмотреть', async () => {
     await list({ path: '/var/log', sudo: true });
 
-    expect(commandFor(/^ls /)![1]).toMatchObject({ sudo: true });
+    expect(commandFor(/find /)![1]).toMatchObject({ sudo: true });
   });
 
   it('без sudo листинг остаётся обычным — root не берётся про запас', async () => {
     await list({ path: '/var/log' });
 
-    expect(commandFor(/^ls /)![1].sudo).toBeFalsy();
+    expect(commandFor(/find /)![1].sudo).toBeFalsy();
   });
 
-  it('шаблон приклеивается к пути и остаётся рабочим', async () => {
-    const text = await list({ path: '/var/log', pattern: '*.log' });
-    expect(commandFor(/^ls /)![0]).toBe("ls -lah '/var/log'/*.log");
-    expect(text).toContain('nginx.log');
-    expect(text).not.toContain('syslog');
+  /**
+   * Шаблон разбирает сам find, поэтому он едет закавыченным: раскрывала бы его
+   * оболочка — и `*.log` в каталоге без совпадений стал бы отказом команды.
+   */
+  it('шаблон отбирает записи и остаётся одним словом команды', async () => {
+    const summary = await listed({ path: '/var/log', pattern: '*.log' });
+
+    expect(commandFor(/find /)![0]).toContain("-name '*.log'");
+    expect(summary.entries.map((entry: any) => entry.name)).toEqual(['nginx.log']);
+  });
+
+  it('шаблон без совпадений — пустой список, а не ошибка', async () => {
+    const summary = await listed({ path: '/var/log', pattern: '*.nope' });
+
+    expect(summary.entries).toEqual([]);
+    expect(summary.unreadable).toEqual([]);
   });
 
   it('список помечен безопасным для повтора', async () => {
     await list({ path: '/var/log', profile: 'staging' });
-    const [, options] = commandFor(/^ls /)!;
-    expect(options.idempotent).toBe(true);
+
+    expect(commandFor(/find /)![1].idempotent).toBe(true);
   });
 
   it('без профиля список идёт по серверу по умолчанию', async () => {
@@ -925,22 +1022,89 @@ describe('ssh_file_list', () => {
 
   it('несуществующий каталог — ошибка с текстом от сервера', async () => {
     expect(await list({ path: '/var/nowhere' })).toBe(
-      'Error: Failed to list files: ls: /var/nowhere: No such file or directory'
+      "Error: Failed to list files: find: '/var/nowhere': No such file or directory"
     );
   });
 
   it('если сервер объяснился в stdout, ошибка берёт объяснение оттуда', async () => {
-    overrides = [[/^ls /, { exitCode: 2, stderr: '', stdout: 'ls: permission denied' }]];
+    overrides = [[/find /, { exitCode: 2, stderr: '', stdout: 'find: permission denied' }]];
     expect(await list({ path: '/var/log' })).toBe(
-      'Error: Failed to list files: ls: permission denied'
+      'Error: Failed to list files: find: permission denied'
     );
   });
 
+  /**
+   * Часть записей дошла, а часть обход потерял на отказе: это ответ, а не
+   * провал, — но подписанный, иначе неполный список читается как полный.
+   */
+  it('отказ посреди обхода не отменяет того, что уже собрано', async () => {
+    overrides = [
+      [
+        /find /,
+        {
+          exitCode: 1,
+          stderr: "find: '/var/log/private': Permission denied",
+          stdout: `${LIST_MARK}6|${LIST_MTIME}|deploy|deploy|644|regular file|2049:1|/var/log/syslog\n`,
+        },
+      ],
+    ];
+
+    const summary = await listed({ path: '/var/log' });
+
+    expect(summary.entries.map((entry: any) => entry.name)).toEqual(['syslog']);
+    expect(summary.unreadable).toEqual(['/var/log/private: Permission denied']);
+  });
+
+  /** Обход идёт дважды — за полями и за целями ссылок — и отказ приходит дважды */
+  it('одна закрытая дверь названа один раз', async () => {
+    overrides = [
+      [
+        /find /,
+        {
+          exitCode: 1,
+          stderr:
+            "find: '/var/log/private': Permission denied\nfind: '/var/log/private': Permission denied",
+          stdout: '',
+        },
+      ],
+    ];
+
+    const summary = await listed({ path: '/var/log' });
+
+    expect(summary.unreadable).toEqual(['/var/log/private: Permission denied']);
+  });
+
+  /** Одна и та же жалоба пишется двумя способами, и обе формы приходят живьём */
+  it.each([
+    ['coreutils кавычит путь', "find: '/var/log/private': Permission denied"],
+    ['BusyBox не кавычит', 'find: /var/log/private: Permission denied'],
+  ])('непрочитанный каталог назван: %s', async (_what, message) => {
+    overrides = [[/find /, { exitCode: 1, stderr: message, stdout: '' }]];
+
+    const summary = await listed({ path: '/var/log' });
+
+    expect(summary.unreadable).toEqual(['/var/log/private: Permission denied']);
+  });
+
   it('обрезанный список подписан, а не выдан за полный', async () => {
-    overrides = [[/^ls /, { stdout: 'nginx.log\n', truncated: true }]];
-    const text = await list({ path: '/var/log' });
-    expect(text).toContain('nginx.log');
-    expect(text.length).toBeGreaterThan('nginx.log\n'.length);
+    overrides = [
+      [
+        /find /,
+        {
+          stdout: `${LIST_MARK}6|${LIST_MTIME}|deploy|deploy|644|regular file|2049:1|/var/log/syslog\n`,
+          truncated: true,
+        },
+      ],
+    ];
+
+    const summary = await listed({ path: '/var/log' });
+
+    expect(summary.truncated).toBe(true);
+    expect(await list({ path: '/var/log' })).toMatch(/truncated/i);
+  });
+
+  it('целый список не выдаёт себя за обрезанный', async () => {
+    expect((await listed({ path: '/var/log' })).truncated).toBe(false);
   });
 
   it('пустой путь — отказ до обращения к серверу', async () => {
@@ -948,20 +1112,293 @@ describe('ssh_file_list', () => {
     expect(sentCommands()).toHaveLength(0);
   });
 
-  it('команда внутри шаблона обезврежена, а сам шаблон остаётся шаблоном', async () => {
-    await list({ path: '/var/log', pattern: '$(reboot)*.log' });
-    expect(commandFor(/^ls /)![0]).toBe("ls -lah '/var/log'/\\$\\(reboot\\)*.log");
+  it('пустой шаблон — отказ до обращения к серверу', async () => {
+    expect(await list({ path: '/var/log', pattern: '   ' })).toContain('pattern');
+    expect(commandFor(/find /)).toBeUndefined();
   });
 
-  it('шаблон, который команду не переживёт, назван своим именем', async () => {
-    const text = await list({ path: '/var/log', pattern: '*.log\nreboot' });
-    expect(text).toContain('pattern');
-    expect(commandFor(/^ls /)).toBeUndefined();
+  it('команда внутри шаблона остаётся текстом шаблона', async () => {
+    await list({ path: '/var/log', pattern: '$(reboot)*.log' });
+
+    expect(commandFor(/find /)![0]).toContain("-name '$(reboot)*.log'");
+  });
+
+  /**
+   * Под sudo тильда ведёт в дом того, кто вошёл, а не в /root — разбор пути об
+   * этом предупреждает, и список обязан это предупреждение донести.
+   */
+  it('предупреждение разбора пути не теряется по дороге', async () => {
+    await list({ path: '~', sudo: true });
+
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      expect.stringContaining('the home of the login user, not root')
+    );
+  });
+
+  it('без sudo предупреждать не о чем', async () => {
+    await list({ path: '~' });
+
+    expect(loggerMock.warn).not.toHaveBeenCalled();
   });
 
   it('профиль доезжает и до разбора настроек списка', async () => {
     await list({ path: '/var/log', profile: 'staging' });
     expect(resolveConfigMock).toHaveBeenCalledWith({ profile: 'staging' });
+  });
+
+});
+
+/**
+ * Разбор ответа сервера. Имя файла — единственное поле, куда сервер пускает
+ * что угодно, включая знаки, которыми разбор режет записи.
+ */
+describe('ssh_file_list: имена, которые ломают построчный разбор', () => {
+  const listed = async (stdout: string, args: Record<string, unknown> = {}): Promise<any> => {
+    overrides = [[/find /, { stdout }]];
+    const response = await new FileTools().handleCall(
+      call('ssh_file_list', { path: '/var/log', ...args })
+    );
+    return response.structuredContent;
+  };
+
+  const record = (name: string, tail = '644|regular file|2049:1') =>
+    `${LIST_MARK}12|${LIST_MTIME}|deploy|deploy|${tail}|/var/log/${name}\n`;
+
+  it('перевод строки внутри имени остаётся внутри имени', async () => {
+    const summary = await listed(record('two\nlines.log') + record('plain.log', '644|regular file|2049:2'));
+
+    expect(summary.entries.map((entry: any) => entry.name)).toEqual(['plain.log', 'two\nlines.log']);
+  });
+
+  it('разделитель полей внутри имени не съедает имя', async () => {
+    const summary = await listed(record('pipe|inside.log'));
+
+    expect(summary.entries[0].name).toBe('pipe|inside.log');
+  });
+
+  it('ссылка приходит вместе с тем, куда ведёт', async () => {
+    const summary = await listed(
+      `${LIST_MARK}10|${LIST_MTIME}|deploy|deploy|777|symbolic link|2049:7|/var/log/current\n` +
+        `__SSH_MCP_LN__2049:7\n/var/log/nginx.log\n`
+    );
+
+    expect(summary.entries[0]).toMatchObject({ type: 'symlink', target: '/var/log/nginx.log' });
+  });
+
+  it('ссылка без ответа readlink не выдаёт чужую цель за свою', async () => {
+    const summary = await listed(
+      `${LIST_MARK}10|${LIST_MTIME}|deploy|deploy|777|symbolic link|2049:7|/var/log/current\n`
+    );
+
+    expect(summary.entries[0].target).toBeNull();
+  });
+
+  /** Пустой файл coreutils называет иначе, чем непустой, — тип от этого не меняется */
+  it.each([
+    ['regular file', 'file'],
+    ['regular empty file', 'file'],
+    ['directory', 'dir'],
+    ['symbolic link', 'symlink'],
+    ['fifo', 'other'],
+    ['socket', 'other'],
+  ])('%s читается как %s', async (kind, type) => {
+    const summary = await listed(record('x', `644|${kind}|2049:1`));
+
+    expect(summary.entries[0].type).toBe(type);
+  });
+
+  /** Обход отдаёт записи в порядке каталога, и два вызова разошлись бы без сортировки */
+  it('записи упорядочены по имени, а не по тому, как их нашли', async () => {
+    const summary = await listed(
+      record('c.log') + record('a.log', '644|regular file|2049:2') + record('b.log', '644|regular file|2049:3')
+    );
+
+    expect(summary.entries.map((entry: any) => entry.name)).toEqual(['a.log', 'b.log', 'c.log']);
+  });
+
+  it('обрывок записи не превращается в запись с пустыми полями', async () => {
+    const summary = await listed(`${LIST_MARK}12|${LIST_MTIME}|deploy\n` + record('good.log'));
+
+    expect(summary.entries.map((entry: any) => entry.name)).toEqual(['good.log']);
+  });
+
+  it('ключ без цели не берёт цель соседа', async () => {
+    const summary = await listed(
+      `${LIST_MARK}10|${LIST_MTIME}|deploy|deploy|777|symbolic link|2049:7|/var/log/a\n` +
+        `__SSH_MCP_LN__2049:7`
+    );
+
+    expect(summary.entries[0].target).toBeNull();
+  });
+
+  /** Ключ ссылки и ключ файла совпасть не могут, но разбор не должен на это полагаться */
+  it('цель ссылки не приклеивается к обычному файлу', async () => {
+    const summary = await listed(
+      record('plain.log') + `__SSH_MCP_LN__2049:1\n/var/log/elsewhere\n`
+    );
+
+    expect(summary.entries[0]).toMatchObject({ type: 'file', target: null });
+  });
+
+  it('нечисловые размер и время читаются нулями, а не NaN', async () => {
+    const summary = await listed(`${LIST_MARK}?|later|deploy|deploy|644|regular file|2049:1|/var/log/x\n`);
+
+    expect(summary.entries[0]).toMatchObject({ size: 0, mtime: 0 });
+  });
+
+  /** Жалоба узнаётся по началу строки: «find: » внутри имени файла — не жалоба */
+  it('строка, похожая на жалобу, но не начинающаяся с неё, не считается отказом', async () => {
+    overrides = [[/find /, { exitCode: 1, stderr: 'stat: find: /var/log/x: Permission denied', stdout: '' }]];
+
+    const response = await new FileTools().handleCall(call('ssh_file_list', { path: '/var/log' }));
+
+    expect(response.content[0].text).toContain('Failed to list files');
+  });
+
+  /**
+   * Отказ у самой двери — провал вызова, но только когда собрать нечего. Если
+   * записи есть, дверь в список непрочитанного не идёт: она и есть тот каталог,
+   * который назван в ответе.
+   */
+  it('отказ у двери при собранных записях не отменяет ответа', async () => {
+    overrides = [
+      [
+        /find /,
+        {
+          exitCode: 1,
+          stderr: "find: '/var/log': Permission denied",
+          stdout: record('one.log'),
+        },
+      ],
+    ];
+
+    const response = await new FileTools().handleCall(call('ssh_file_list', { path: '/var/log' }));
+    const summary: any = response.structuredContent;
+
+    expect(summary.entries).toHaveLength(1);
+    expect(summary.unreadable).toEqual([]);
+  });
+
+  /** Слова ответа объясняются тем, что в нём встретилось, а не всем словарём */
+  it('легенда объясняет только встреченные виды записей', async () => {
+    const summary = await listed(record('x'));
+
+    expect(summary.legend['entries[].type=file']).toContain('regular file');
+    expect(summary.legend['entries[].type=symlink']).toBeUndefined();
+  });
+});
+
+/**
+ * Сводка для чтения. Поля уже проверены выше; здесь — то, что человек и агент
+ * видят первым: заголовок, колонки, отметка каталога и ссылки, названные двери.
+ */
+describe('ssh_file_list: сводка для чтения', () => {
+  const shown = async (stdout: string): Promise<string> => {
+    overrides = [[/find /, { stdout }]];
+    return textOf(call('ssh_file_list', { path: '/var/log' }));
+  };
+
+  const entry = (name: string, tail = '644|regular file|2049:1', size = 12) =>
+    `${LIST_MARK}${size}|${LIST_MTIME}|deploy|deploy|${tail}|/var/log/${name}\n`;
+
+  it('заголовок называет каталог и счёт записей', async () => {
+    expect(await shown(entry('a.log'))).toContain('/var/log — 1 entry');
+    expect(await shown(entry('a.log') + entry('b.log', '644|regular file|2049:2'))).toContain(
+      '/var/log — 2 entries'
+    );
+  });
+
+  it('пустой каталог говорит это словом, а не пустотой', async () => {
+    expect(await shown('')).toBe('/var/log — 0 entries');
+  });
+
+  it('строка записи несёт права, владельца, размер, время и имя', async () => {
+    const text = await shown(entry('a.log'));
+
+    expect(text).toContain(' 644  deploy:deploy  12  2026-08-23 16:52  a.log');
+  });
+
+  /** Каталог и ссылка отличаются от файла на глаз, иначе список читается вслепую */
+  it('каталог помечен косой чертой, а ссылка — своей целью', async () => {
+    const text = await shown(
+      entry('sub', '755|directory|2049:2', 4096) +
+        entry('current', '777|symbolic link|2049:3', 10) +
+        '__SSH_MCP_LN__2049:3\n/var/log/a.log\n'
+    );
+
+    expect(text).toContain('sub/');
+    expect(text).toContain('current -> /var/log/a.log');
+  });
+
+  it('колонки выровнены по самой длинной записи', async () => {
+    const text = await shown(entry('a.log', '644|regular file|2049:1', 7) + entry('b.log', '644|regular file|2049:2', 1234567));
+
+    expect(text).toContain('        7  ');
+    expect(text).toContain('  1234567  ');
+  });
+
+  it('названные двери печатаются отдельным блоком, а не теряются', async () => {
+    overrides = [
+      [
+        /find /,
+        { exitCode: 1, stderr: "find: '/var/log/private': Permission denied", stdout: entry('a.log') },
+      ],
+    ];
+
+    const text = await textOf(call('ssh_file_list', { path: '/var/log' }));
+
+    expect(text).toContain('NOT READ:');
+    expect(text).toContain('  - /var/log/private: Permission denied');
+  });
+
+  it('без непрочитанного блока «NOT READ» не печатается', async () => {
+    expect(await shown(entry('a.log'))).not.toContain('NOT READ');
+  });
+
+  /**
+   * Сводка целиком: заголовок, пустая строка, записи в колонках и блок дверей.
+   * Отдельные проверки по кускам пропускают то, что между ними.
+   */
+  it('сводка печатается целиком и в одном виде', async () => {
+    overrides = [
+      [
+        /find /,
+        {
+          exitCode: 1,
+          stderr: "find: '/var/log/private': Permission denied",
+          stdout:
+            entry('nginx.log', '644|regular file|2049:1', 120) +
+            entry('archive', '750|directory|2049:2', 4096) +
+            entry('current', '777|symbolic link|2049:3', 10) +
+            '__SSH_MCP_LN__2049:3\n/var/log/nginx.log\n',
+        },
+      ],
+    ];
+
+    const text = await textOf(call('ssh_file_list', { path: '/var/log' }));
+
+    expect(text).toBe(
+      [
+        '/var/log — 3 entries',
+        '',
+        ' 750  deploy:deploy  4096  2026-08-23 16:52  archive/',
+        ' 777  deploy:deploy    10  2026-08-23 16:52  current -> /var/log/nginx.log',
+        ' 644  deploy:deploy   120  2026-08-23 16:52  nginx.log',
+        '',
+        'NOT READ:',
+        '  - /var/log/private: Permission denied',
+      ].join('\n')
+    );
+  });
+
+  /** Ширина колонки владельца считается по владельцу, а не берётся наугад */
+  it('владелец подпирается до самого длинного', async () => {
+    const text = await shown(
+      entry('a.log') + `${LIST_MARK}12|${LIST_MTIME}|verylonguser|verylonggroup|644|regular file|2049:2|/var/log/b.log\n`
+    );
+
+    expect(text).toContain('deploy:deploy               12');
+    expect(text).toContain('verylonguser:verylonggroup  12');
   });
 });
 
@@ -1004,6 +1441,7 @@ describe('форма ответа', () => {
     ).toEqual({ content: [textPart], structuredContent: expect.any(Object) });
     expect(await responseOf(call('ssh_file_list', { path: '/etc' }))).toEqual({
       content: [textPart],
+      structuredContent: expect.any(Object),
     });
     expect(await responseOf(call('ssh_file_read', { path: '/etc/nothing' }))).toEqual({
       content: [textPart],

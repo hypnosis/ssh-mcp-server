@@ -141,7 +141,7 @@ describe('ssh_file_read: обрезка — отказ, а не тихий ог�
 
 describe('списки и логи: неполный вывод подписан', () => {
   it('обрезанный список файлов помечен', async () => {
-    respondWith([[/^ls /, { stdout: 'file1\nfile2', truncated: true }]]);
+    respondWith([[/find /, { stdout: 'file1\nfile2', truncated: true }]]);
 
     const response = await new FileTools().handleCall(call('ssh_file_list', { path: '/srv' }));
 

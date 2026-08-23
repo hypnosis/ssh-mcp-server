@@ -47,6 +47,7 @@ const TOOLS_WITH_OUTPUT_SCHEMA = [
   'ssh_disk_breakdown',
   'ssh_download',
   'ssh_exec',
+  'ssh_file_list',
   'ssh_file_write',
   'ssh_job_kill',
   'ssh_job_list',

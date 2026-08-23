@@ -97,24 +97,38 @@ function expectRefused(text: string, param: string): void {
 }
 
 describe('ssh_file_list', () => {
-  it('обезвреживает команду в шаблоне, не отказывая: шаблон обязан работать', async () => {
+  /**
+   * Шаблон разбирает `find`, а не оболочка, поэтому он едет одним словом в
+   * кавычках: точка с запятой внутри остаётся знаком имени, а не команды.
+   */
+  it('команда внутри шаблона остаётся именем файла', async () => {
     await new FileTools().handleCall(
       call('ssh_file_list', { path: '/tmp', pattern: `*${PAYLOAD}` })
     );
-    // `;` и пробел уехали за обратный слэш — shell видит имя файла, не команду
-    expect(sentCommands()[0]).toBe(`ls -lah '/tmp'/*\\;\\ id`);
+
+    expect(sentCommands()[0]).toContain(`-name '*; id'`);
+    // Вне кавычек полезной нагрузки нет: закавыченное вырезается и проверяется остаток
+    expect(sentCommands()[0].replace(/'[^']*'/g, "''")).not.toContain(PAYLOAD);
   });
 
-  it('отказывает на шаблоне, который команду не переживёт', async () => {
-    const response = await new FileTools().handleCall(
-      call('ssh_file_list', { path: '/tmp', pattern: '-la' })
+  it('шаблон с дефисом уезжает шаблоном, а не опцией find', async () => {
+    await new FileTools().handleCall(call('ssh_file_list', { path: '/tmp', pattern: '-la' }));
+
+    expect(sentCommands()[0]).toContain(`-name '-la'`);
+  });
+
+  it('одинарная кавычка в шаблоне не разрывает команду', async () => {
+    await new FileTools().handleCall(
+      call('ssh_file_list', { path: '/tmp', pattern: `a'${PAYLOAD}` })
     );
-    expectRefused(response.content[0].text as string, 'pattern');
+
+    expect(sentCommands()[0]).toContain(String.raw`-name 'a'\''; id'`);
   });
 
-  it('оставляет обычный шаблон живым: раскрытие на сервере — это функция', async () => {
+  it('оставляет обычный шаблон живым: отбор на сервере — это функция', async () => {
     await new FileTools().handleCall(call('ssh_file_list', { path: '/tmp', pattern: '*.log' }));
-    expect(sentCommands()[0]).toBe(`ls -lah '/tmp'/*.log`);
+
+    expect(sentCommands()[0]).toContain(`-name '*.log'`);
   });
 });
 

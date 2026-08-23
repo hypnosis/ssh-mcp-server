@@ -19,6 +19,13 @@ import {
   OWNER_NEEDS_SUDO,
   writtenFile,
 } from './transfer-output.js';
+import {
+  LIST_OUTPUT_SCHEMA,
+  listSummary,
+  type EntryType,
+  type ListEntry,
+  type ListSummary,
+} from './file-output.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
@@ -29,7 +36,7 @@ import { install } from '../managers/installer.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
 import { resolveRemotePath, type ExpandedPath } from '../managers/path-guard.js';
 import { buildSudoStagingPath } from '../utils/tmp-name.js';
-import { shellGlob, shellMode, shellOwner, shellQuote } from '../utils/shell-arg.js';
+import { shellMode, shellOwner, shellQuote } from '../utils/shell-arg.js';
 import { requireEntryList, requireText, requireTextList } from '../utils/tool-args.js';
 import {
   binaryReadMessage,
@@ -56,6 +63,160 @@ type VerificationOutcome =
   | { status: 'verified' }
   | { status: 'unavailable'; reason: string }
   | { status: 'skipped' };
+
+/**
+ * Markers that begin a record of a listing.
+ *
+ * A name may hold a newline, so records are cut by marker rather than by
+ * line, and the name is printed last — everything before it has a fixed shape.
+ */
+const LIST_ENTRY_MARK = '__SSH_MCP_LS__';
+const LIST_LINK_MARK = '__SSH_MCP_LN__';
+
+/**
+ * One walk of the directory, and a second one for the links.
+ *
+ * `ls` is not used at all: it rounds sizes, prints a year only for old files,
+ * moves its columns between servers, and breaks a name with a newline into two
+ * rows. `stat` answers the same fields on BusyBox and on coreutils.
+ */
+function listCommand(path: string, args: FileListArgs): string {
+  const safePath = shellQuote(path);
+  const depth = args.recursive ? '' : ' -maxdepth 1';
+  // The pattern is matched by find, not expanded by the shell, so it travels
+  // quoted: a name is a value here, and a value cannot become a second word
+  const pattern = args.pattern
+    ? ` -name ${shellQuote(requireText(args.pattern, 'pattern', '"*.conf"'))}`
+    : '';
+  // LC_ALL=C: the refusal message is read by its text, and a server in another
+  // locale would answer the same refusal in words nothing here matches
+  const walk = `LC_ALL=C find ${safePath} -mindepth 1${depth}${pattern}`;
+
+  return (
+    `${walk} -exec stat -c '${LIST_ENTRY_MARK}%s|%Y|%U|%G|%a|%F|%d:%i|%n' {} + ; ` +
+    // A link answers against its device and inode rather than against its name:
+    // the key never carries a newline, and both sides of the pair need one
+    `${walk} -type l -exec stat -c '${LIST_LINK_MARK}%d:%i' {} \\; -exec readlink -- {} \\;`
+  );
+}
+
+/** What the kind word from `stat -c %F` means for a caller */
+function entryType(kind: string): EntryType {
+  if (kind === 'directory') return 'dir';
+  if (kind === 'symbolic link') return 'symlink';
+  // coreutils calls an empty file "regular empty file" and a filled one
+  // "regular file": one prefix answers for both
+  if (kind.startsWith('regular')) return 'file';
+  return 'other';
+}
+
+/** Records of one listing, each with the marker that opened it */
+function listRecords(stdout: string): Array<{ mark: string; body: string }> {
+  const records: Array<{ mark: string; body: string }> = [];
+
+  for (const chunk of stdout.split(new RegExp(`(?=${LIST_ENTRY_MARK}|${LIST_LINK_MARK})`))) {
+    for (const mark of [LIST_ENTRY_MARK, LIST_LINK_MARK]) {
+      if (chunk.startsWith(mark)) {
+        // Exactly one trailing newline goes: it is the one stat printed, and
+        // any others belong to the name or to the link target
+        records.push({ mark, body: chunk.slice(mark.length).replace(/\n$/, '') });
+      }
+    }
+  }
+
+  return records;
+}
+
+/**
+ * Entries of a listing, sorted by name.
+ *
+ * `find` answers in the order the directory happens to hold, and two calls on
+ * the same directory would then disagree with each other for no reason.
+ */
+function parseListEntries(stdout: string, base: string): ListEntry[] {
+  const targets = new Map<string, string>();
+  const entries: ListEntry[] = [];
+  const prefix = base.endsWith('/') ? base : `${base}/`;
+
+  for (const { mark, body } of listRecords(stdout)) {
+    if (mark !== LIST_LINK_MARK) continue;
+    const newline = body.indexOf('\n');
+    if (newline !== -1) targets.set(body.slice(0, newline), body.slice(newline + 1));
+  }
+
+  for (const { mark, body } of listRecords(stdout)) {
+    if (mark !== LIST_ENTRY_MARK) continue;
+
+    const fields = body.split('|');
+    if (fields.length < 8) continue;
+
+    const [size, mtime, owner, group, mode, kind, key] = fields;
+    const path = fields.slice(7).join('|');
+    const type = entryType(kind);
+
+    entries.push({
+      name: path.startsWith(prefix) ? path.slice(prefix.length) : path,
+      type,
+      size: parseInt(size, 10) || 0,
+      mode,
+      owner,
+      group,
+      mtime: parseInt(mtime, 10) || 0,
+      target: type === 'symlink' ? targets.get(key) ?? null : null,
+    });
+  }
+
+  return entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
+ * Paths the walk was turned away from, with the reason the server gave.
+ *
+ * The message differs between servers — coreutils quotes the path, BusyBox
+ * does not — and a listing missing exactly the interesting directory reads as
+ * a complete one.
+ */
+function parseRefusals(stderr: string): Array<{ path: string; reason: string }> {
+  const refusals: Array<{ path: string; reason: string }> = [];
+
+  for (const line of stderr.split('\n')) {
+    const match = line.match(/^find: '?(.+?)'?: (.+)$/);
+    if (match) refusals.push({ path: match[1], reason: match[2] });
+  }
+
+  return refusals;
+}
+
+/** Seconds since epoch as a date a person reads, in UTC */
+function listTime(mtime: number): string {
+  return new Date(mtime * 1000).toISOString().replace('T', ' ').slice(0, 16);
+}
+
+/** The listing for reading: the same fields the structure carries, in columns */
+function formatListing(summary: ListSummary): string {
+  const lines = [`${summary.path} — ${summary.entries.length} entr${summary.entries.length === 1 ? 'y' : 'ies'}`];
+  const width = (pick: (entry: ListEntry) => string) =>
+    Math.max(0, ...summary.entries.map((entry) => pick(entry).length));
+  const ownerWidth = width((entry) => `${entry.owner}:${entry.group}`);
+  const sizeWidth = width((entry) => String(entry.size));
+
+  if (summary.entries.length > 0) lines.push('');
+
+  for (const entry of summary.entries) {
+    const owner = `${entry.owner}:${entry.group}`.padEnd(ownerWidth);
+    const size = String(entry.size).padStart(sizeWidth);
+    const tail = entry.type === 'dir' ? '/' : entry.target !== null ? ` -> ${entry.target}` : '';
+
+    lines.push(`${entry.mode.padStart(4)}  ${owner}  ${size}  ${listTime(entry.mtime)}  ${entry.name}${tail}`);
+  }
+
+  if (summary.unreadable.length > 0) {
+    lines.push('', 'NOT READ:');
+    for (const refusal of summary.unreadable) lines.push(`  - ${refusal}`);
+  }
+
+  return lines.join('\n');
+}
 
 /** Verification note for the response; a write that wasn't verified has none */
 function verificationNote(outcome: VerificationOutcome): string {
@@ -228,9 +389,9 @@ export class FileTools {
         name: 'ssh_file_list',
         annotations: { title: 'List a remote directory', ...READS_REMOTE },
         description:
-          'Lists a directory on a server: every entry with its size, mode, owner and modification time. A ' +
-          'listing cut short by the output limit says so, never passes for the whole of it. To see what ' +
-          'is inside a file, use ssh_file_read.',
+          'Lists a directory on a server: every entry with its size, mode, owner and modification time, ' +
+          'as fields. A directory it was not allowed to enter is named rather than left out, and a ' +
+          'listing cut short by the output limit says so. To see what is inside a file, use ssh_file_read.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -260,6 +421,7 @@ export class FileTools {
           },
           required: ['profile', 'path'],
         },
+        outputSchema: LIST_OUTPUT_SCHEMA,
       },
     ];
   }
@@ -771,38 +933,48 @@ export class FileTools {
   private async handleFileList(request: CallToolRequest, signal?: AbortSignal) {
     const args = (request.params.arguments ?? {}) as FileListArgs;
     const sshConfig = resolveSSHConfig({ profile: args.profile });
-    
+
     const sudo = args.sudo === true;
     const path = requireText(args.path, 'path', '"/var/log"');
     const target = await resolveRemotePath(this.executor, sshConfig, path, { sudo });
-    const safePath = shellQuote(target.path);
 
-    let command = 'ls -lah';
+    // The tilde under sudo leads to the login user's home rather than root's,
+    // and the path guard says so — the listing must not swallow that
+    for (const warning of target.warnings) logger.warn(`[file-tools] ${warning}`);
 
-    if (args.recursive) {
-      command = 'ls -lRah';
-    }
-    
-    if (args.pattern) {
-      // The pattern must expand on the server, so it does not go into quotes:
-      // everything except the pattern characters is neutralized with a backslash
-      command += ` ${safePath}/${shellGlob(args.pattern, 'pattern')}`;
-    } else {
-      command += ` ${safePath}`;
-    }
-    
-    const result = await this.executor.execute(sshConfig, command, {
+    const result = await this.executor.execute(sshConfig, listCommand(target.path, args), {
       sudo,
       idempotent: true,
       signal,
     });
 
-    if (result.exitCode !== 0) {
+    const entries = parseListEntries(result.stdout, target.path);
+    const refusals = parseRefusals(result.stderr);
+
+    // A refusal at the door of the directory that was asked for leaves nothing
+    // to answer with; one met inside the walk leaves everything else, and that
+    // is a listing with a hole in it rather than a failed call
+    const atTheDoor = refusals.filter((refusal) => refusal.path === target.path);
+    if (result.exitCode !== 0 && entries.length === 0 && (atTheDoor.length > 0 || refusals.length === 0)) {
       throw new Error(`Failed to list files: ${result.stderr || result.stdout}`);
     }
 
+    // The walk runs twice — once for the fields, once for the link targets —
+    // and one closed directory turns them away both times: a single hole must
+    // not be counted as two
+    const unreadable = [
+      ...new Set(
+        refusals
+          .filter((refusal) => refusal.path !== target.path)
+          .map((refusal) => `${refusal.path}: ${refusal.reason}`)
+      ),
+    ];
+
+    const summary = listSummary(target.path, entries, unreadable, result.truncated === true);
+
     return {
-      content: [{ type: 'text', text: withTruncationNote(result.stdout, result.truncated) }],
+      content: [{ type: 'text', text: withTruncationNote(formatListing(summary), result.truncated) }],
+      structuredContent: summary,
     };
   }
   

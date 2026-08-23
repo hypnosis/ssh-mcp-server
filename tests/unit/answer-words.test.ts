@@ -33,6 +33,7 @@ const EXPLAINED = [
   'ssh_service_status: outcome',
   'ssh_audit_baseline: firewall.ufw.status',
   'ssh_audit_baseline: firewall.iptables.status',
+  'ssh_file_list: entries[].type',
   'ssh_file_write: files[].verified',
   'ssh_upload: files[].verified',
   'ssh_download: files[].verified',

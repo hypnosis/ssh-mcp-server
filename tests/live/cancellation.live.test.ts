@@ -71,6 +71,7 @@ process.env.SSH_MCP_CONTROL_DIR ??= LAB_CONTROL_DIR;
 const { createMcpServer } = await import('../../src/mcp-server.js');
 const { LogTools } = await import('../../src/tools/log-tools.js');
 const { closeAllRunners } = await import('../../src/runner/openssh-runner.js');
+const { buildCancelCommand, CALL_MARKER_PREFIX } = await import('../../src/runner/cancel-command.js');
 
 if (unavailable && LAB_REQUIRED) {
   describe('живая отмена', () => {
@@ -213,6 +214,41 @@ if (unavailable && LAB_REQUIRED) {
 
       it('снимает и то, что запущено под sudo с паролем', async () => {
         expect(await stopsTheCommand(`${server.name}-sudopass`, { sudo: true })).toContain('NO');
+      });
+
+      /**
+       * Ветка без `/proc`. На Linux её не выбирают, а на BSD и macOS работает
+       * только она, поэтому здесь она запускается принудительно — иначе
+       * единственной её проверкой остаётся замер руками.
+       *
+       * Сначала контрольный прогон без снятия: метка обязана появиться. Не
+       * появись она — тест зеленел бы оттого, что цель не запустилась вовсе.
+       */
+      it('ветка без /proc снимает команду так же, как ветка с ним', async () => {
+        const marker = `/tmp/cancel-ps-${server.port}`;
+        const call = `${CALL_MARKER_PREFIX}pslive${server.port}`;
+        const branch = buildCancelCommand(call).command.split('; else ')[1].replace(/; fi$/, '');
+
+        const run = (command: string) =>
+          client.callTool({ name: 'ssh_exec', arguments: { profile: server.name, command } });
+        const markerState = async (): Promise<string> => {
+          const check = (await run(`test -e ${marker} && echo YES || echo NO`)) as CallToolResult;
+          return (check.content as any[])[0].text;
+        };
+        const startTarget = () =>
+          run(`rm -f ${marker}; setsid sh -c 'sleep 4; touch ${marker}' sh ${call} >/dev/null 2>&1 &`);
+
+        await startTarget();
+        await sleep(6_000);
+        expect(await markerState(), 'цель не запустилась — снимать было нечего').toContain('YES');
+
+        await startTarget();
+        await sleep(500);
+        await run(branch);
+        await sleep(6_000);
+        expect(await markerState()).toContain('NO');
+
+        await run(`rm -f ${marker}`);
       });
 
       /**

@@ -329,7 +329,7 @@ export class OpenSshRunner implements CommandRunner {
     context: { disableMux: boolean }
   ): Promise<ExecResult> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
-    const wrapped = await this.applyRemoteTimeout(command, options, timeoutMs);
+    const wrapped = await this.wrapCommand(command, options, timeoutMs);
 
     const outcome = await runProcess({
       file: 'ssh',
@@ -406,10 +406,12 @@ export class OpenSshRunner implements CommandRunner {
   }
 
   /**
-   * Wrap the command in a remote guard and mark it for cancellation.
+   * Mark the command for cancellation, and guard it where the server can.
    *
    * Killing the local ssh closes the channel, but doesn't necessarily end
-   * the process on the server. The `timeout` utility finishes the job.
+   * the process on the server. The `timeout` utility finishes the job where
+   * it exists; the marker goes on either way, because a server without
+   * `timeout` is exactly the one whose commands nothing else would stop.
    *
    * The marker rides as an argument after the command, where the shell puts
    * it into `$1` and leaves `$0` as it was. The environment would have hidden
@@ -427,25 +429,23 @@ export class OpenSshRunner implements CommandRunner {
    * bash-specific constructs that work fine in a login shell would break
    * under it, and only on some servers.
    */
-  private async applyRemoteTimeout(
+  private async wrapCommand(
     command: string,
     options: ExecOptions,
     timeoutMs: number
   ): Promise<{ command: string; marker: string | null }> {
-    if (options.remoteTimeout === false || !timeoutMs) return { command, marker: null };
+    if (options.remoteTimeout === false) return { command, marker: null };
 
     const passport = await this.passport();
-    if (!passport.remoteTimeout) return { command, marker: null };
-
-    const seconds = Math.ceil(timeoutMs / 1000) + REMOTE_TIMEOUT_MARGIN_SEC;
     const shell = passport.bash ? 'bash' : 'sh';
     const marker = `${CALL_MARKER_PREFIX}${randomBytes(8).toString('hex')}`;
-    return {
-      command:
-        `timeout ${seconds} ${shell} -c ${shellQuote(`${command}\nexit $?`)} ` +
-        `${shell} ${marker}`,
-      marker,
-    };
+    const marked =
+      `${shell} -c ${shellQuote(`${command}\nexit $?`)} ` + `${shell} ${marker}`;
+
+    if (!timeoutMs || !passport.remoteTimeout) return { command: marked, marker };
+
+    const seconds = Math.ceil(timeoutMs / 1000) + REMOTE_TIMEOUT_MARGIN_SEC;
+    return { command: `timeout ${seconds} ${marked}`, marker };
   }
 
   /**

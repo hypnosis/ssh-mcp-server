@@ -187,9 +187,11 @@ describe('OpenSshRunner timeouts and cancellation', () => {
 
     await makeRunner().exec('sha256sum -- /srv/app/big.bin', { timeoutMs: 0 });
 
-    expect((runProcessMock.mock.calls[0][0] as ProcessRunOptions).timeoutMs).toBe(0);
+    expect((runProcessMock.mock.calls[1][0] as ProcessRunOptions).timeoutMs).toBe(0);
     // Удалённый сторож `timeout N sh -c` тоже не ставится: сроку нет
-    expect(remoteCommand(0)).not.toMatch(/^timeout /);
+    expect(remoteCommand(1)).not.toMatch(/^timeout /);
+    // Отметка при этом на месте: у долгой работы отмена нужнее всего
+    expect(remoteCommand(1)).toMatch(/ ssh-mcp-call-[0-9a-f]{16}$/);
   });
 
   it('distinguishes cancellation from a timeout', async () => {
@@ -249,6 +251,24 @@ describe('OpenSshRunner stopping the cancelled command', () => {
     ).rejects.toThrow(SSHCancelledError);
 
     expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Сервер без `timeout` — единственный, где отмена вообще ни на что не
+   * опирается: сторожа, который добил бы команду по сроку, там тоже нет.
+   */
+  it('снимает и команду на сервере без сторожа времени', async () => {
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine({ timeout: '0' }) }))
+      .mockResolvedValueOnce(ok({ aborted: true, exitCode: null }))
+      .mockResolvedValueOnce(ok({ stdout: '' }));
+
+    await expect(makeRunner().exec('sleep 100', { timeoutMs: 30000 })).rejects.toThrow(
+      SSHCancelledError
+    );
+
+    expect(runProcessMock).toHaveBeenCalledTimes(3);
+    expect(stopCommand()).toContain(callMarker(1));
   });
 
   it('вызов с повышением прав снимается тоже под sudo', async () => {
@@ -667,14 +687,20 @@ describe('OpenSshRunner remote timeout guard', () => {
     );
   });
 
-  it('leaves the command alone when the server has no timeout utility', async () => {
+  /**
+   * Сторожа нет — значит и остановить команду больше нечем: отметка на такой
+   * машине нужнее, чем на любой другой.
+   */
+  it('marks the command even where the server has no timeout utility', async () => {
     runProcessMock
       .mockResolvedValueOnce(ok({ stdout: passportLine({ timeout: '0' }) }))
       .mockResolvedValueOnce(ok({ stdout: 'done' }));
 
     await makeRunner().exec('long-task', { timeoutMs: 30000 });
 
-    expect(remoteCommand(1)).toBe('long-task');
+    expect(remoteCommand(1)).toMatch(
+      /^bash -c 'long-task\nexit \$\?' bash ssh-mcp-call-[0-9a-f]{16}$/
+    );
   });
 
   it('speaks bash when the server has it — the same language both backends promise', async () => {
@@ -770,7 +796,8 @@ describe('OpenSshRunner remote timeout guard', () => {
     const result = await makeRunner().exec('task', { timeoutMs: 5000 });
 
     expect(result.stdout).toBe('done');
-    expect(remoteCommand(1)).toBe('task');
+    // Про сторож ничего не известно — команда идёт без него, но с отметкой
+    expect(remoteCommand(1)).toMatch(/^sh -c 'task\nexit \$\?' sh ssh-mcp-call-[0-9a-f]{16}$/);
   });
 });
 

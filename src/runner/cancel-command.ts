@@ -18,7 +18,7 @@ import { shellQuote } from '../utils/shell-arg.js';
 export const CALL_MARKER_PREFIX = 'ssh-mcp-call-';
 
 /**
- * Find the marked process and signal its whole group.
+ * Find the marked process and signal its whole group, reading `/proc`.
  *
  * The marker is looked for in `/proc/<pid>/cmdline`, which any user can read.
  * The environment would have been the tidier place for it, but `environ` is
@@ -39,7 +39,7 @@ export const CALL_MARKER_PREFIX = 'ssh-mcp-call-';
  * `kill -TERM -<pgid>` is written without `--` — BusyBox refuses the command
  * outright when it's there.
  */
-function killLoop(marker: string): string {
+function procLoop(marker: string): string {
   return (
     `mine=$(sed -e "s/.*) //" /proc/$$/stat | cut -d" " -f3); ` +
     `for p in /proc/[0-9]*; do ` +
@@ -49,6 +49,36 @@ function killLoop(marker: string): string {
     `kill -TERM -"$g" 2>/dev/null; ` +
     `done`
   );
+}
+
+/**
+ * The same search where there is no `/proc`: BSD and macOS keep process
+ * arguments in `ps` and nowhere else.
+ *
+ * `ps -Ao pid,pgid,args` prints those three columns on BusyBox, coreutils
+ * and macOS alike. `ps -o pgid= -p $$` does not: BusyBox rejects `-p`, so
+ * the shell's own group is picked out of the same listing instead of asked
+ * for separately.
+ */
+function psLoop(marker: string): string {
+  return (
+    `mine=$(ps -Ao pid,pgid 2>/dev/null | awk -v me=$$ '$1==me{print $2}'); ` +
+    `ps -Ao pid,pgid,args 2>/dev/null | grep "${marker}" | while read p g rest; do ` +
+    `if [ -z "$g" ] || [ "$g" = "$mine" ]; then continue; fi; ` +
+    `kill -TERM -"$g" 2>/dev/null; ` +
+    `done`
+  );
+}
+
+/**
+ * Which of the two searches the server can actually run.
+ *
+ * The test is the very file the first one reads. `/proc` existing is not
+ * enough: FreeBSD's procfs, when mounted at all, offers `cmdline` but no
+ * `stat`, so a directory check would pick the branch that cannot work there.
+ */
+function killLoop(marker: string): string {
+  return `if [ -r /proc/$$/stat ]; then ${procLoop(marker)}; else ${psLoop(marker)}; fi`;
 }
 
 export interface CancelCommand {

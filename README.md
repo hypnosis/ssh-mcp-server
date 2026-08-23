@@ -794,7 +794,7 @@ The shared connection outlives this process on purpose: closing it on exit would
 
 ## SSH MCP server limitations
 
-- **Cancellation:** closing SSH may leave the remote command running. Use detached jobs when control matters.
+- **Cancellation:** a cancelled call now stops the command on the server too, sent as a second call over the same connection. Where the server has no `/proc`, the command is found through `ps` instead. FreeBSD is not verified: correct behaviour there is not guaranteed. File transfers and `ssh_snapshot` do not take cancellation at all.
 - **Atomic writes:** BSD and macOS cannot pre-check cross-filesystem renames.
 
 ## SSH MCP server roadmap

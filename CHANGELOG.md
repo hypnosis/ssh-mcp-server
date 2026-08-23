@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — cancelling a call now stops the command on the server
+- A cancelled call used to drop the local ssh client and leave the command running to the
+  end. Nothing on the server signalled the loss: with multiplexing the sshd process owning
+  the command stays alive as long as the shared connection does, so neither the parent
+  dying, nor EOF on stdin, nor a write error on stdout ever happens. The stop is now sent
+  instead — a second call over the same connection finds the command by the marker in its
+  arguments and signals its process group, which costs one round trip on an already open
+  connection.
+- A command running under `sudo` is stopped under `sudo` too: it belongs to root, and a
+  signal from the login user never reaches it. The password comes from the same place the
+  command itself takes it from and travels on stdin, never in the arguments.
+- A server without `timeout` is marked all the same. It is the machine where the stop
+  matters most: there is no watchdog on it to end the command by a deadline either. Only a
+  call that asks for no wrapper at all — the passport probe — goes unmarked, and its
+  cancellation stays local as before.
+- Where there is no `/proc`, the command is found through `ps`: the same three columns
+  print on BusyBox, coreutils and macOS alike, and the server picks the branch itself by
+  the very file the other search reads — FreeBSD's procfs offers `cmdline` but no `stat`,
+  so testing for the directory would choose a search that cannot work there. FreeBSD is
+  not verified: correct behaviour there is not guaranteed.
+- File transfers and `ssh_snapshot` still do not take cancellation, deliberately.
+
 ### Added — `ssh_file_list` answers in fields
 - A directory now comes back as entries with `name`, `type`, `size`, `mode`, `owner`,
   `group`, `mtime` and, for a symlink, the path it points at — plus the schema that

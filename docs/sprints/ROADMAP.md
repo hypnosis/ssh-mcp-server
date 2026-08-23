@@ -38,9 +38,10 @@ CORE_24 закрыт 2026-08-23 — слова, которыми отвечаю�
 осознанно: [TD-21](../tech-debt/scenarios-not-slash-commands_21.md) — готовые сценарии
 слэш-командами, [TD-30](../tech-debt/directory-upload-replaces-whole_30.md) — каталог
 доставляется только заменой целиком.
-Остальное закрыто, кроме двух названных ограничений
-([TD-08](../tech-debt/cancellation-not-wired_08.md), [TD-09](../tech-debt/mountpoint-check-bsd_09.md)),
-которые описаны в README и CHANGELOG.
+Остальное закрыто, кроме одного названного ограничения
+([TD-09](../tech-debt/mountpoint-check-bsd_09.md)), описанного в README и CHANGELOG.
+Отмена, доведённая до сервера, закрыла [TD-08](../tech-debt/archive/cancellation-not-wired_08.md)
+в CORE_26.
 
 ---
 
@@ -168,7 +169,7 @@ stdio означает отдельный процесс сервера на к�
 
 - отмена доведена до транспорта и бросает наш клиент сразу, но команду на сервере не
   снимает; останавливаемую работу запускают через `detach` и снимают `ssh_job_kill`
-  ([TD-08](../tech-debt/cancellation-not-wired_08.md));
+  ([TD-08](../tech-debt/archive/cancellation-not-wired_08.md));
 - проверка точки монтирования умеет читать `stat` в синтаксисе GNU и BusyBox; на сервере
   с другим она честно говорит, что не сработала ([TD-09](../tech-debt/mountpoint-check-bsd_09.md)).
 

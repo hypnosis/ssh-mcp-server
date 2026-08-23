@@ -30,7 +30,7 @@ Remote Server(s)
 - **NO streaming** - snapshot results only
 - **REST approach** - arrays where logical
 - **Retry logic** - one retry for idempotent commands after a transport failure; a refused multiplexed session falls back to a connection of its own
-- **Cancellation** - a cancelled call stops the local `ssh` client immediately, rather than waiting for the command timeout. It cannot stop a command already running on the server. File transfers and `ssh_snapshot` do not support cancellation: stopping a transfer could leave its target empty, while a cancelled snapshot would return blanks. For work that must be stoppable, use `detach: true` and then `ssh_job_kill`
+- **Cancellation** - a cancelled call stops the local `ssh` client immediately, rather than waiting for the command timeout, and then stops the command on the server: a second call finds it by the marker in its arguments and signals its process group. Closing the channel does not do this on its own — with multiplexing the sshd process owning the command stays alive as long as the master does. Where there is no `/proc`, the search goes through `ps` instead, and the server chooses the branch by the very file the other one reads: FreeBSD's procfs has `cmdline` but no `stat`. A stop that fails anyway is reported to the log and no further. File transfers and `ssh_snapshot` do not support cancellation: stopping a transfer could leave its target empty, while a cancelled snapshot would return blanks. For work that must be stoppable regardless, use `detach: true` and then `ssh_job_kill`
 - **Background jobs** - a detached command keeps its whole state on the server, so nothing is remembered on our side and a restart of this server loses nothing
 
 ## Development

@@ -6,9 +6,9 @@
  * ответа: ответ клиенту приходит сразу в любом случае — его отклоняет его же
  * `AbortController`, и по нему не видно, дошла ли отмена до дела.
  *
- * Команду на машине отмена не снимает — закрытие канала не убивает то, что
- * уже запущено, — и это проверяется здесь же, чтобы граница была названа
- * замером, а не памятью о нём.
+ * Команду на машине отмена снимает вторым вызовом: закрытие канала до неё не
+ * доходит — при мультиплексировании sshd держит её, пока жив master. Здесь
+ * это и проверяется, метка на диске появиться не должна.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -19,7 +19,14 @@ import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { LAB_CONTROL_DIR, LAB_KEY, LAB_REQUIRED, LAB_SERVERS, labUnavailableReason } from './lab.js';
+import {
+  LAB_CONTROL_DIR,
+  LAB_KEY,
+  LAB_PASSWORD,
+  LAB_REQUIRED,
+  LAB_SERVERS,
+  labUnavailableReason,
+} from './lab.js';
 
 const LIVE_TIMEOUT_MS = 120_000;
 
@@ -38,17 +45,22 @@ await writeFile(
   profilesPath,
   JSON.stringify({
     profiles: Object.fromEntries(
-      LAB_SERVERS.map((server) => [
-        server.name,
-        {
+      LAB_SERVERS.flatMap((server) => {
+        const base = {
           host: '127.0.0.1',
           port: server.port,
-          username: 'root',
           privateKeyPath: LAB_KEY,
           strictHostKeyChecking: 'no',
           ignoreUserConfig: true,
-        },
-      ])
+        };
+        return [
+          [server.name, { ...base, username: 'root' }],
+          // Обычный пользователь: снятие под sudo идёт без пароля
+          [`${server.name}-deploy`, { ...base, username: 'deploy' }],
+          // Тот, у кого sudo спрашивает пароль: вторая ветка снятия
+          [`${server.name}-sudopass`, { ...base, username: 'keyuser', sudoPassword: LAB_PASSWORD }],
+        ];
+      })
     ),
   })
 );
@@ -160,33 +172,47 @@ if (unavailable && LAB_REQUIRED) {
       });
 
       /**
-       * Названная граница: запущенное на машине отмена не снимает. Замер прямой —
-       * команда оставляет метку позже, чем приходит отмена, и метка появляется.
-       * Покраснеет этот тест — значит поведение изменилось и документы врут.
+       * Замер прямой: команда оставляет метку позже, чем приходит отмена. Была
+       * бы она жива — метка появилась бы. Проверяется файлом, а не списком
+       * процессов: `ps` на BusyBox аргументов не печатает, и по имени `sleep`
+       * своя команда не отличается от чужой.
        */
-      it('команду на машине не снимает — это делает только её собственный срок', async () => {
+      const stopsTheCommand = async (profile: string, args: object = {}) => {
         const marker = `/tmp/cancel-mark-${server.port}`;
-        await client.callTool({
-          name: 'ssh_exec',
-          arguments: { profile: server.name, command: `rm -f ${marker}` },
-        });
+        const clean = { profile, command: `rm -f ${marker}`, ...args };
+        await client.callTool({ name: 'ssh_exec', arguments: clean });
 
-        await cancelAfterStart(server.name, 'ssh_exec', {
+        await cancelAfterStart(profile, 'ssh_exec', {
           command: `sleep 4; touch ${marker}`,
           timeout: 60_000,
+          ...args,
         });
         await sleep(6_000);
 
         const check = (await client.callTool({
           name: 'ssh_exec',
-          arguments: { profile: server.name, command: `test -e ${marker} && echo YES || echo NO` },
+          arguments: { profile, command: `test -e ${marker} && echo YES || echo NO`, ...args },
         })) as CallToolResult;
-        expect((check.content as any[])[0].text).toContain('YES');
+        const text = (check.content as any[])[0].text;
 
-        await client.callTool({
-          name: 'ssh_exec',
-          arguments: { profile: server.name, command: `rm -f ${marker}` },
-        });
+        await client.callTool({ name: 'ssh_exec', arguments: clean });
+        return text;
+      };
+
+      it('снимает команду на машине, а не оставляет её доживать', async () => {
+        expect(await stopsTheCommand(server.name)).toContain('NO');
+      });
+
+      /**
+       * Под sudo команда принадлежит root, и сигнал от вошедшего пользователя
+       * до неё не доходит — снятие обязано пойти тем же путём, что и она сама.
+       */
+      it('снимает и то, что запущено под sudo без пароля', async () => {
+        expect(await stopsTheCommand(`${server.name}-deploy`, { sudo: true })).toContain('NO');
+      });
+
+      it('снимает и то, что запущено под sudo с паролем', async () => {
+        expect(await stopsTheCommand(`${server.name}-sudopass`, { sudo: true })).toContain('NO');
       });
 
       /**

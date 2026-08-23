@@ -16,6 +16,9 @@ import { describeRunnerContract } from './runner-contract.js';
 const { runProcessMock } = vi.hoisted(() => ({ runProcessMock: vi.fn() }));
 vi.mock('../../src/runner/process.js', () => ({ runProcess: runProcessMock }));
 
+const loggerMock = vi.hoisted(() => ({ warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() }));
+vi.mock('../../src/utils/logger.js', () => ({ logger: loggerMock }));
+
 const { detectRuntimeMock } = vi.hoisted(() => ({ detectRuntimeMock: vi.fn() }));
 vi.mock('../../src/runner/runtime-check.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/runner/runtime-check.js')>();
@@ -72,6 +75,12 @@ function callArgs(index: number): string[] {
 function remoteCommand(index: number): string {
   const args = callArgs(index);
   return args[args.length - 1];
+}
+
+/** Отметка вызова из n-й команды: значение случайное, сверять можно только по месту */
+function callMarker(index: number): string {
+  const parts = remoteCommand(index).split(' ');
+  return parts[parts.length - 1];
 }
 
 function hasControlMaster(index: number): boolean {
@@ -189,6 +198,202 @@ describe('OpenSshRunner timeouts and cancellation', () => {
     await expect(makeRunner().exec('sleep 100', { remoteTimeout: false })).rejects.toThrow(
       SSHCancelledError
     );
+  });
+});
+
+/**
+ * Отмена бросает клиента у нас, а команда на сервере этого не замечает:
+ * при мультиплексировании sshd держит её, пока жив master. Значит снятие
+ * уезжает отдельным вызовом — по отметке, оставленной в окружении команды.
+ */
+describe('OpenSshRunner stopping the cancelled command', () => {
+  /** Команда, которой снимали работу: она уходит последней */
+  function stopCommand(): string {
+    return remoteCommand(runProcessMock.mock.calls.length - 1);
+  }
+
+  function cancelledRun(options: Record<string, unknown> = {}) {
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
+      .mockResolvedValueOnce(ok({ aborted: true, exitCode: null }))
+      .mockResolvedValueOnce(ok({ stdout: '' }));
+
+    return makeRunner().exec('sleep 100', { timeoutMs: 30000, ...options });
+  }
+
+  it('шлёт снятие по той же отметке, с которой ушла команда', async () => {
+    await expect(cancelledRun()).rejects.toThrow(SSHCancelledError);
+
+    expect(runProcessMock).toHaveBeenCalledTimes(3);
+    expect(stopCommand()).toContain(callMarker(1));
+    expect(stopCommand()).toContain('kill -TERM -"$g"');
+  });
+
+  it('снятию не передаётся сигнал отмены — он уже сработал', async () => {
+    await expect(cancelledRun()).rejects.toThrow(SSHCancelledError);
+
+    const stop = runProcessMock.mock.calls[2][0] as ProcessRunOptions;
+    expect(stop.signal).toBeUndefined();
+    expect(stop.timeoutMs).toBe(5000);
+  });
+
+  /**
+   * Без обёртки отметки нет, находить нечего: команда ушла голой, и снять её
+   * было нечем с самого начала.
+   */
+  it('без обёртки снятие не шлётся вовсе', async () => {
+    runProcessMock.mockResolvedValue(ok({ aborted: true, exitCode: null }));
+
+    await expect(
+      makeRunner().exec('sleep 100', { timeoutMs: 30000, remoteTimeout: false })
+    ).rejects.toThrow(SSHCancelledError);
+
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('вызов с повышением прав снимается тоже под sudo', async () => {
+    await expect(cancelledRun({ elevated: true })).rejects.toThrow(SSHCancelledError);
+
+    expect(stopCommand()).toContain('sudo');
+  });
+
+  it('обычный вызов снимается без sudo', async () => {
+    await expect(cancelledRun()).rejects.toThrow(SSHCancelledError);
+
+    expect(stopCommand()).not.toContain('sudo');
+  });
+
+  /** Снятие — довесок к отмене: провалилось оно или нет, вызов всё равно отменён */
+  it('провал снятия не подменяет собой отказ об отмене', async () => {
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
+      .mockResolvedValueOnce(ok({ aborted: true, exitCode: null }))
+      .mockRejectedValueOnce(new Error('канал закрыт'));
+
+    await expect(makeRunner().exec('sleep 100', { timeoutMs: 30000 })).rejects.toThrow(
+      SSHCancelledError
+    );
+  });
+
+  it('снятие уезжает тем же клиентом ssh, что и сама команда', async () => {
+    await expect(cancelledRun()).rejects.toThrow(SSHCancelledError);
+
+    expect((runProcessMock.mock.calls[2][0] as ProcessRunOptions).file).toBe('ssh');
+  });
+
+  /**
+   * Язык снятия важен там, где оно идёт под sudo: `bash` на машине без него —
+   * это отказ «command not found», и команда останется работать.
+   */
+  it('под sudo говорит на языке, который назвал паспорт сервера', async () => {
+    await expect(cancelledRun({ elevated: true })).rejects.toThrow(SSHCancelledError);
+    expect(stopCommand()).toContain('bash -c ');
+
+    runProcessMock.mockClear();
+    resetPassportCache();
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine({ bash: '0' }) }))
+      .mockResolvedValueOnce(ok({ aborted: true, exitCode: null }))
+      .mockResolvedValueOnce(ok({ stdout: '' }));
+
+    await expect(
+      makeRunner().exec('sleep 100', { timeoutMs: 30000, elevated: true })
+    ).rejects.toThrow(SSHCancelledError);
+    expect(stopCommand()).toContain('sh -c ');
+    expect(stopCommand()).not.toContain('bash -c ');
+  });
+
+  /** Пароль для sudo берётся тот же, которым его спрашивает сама команда */
+  it('пароль для sudo уезжает на вход снятия, а не в его аргументы', async () => {
+    resetPassportCache();
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
+      .mockResolvedValueOnce(ok({ aborted: true, exitCode: null }))
+      .mockResolvedValueOnce(ok({ stdout: '' }));
+
+    await expect(
+      new OpenSshRunner({ ...CONFIG, sudoPassword: 'секрет' }, RUNTIME).exec('sleep 100', {
+        timeoutMs: 30000,
+        elevated: true,
+      })
+    ).rejects.toThrow(SSHCancelledError);
+
+    expect((runProcessMock.mock.calls[2][0] as ProcessRunOptions).stdin).toBe('секрет\n');
+    expect(stopCommand()).not.toContain('секрет');
+  });
+
+  it('без отдельного пароля для sudo берётся пароль входа', async () => {
+    resetPassportCache();
+    // Профиль с паролем пишет askpass-скрипт на диск — уводим его во временный каталог
+    const controlDir = mkdtempSync(join(tmpdir(), 'ssh-mcp-cancel-'));
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
+      .mockResolvedValueOnce(ok({ aborted: true, exitCode: null }))
+      .mockResolvedValueOnce(ok({ stdout: '' }));
+
+    try {
+      await expect(
+        new OpenSshRunner({ host: 'example.com', username: 'deploy', password: 'вход' }, {
+          ...RUNTIME,
+          controlDir,
+        }).exec('sleep 100', { timeoutMs: 30000, elevated: true })
+      ).rejects.toThrow(SSHCancelledError);
+
+      expect((runProcessMock.mock.calls[2][0] as ProcessRunOptions).stdin).toBe('вход\n');
+    } finally {
+      rmSync(controlDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Неснятая команда продолжает занимать сервер, и узнать об этом можно только
+   * из журнала: вызывающий отменённого вызова ответа уже не слушает.
+   */
+  it('о неудавшемся снятии говорит в журнал', async () => {
+    loggerMock.warn.mockClear();
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
+      .mockResolvedValueOnce(ok({ aborted: true, exitCode: null }))
+      .mockResolvedValueOnce(ok({ exitCode: 1 }));
+
+    await expect(makeRunner().exec('sleep 100', { timeoutMs: 30000 })).rejects.toThrow(
+      SSHCancelledError
+    );
+
+    expect(loggerMock.warn).toHaveBeenCalledWith(expect.stringContaining('may still be running'));
+    expect(loggerMock.warn).toHaveBeenCalledWith(expect.stringContaining('the stop exited 1'));
+  });
+
+  it('об оборвавшемся снятии говорит в журнал тоже', async () => {
+    loggerMock.warn.mockClear();
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
+      .mockResolvedValueOnce(ok({ aborted: true, exitCode: null }))
+      .mockRejectedValueOnce(new Error('канал закрыт'));
+
+    await expect(makeRunner().exec('sleep 100', { timeoutMs: 30000 })).rejects.toThrow(
+      SSHCancelledError
+    );
+
+    expect(loggerMock.warn).toHaveBeenCalledWith(expect.stringContaining('канал закрыт'));
+  });
+
+  it('удавшееся снятие в журнал не пишет', async () => {
+    loggerMock.warn.mockClear();
+
+    await expect(cancelledRun()).rejects.toThrow(SSHCancelledError);
+
+    expect(loggerMock.warn).not.toHaveBeenCalled();
+  });
+
+  it('успешная команда снятия за собой не тянет', async () => {
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
+      .mockResolvedValueOnce(ok({ stdout: 'done' }));
+
+    await makeRunner().exec('quick', { timeoutMs: 30000 });
+
+    expect(runProcessMock).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -457,7 +662,9 @@ describe('OpenSshRunner remote timeout guard', () => {
 
     await makeRunner().exec('long-task', { timeoutMs: 30000 });
 
-    expect(remoteCommand(1)).toBe("timeout 35 bash -c 'long-task'");
+    expect(remoteCommand(1)).toMatch(
+      /^timeout 35 bash -c 'long-task\nexit \$\?' bash ssh-mcp-call-[0-9a-f]{16}$/
+    );
   });
 
   it('leaves the command alone when the server has no timeout utility', async () => {
@@ -487,7 +694,25 @@ describe('OpenSshRunner remote timeout guard', () => {
 
     await makeRunner().exec('long-task', { timeoutMs: 30000 });
 
-    expect(remoteCommand(1)).toBe("timeout 35 sh -c 'long-task'");
+    expect(remoteCommand(1)).toMatch(
+      /^timeout 35 sh -c 'long-task\nexit \$\?' sh ssh-mcp-call-[0-9a-f]{16}$/
+    );
+  });
+
+  /**
+   * Оболочка заменяет себя последней командой, и вместе с ней уходит отметка:
+   * искать становится нечего. `exit $?` стоит отдельной строкой, потому что
+   * после команды с `&` точка с запятой — синтаксическая ошибка.
+   */
+  it('keeps the shell alive past the command so the marker stays findable', async () => {
+    runProcessMock
+      .mockResolvedValueOnce(ok({ stdout: passportLine() }))
+      .mockResolvedValueOnce(ok({ stdout: 'done' }));
+
+    await makeRunner().exec('long-task &', { timeoutMs: 30000 });
+
+    expect(remoteCommand(1)).toContain("'long-task &\nexit $?'");
+    expect(remoteCommand(1)).not.toContain('&; exit');
   });
 
   it('the passport probe itself is never wrapped — the language is what it is measuring', async () => {
@@ -497,6 +722,7 @@ describe('OpenSshRunner remote timeout guard', () => {
 
     // Обёртка сторожа всегда стоит в начале команды — её здесь быть не должно
     expect(remoteCommand(0)).not.toMatch(/^timeout \d+ /);
+    expect(remoteCommand(0)).not.toContain('ssh-mcp-call-');
     expect(remoteCommand(0)).toMatch(/^sh -c /);
     expect(remoteCommand(0)).toContain('SSH_MCP_PASSPORT');
   });
@@ -508,7 +734,9 @@ describe('OpenSshRunner remote timeout guard', () => {
 
     await makeRunner().exec("echo 'it works'", { timeoutMs: 10000 });
 
-    expect(remoteCommand(1)).toBe(`timeout 15 bash -c 'echo '\\''it works'\\'''`);
+    expect(remoteCommand(1)).toBe(
+      `timeout 15 bash -c 'echo '\\''it works'\\''\nexit $?' bash ${callMarker(1)}`
+    );
   });
 
   it('probes the server only once', async () => {

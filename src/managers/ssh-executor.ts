@@ -134,6 +134,7 @@ export class SSHExecutor {
       idempotent: options.idempotent,
       stdin,
       signal: options.signal,
+      elevated: options.sudo,
     });
 
     return {

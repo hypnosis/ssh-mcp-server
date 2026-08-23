@@ -30,6 +30,12 @@ export interface ExecOptions {
    * server doesn't outlive the killed local ssh (defaults to true when timeoutMs is set)
    */
   remoteTimeout?: boolean;
+  /**
+   * The command runs with elevated rights: stopping it after a cancellation
+   * has to reach processes owned by root, and a signal from the login user
+   * never gets to those.
+   */
+  elevated?: boolean;
 }
 
 /**

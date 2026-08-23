@@ -7,6 +7,7 @@
  * the machine. The server sees one login instead of one login per command.
  */
 
+import { randomBytes } from 'crypto';
 import { logger } from '../utils/logger.js';
 import { stripTerminalControls } from '../utils/terminal-noise.js';
 import { buildRunnerEnv, ensureAskpassScript } from './askpass.js';
@@ -28,6 +29,7 @@ import {
   type ServerPassport,
 } from './passport.js';
 import { runProcess } from './process.js';
+import { buildCancelCommand, CALL_MARKER_PREFIX } from './cancel-command.js';
 import { shellQuote } from '../utils/shell-arg.js';
 import { hideArtifactNames } from '../utils/tmp-name.js';
 import {
@@ -64,6 +66,8 @@ const DEFAULT_CONTROL_TIMEOUT_MS = 5000;
 const REMOTE_TIMEOUT_MARGIN_SEC = 5;
 /** How long to wait for a response to the passport probe */
 const PASSPORT_PROBE_TIMEOUT_MS = 15000;
+/** How long the stop sent after a cancellation is given to reach the server */
+const REMOTE_CANCEL_TIMEOUT_MS = 5000;
 /** Pause before retrying a transport failure */
 const RETRY_DELAY_MS = 1000;
 
@@ -325,11 +329,11 @@ export class OpenSshRunner implements CommandRunner {
     context: { disableMux: boolean }
   ): Promise<ExecResult> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
-    const finalCommand = await this.applyRemoteTimeout(command, options, timeoutMs);
+    const wrapped = await this.applyRemoteTimeout(command, options, timeoutMs);
 
     const outcome = await runProcess({
       file: 'ssh',
-      args: buildSshArgs(this.config, this.capabilities(context.disableMux), finalCommand),
+      args: buildSshArgs(this.config, this.capabilities(context.disableMux), wrapped.command),
       env: this.buildEnv(),
       timeoutMs,
       signal: options.signal,
@@ -352,6 +356,7 @@ export class OpenSshRunner implements CommandRunner {
     const stderr = stripMuxNotices(rawStderr);
 
     if (outcome.aborted) {
+      await this.stopOnServer(wrapped.marker, options, context);
       throw new SSHCancelledError(`Command cancelled on ${this.destination}`, {
         partialStdout: stdout,
         partialStderr: stderr,
@@ -401,10 +406,21 @@ export class OpenSshRunner implements CommandRunner {
   }
 
   /**
-   * Wrap the command in a remote guard.
+   * Wrap the command in a remote guard and mark it for cancellation.
    *
    * Killing the local ssh closes the channel, but doesn't necessarily end
    * the process on the server. The `timeout` utility finishes the job.
+   *
+   * The marker rides as an argument after the command, where the shell puts
+   * it into `$1` and leaves `$0` as it was. The environment would have hidden
+   * it from other users on the server, but `environ` is unreadable to anyone
+   * but the process itself — including root — so nothing could find it there.
+   *
+   * `exit $?` on a line of its own keeps the shell from replacing itself with
+   * the command: a shell that execs away takes the marker with it, and the
+   * only process left holding it is the timeout watcher, which by then has no
+   * relation to the command. The newline matters — a command ending in `&`
+   * makes `; exit` a syntax error.
    *
    * The command language is declared explicitly: bash when it's available,
    * otherwise sh. This matters because on Debian and Ubuntu sh is dash —
@@ -415,15 +431,68 @@ export class OpenSshRunner implements CommandRunner {
     command: string,
     options: ExecOptions,
     timeoutMs: number
-  ): Promise<string> {
-    if (options.remoteTimeout === false || !timeoutMs) return command;
+  ): Promise<{ command: string; marker: string | null }> {
+    if (options.remoteTimeout === false || !timeoutMs) return { command, marker: null };
 
     const passport = await this.passport();
-    if (!passport.remoteTimeout) return command;
+    if (!passport.remoteTimeout) return { command, marker: null };
 
     const seconds = Math.ceil(timeoutMs / 1000) + REMOTE_TIMEOUT_MARGIN_SEC;
     const shell = passport.bash ? 'bash' : 'sh';
-    return `timeout ${seconds} ${shell} -c ${shellQuote(command)}`;
+    const marker = `${CALL_MARKER_PREFIX}${randomBytes(8).toString('hex')}`;
+    return {
+      command:
+        `timeout ${seconds} ${shell} -c ${shellQuote(`${command}\nexit $?`)} ` +
+        `${shell} ${marker}`,
+      marker,
+    };
+  }
+
+  /**
+   * Stop the cancelled command on the server.
+   *
+   * Sent on its own connection and given its own deadline: the call it
+   * belongs to is already over, and its cancellation signal would abort this
+   * one too. A stop that fails changes nothing for the caller — the
+   * cancellation stands either way — so it is reported to the log and no
+   * further.
+   *
+   * Without a marker there is nothing to find: the command went unwrapped,
+   * and stopping it was never possible.
+   */
+  private async stopOnServer(
+    marker: string | null,
+    options: ExecOptions,
+    context: { disableMux: boolean }
+  ): Promise<void> {
+    if (!marker) return;
+
+    const stop = buildCancelCommand(marker, {
+      elevated: options.elevated,
+      shell: this.knownPassport?.bash ? 'bash' : 'sh',
+      password: this.config.sudoPassword ?? this.config.password,
+    });
+
+    try {
+      const outcome = await runProcess({
+        file: 'ssh',
+        args: buildSshArgs(this.config, this.capabilities(context.disableMux), stop.command),
+        env: this.buildEnv(),
+        timeoutMs: REMOTE_CANCEL_TIMEOUT_MS,
+        stdin: stop.stdin,
+      });
+
+      if (outcome.exitCode !== 0) {
+        logger.warn(
+          `Cancelled command may still be running on ${this.destination}: ` +
+            `the stop exited ${outcome.exitCode}`
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        `Cancelled command may still be running on ${this.destination}: ${String(error)}`
+      );
+    }
   }
 
   /**

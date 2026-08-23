@@ -23,6 +23,14 @@ const VERIFIED_MEANING: Record<VerifiedOutcome, string> = {
   skipped: 'no comparison ran: none was asked for, or nothing landed to compare',
 };
 
+/**
+ * Says which question the field answers, and leaves the values to the legend:
+ * an outcome read as a failed write sends a caller undoing a sound one.
+ */
+const VERIFIED_FIELD_DESCRIPTION =
+  'How the sha256 check ended, not whether the data landed — written says that. ' +
+  'Only "verified" means compared and matched; the legend names what the others were.';
+
 export interface FileSummary {
   /** Where the data went on the server, after the tilde and the rules were applied */
   path: string;
@@ -108,7 +116,11 @@ export const FILES_OUTPUT_SCHEMA: OutputSchema = {
         properties: {
           path: { type: 'string' },
           written: { type: 'boolean' },
-          verified: { type: 'string', enum: ['verified', 'unavailable', 'skipped'] },
+          verified: {
+            type: 'string',
+            enum: ['verified', 'unavailable', 'skipped'],
+            description: VERIFIED_FIELD_DESCRIPTION,
+          },
           reason: { type: ['string', 'null'] },
           bytes: { type: ['number', 'null'] },
         },

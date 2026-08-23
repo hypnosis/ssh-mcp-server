@@ -187,11 +187,10 @@ export class TransferTool {
         name: 'ssh_upload',
         annotations: { title: 'Upload to a server', ...WRITES_REMOTE },
         description:
-          'Copies a local file or directory to a server. Data lands under a temporary name and takes its ' +
-          'place in one rename, verified by sha256 — a half-written file never appears at the target. A ' +
-          'directory replaces the target whole, not file by file, and sudo stages in /tmp first, so the ' +
-          'machine needs room for a second copy, and setting an owner needs it too. For text you can paste, ' +
-          'ssh_file_write is cheaper; piping base64 through ssh_exec truncates silently.',
+          'Copies a local file or directory to a server, checked by sha256 on both sides and never left ' +
+          'half-written at the target. A directory replaces the target whole — whatever was there and is ' +
+          'not in the source is gone with it. For text you can paste, ssh_file_write is cheaper; piping ' +
+          'base64 through ssh_exec truncates silently.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -216,7 +215,7 @@ export class TransferTool {
             sudo: {
               type: 'boolean',
               description:
-                'For /etc, /opt and the like. Data stages in /tmp first — the machine needs room for a second copy. Default: false',
+                'For /etc, /opt and the like, and for setting an owner. Data stages in /tmp first — the machine needs room for a second copy. Default: false',
               default: false,
             },
             owner: {
@@ -241,11 +240,8 @@ export class TransferTool {
         name: 'ssh_download',
         annotations: { title: 'Download from a server', ...WRITES_REMOTE },
         description:
-          'Copies a file or directory from a server to this machine. Data lands under a temporary name and ' +
-          'takes its place in one rename, and every file is checked by sha256 on both sides; a machine ' +
-          'without sha256 answers \'unavailable\', which means delivered, not broken. A root-owned copy ' +
-          'stages in /tmp on the server, so it needs room there. To read a text file rather than keep it, ' +
-          'ssh_file_read skips the disk.',
+          'Copies a file or directory from a server to this machine, checked by sha256 on both sides. ' +
+          'To read a text file rather than keep it, ssh_file_read skips the disk.',
         inputSchema: {
           type: 'object',
           properties: {

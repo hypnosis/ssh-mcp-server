@@ -663,7 +663,7 @@ describe('ssh_file_read: пачка файлов', () => {
 describe('ssh_file_write: одиночный файл', () => {
   it('в ответе стоит путь, по которому файл действительно оказался', async () => {
     const text = await write({ files: { path: '/etc/app.conf', content: 'key=value\n' } });
-    expect(text).toBe('File written successfully: /etc/app.conf');
+    expect(text).toBe('File written successfully: /etc/app.conf (sha256 verified)');
     expect((server.get('/etc/app.conf') as { content: Buffer }).content.toString()).toBe(
       'key=value\n'
     );
@@ -714,17 +714,23 @@ describe('ssh_file_write: одиночный файл', () => {
     expect(answer).not.toContain('sha256 verified');
   });
 
-  it('без флага verify про сверку не говорится вовсе', async () => {
+  it('по умолчанию сверка идёт и названа в ответе', async () => {
     expect(await write({ files: { path: '/etc/app.conf', content: 'key=value\n' } })).toBe(
-      'File written successfully: /etc/app.conf'
+      'File written successfully: /etc/app.conf (sha256 verified)'
     );
+  });
+
+  it('verify: false выключает сверку, и про неё не говорится вовсе', async () => {
+    expect(
+      await write({ files: { path: '/etc/app.conf', content: 'key=value\n', verify: false } })
+    ).toBe('File written successfully: /etc/app.conf');
   });
 
   it('в сводке по пачке исход сверки стоит у каждой записи', async () => {
     const answer = await write({
       files: [
         { path: '/etc/a.conf', content: 'a\n', verify: true },
-        { path: '/etc/b.conf', content: 'b\n' },
+        { path: '/etc/b.conf', content: 'b\n', verify: false },
       ],
     });
 
@@ -732,8 +738,13 @@ describe('ssh_file_write: одиночный файл', () => {
     expect(answer).toContain('✓ /etc/b.conf (2 bytes)\n');
   });
 
-  it('без флага verify сервер о хэшах не спрашивают вовсе', async () => {
+  it('по умолчанию сервер о хэшах спрашивают', async () => {
     await write({ files: { path: '/etc/app.conf', content: 'key=value\n' } });
+    expect(commandFor(/^sha256sum /)).toBeDefined();
+  });
+
+  it('при verify: false сервер о хэшах не спрашивают вовсе', async () => {
+    await write({ files: { path: '/etc/app.conf', content: 'key=value\n', verify: false } });
     expect(commandFor(/^sha256sum /)).toBeUndefined();
   });
 
@@ -753,9 +764,13 @@ describe('ssh_file_write: пачка файлов', () => {
         ],
       })
     ).toBe(
-      ['Write 2/2 files:', '', '✓ /etc/app.conf (10 bytes)', '✓ /srv/app.js (6 bytes)', ''].join(
-        '\n'
-      )
+      [
+        'Write 2/2 files:',
+        '',
+        '✓ /etc/app.conf (10 bytes) (sha256 verified)',
+        '✓ /srv/app.js (6 bytes) (sha256 verified)',
+        '',
+      ].join('\n')
     );
   });
 
@@ -790,7 +805,7 @@ describe('ssh_file_write: пачка файлов', () => {
         { path: '/srv/app.js', content: 'run();' },
       ],
     });
-    expect(text).toContain('✓ /home/deploy/notes.txt (3 bytes)\n  ⚠ ');
+    expect(text).toContain('✓ /home/deploy/notes.txt (3 bytes) (sha256 verified)\n  ⚠ ');
   });
 
   it('запрещённый путь останавливает пачку до первой записи', async () => {
@@ -1112,7 +1127,9 @@ describe('ssh_file_write: что именно уезжает на сервер',
     const text = await write({ files: { path: '~/notes.txt', content: 'hi\n', sudo: true } });
     const notes = text.split('\n⚠ ');
     expect(notes).toHaveLength(3);
-    expect(notes[0]).toBe('File written successfully: /home/deploy/notes.txt');
+    expect(notes[0]).toBe(
+      'File written successfully: /home/deploy/notes.txt (sha256 verified)'
+    );
     expect(notes[1]).toBe(
       '"~/notes.txt" points at /home/deploy/notes.txt — the home of the login user,' +
         " not root's. Pass an absolute path if you meant a different directory."
@@ -1123,7 +1140,7 @@ describe('ssh_file_write: что именно уезжает на сервер',
   it('предупреждение в одиночном ответе печатается со своей строки', async () => {
     const text = await write({ files: { path: '~/notes.txt', content: 'hi\n', sudo: true } });
     expect(text).toBe(
-      'File written successfully: /home/deploy/notes.txt\n⚠ "~/notes.txt" points at' +
+      'File written successfully: /home/deploy/notes.txt (sha256 verified)\n⚠ "~/notes.txt" points at' +
         ' /home/deploy/notes.txt — the home of the login user, not root\'s.' +
         ' Pass an absolute path if you meant a different directory.'
     );
@@ -1155,7 +1172,7 @@ describe('раскрытие пути идёт с теми же правами',
   it('запись без sudo не жалуется на чужой домашний каталог', async () => {
     profile.config = { host: 'example.com', username: 'deploy', port: 22 };
     const text = await write({ files: { path: '~/notes.txt', content: 'hi\n' } });
-    expect(text).toBe('File written successfully: /home/deploy/notes.txt');
+    expect(text).toBe('File written successfully: /home/deploy/notes.txt (sha256 verified)');
   });
 });
 
@@ -1257,7 +1274,9 @@ describe('сводка записи', () => {
   });
 
   it('никто не просил сверять — это свой исход, а не сверка, которая прошла', async () => {
-    const [file] = (await summaryOf({ files: { path: '/srv/a.js', content: 'run();' } })).files;
+    const [file] = (
+      await summaryOf({ files: { path: '/srv/a.js', content: 'run();', verify: false } })
+    ).files;
 
     expect(file).toMatchObject({ verified: 'skipped', reason: null, written: true });
   });
@@ -1375,23 +1394,25 @@ describe('легенда записи', () => {
   });
 
   it('несделанная сверка объясняет своё слово', async () => {
-    const legend = await legendOf({ files: { path: '/srv/a.js', content: 'a' } });
+    const legend = await legendOf({
+      files: { path: '/srv/a.js', content: 'a', verify: false },
+    });
 
     expect(legend['files[].verified=skipped']).toContain('no comparison ran');
   });
 
   it('ключ называет поле внутри списка, а не голое слово', async () => {
-    expect(Object.keys(await legendOf({ files: { path: '/srv/a.js', content: 'a' } }))).toEqual([
-      'files[].verified=skipped',
-    ]);
+    expect(
+      Object.keys(await legendOf({ files: { path: '/srv/a.js', content: 'a', verify: false } }))
+    ).toEqual(['files[].verified=skipped']);
   });
 
   /** Пачка из трёх файлов с одним исходом — одна расшифровка, а не три */
   it('повторяющийся исход объясняется один раз', async () => {
     const legend = await legendOf({
       files: [
-        { path: '/srv/a.js', content: 'a' },
-        { path: '/srv/b.js', content: 'b' },
+        { path: '/srv/a.js', content: 'a', verify: false },
+        { path: '/srv/b.js', content: 'b', verify: false },
         { path: '/srv/c.js', content: 'c', verify: true },
       ],
     });

@@ -11,13 +11,17 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { SSHExecuteResult } from '../../src/managers/ssh-executor.js';
 
-const { executeMock } = vi.hoisted(() => ({ executeMock: vi.fn() }));
+const { executeMock, passportMock } = vi.hoisted(() => ({
+  executeMock: vi.fn(),
+  passportMock: vi.fn(),
+}));
 
 vi.mock('../../src/managers/ssh-executor.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/managers/ssh-executor.js')>();
   return {
     SSHExecutor: class {
       execute = executeMock;
+      passport = passportMock;
       executeChecked = actual.SSHExecutor.prototype.executeChecked;
     },
   };
@@ -37,9 +41,12 @@ vi.mock('../../src/utils/profile-resolver.js', () => ({
   getAvailableProfiles: () => ['production'],
 }));
 
+const { UNKNOWN_PASSPORT } = await import('../../src/runner/passport.js');
+
 const { FileTools } = await import('../../src/tools/file-tools.js');
 
 function respondWith(table: Array<[RegExp, Partial<SSHExecuteResult>]>): void {
+  passportMock.mockResolvedValue({ ...UNKNOWN_PASSPORT, known: true, sha256: 'sha256sum' });
   executeMock.mockImplementation(async (_config: unknown, command: string) => {
     const match = table.find(([pattern]) => pattern.test(command));
     if (match) return { stdout: '', stderr: '', exitCode: 0, ...match[1] };

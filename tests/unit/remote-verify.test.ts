@@ -181,6 +181,43 @@ describe('сверка: проверить нечем', () => {
     });
   });
 
+  it('успешная команда без единого хэша — «проверить нечем», а не «не сошлось»', async () => {
+    // Код 0 и пустой вывод: сервер ни на что не пожаловался и ничего не назвал.
+    // По расхождению установщик сносит целую копию, которой ничего не грозило
+    executeMock.mockResolvedValue(reply(''));
+
+    const outcome = await verifyRemoteFiles(
+      executor(),
+      CONFIG,
+      [
+        { path: '/srv/a', hash: HASH_ONE },
+        { path: '/srv/b', hash: HASH_TWO },
+      ],
+      { profileName: 'production' }
+    );
+
+    expect(outcome).toEqual({
+      status: 'unavailable',
+      reason: expect.stringContaining('named no hash at all'),
+    });
+  });
+
+  it('пожаловался и не назвал ни одного — файла нет, это расхождение', async () => {
+    // Тот же пустой вывод, но с жалобой: единственный запрошенный файл не найден
+    executeMock.mockResolvedValue(
+      reply('', { exitCode: 1, stderr: 'sha256sum: /srv/a: No such file or directory\n' })
+    );
+
+    const outcome = await verifyRemoteFiles(
+      executor(),
+      CONFIG,
+      [{ path: '/srv/a', hash: HASH_ONE }],
+      { profileName: 'production' }
+    );
+
+    expect(outcome).toEqual({ status: 'mismatched', paths: ['/srv/a'] });
+  });
+
   it('пустой список не выдаётся за успешную проверку', async () => {
     const outcome = await verifyRemoteFiles(executor(), CONFIG, [], { profileName: 'production' });
 

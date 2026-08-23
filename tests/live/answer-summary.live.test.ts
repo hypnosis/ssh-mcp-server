@@ -159,11 +159,23 @@ if (unavailable && LAB_REQUIRED) {
         await callTool('ssh_exec', { profile, command: `rm -f ${path}` });
       });
 
-      it('запись без просьбы сверять — отдельный исход, а не сверка, что прошла', async () => {
+      it('по умолчанию запись сверяется, о сверке не прося', async () => {
+        const path = `/tmp/summary-live-default-${Date.now()}.txt`;
+        const result = await callTool('ssh_file_write', {
+          profile,
+          files: { path, content: 'default probe\n' },
+        });
+
+        expect((result.structuredContent as any).files[0].verified).toBe('verified');
+
+        await callTool('ssh_exec', { profile, command: `rm -f ${path}` });
+      });
+
+      it('отказ от сверки — отдельный исход, а не сверка, что прошла', async () => {
         const path = `/tmp/summary-live-plain-${Date.now()}.txt`;
         const result = await callTool('ssh_file_write', {
           profile,
-          files: { path, content: 'plain\n' },
+          files: { path, content: 'plain\n', verify: false },
         });
 
         expect((result.structuredContent as any).files[0].verified).toBe('skipped');

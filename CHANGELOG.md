@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — a silent answer to the hash check no longer reads as a mismatch
+- A server that ran the hashing, complained about nothing and named no hash at all was
+  judged as a mismatch — and a mismatch makes the installer tear down the copy that had
+  already arrived intact. Three causes of an incomplete answer were handled (a cut buffer,
+  the timeout guard, an expired deadline); this fourth one fell straight through into the
+  comparison. It is now told apart from a real one: a complaint about a missing file still
+  means the file is not there, while silence means there was nothing to verify with, and the
+  copy stays where it is.
+
+### Changed — a written file is verified unless you say otherwise
+- `verify` on `ssh_file_write` now defaults to `true`, as it already did on `ssh_upload` and
+  `ssh_download`. One name meant one thing on transfers and the opposite on writes, and a
+  caller who read it once carried the wrong rule to the other tool: a config written to
+  `/etc` went unchecked while the answer looked the same as a checked one. Pass
+  `verify: false` for the old behaviour. Answers now carry the outcome where they used to
+  say nothing, and each write costs one more round trip on the machine.
+- The `files[].verified` field says in the schema which question it answers — how the check
+  ended, not whether the data landed — so `unavailable` is not read as a failed write before
+  the legend arrives with the answer.
+
+### Changed — every fact on the surface is said once, where it is read
+- Tool descriptions follow one shape: what it does, what the answer promises where it could
+  be read wrongly, and which neighbour to use instead. What a parameter governs — the
+  staging name and the rename, the copy in `/tmp`, a shell per command, the `since` window,
+  `owner` needing `sudo` — is written in that parameter and nowhere else, so the two cannot
+  drift apart. Descriptions went from 6 214 to 4 622 characters, the whole surface from
+  35 323 to 34 707, and the longest description from 480 to 397.
+- The server instructions now tell the pairs apart where both sides are in view, and say
+  that the password `sudo` asks for lives in the profile like every other secret — until now
+  that was mentioned only inside one parameter of one tool.
+
 ## [2.3.0] - 2026-08-21
 
 ### Added — a profile can answer sudo without a login password

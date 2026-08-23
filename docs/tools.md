@@ -355,7 +355,7 @@ ssh_file_write({
 
 | Flag | Default | What it does |
 |------|---------|---------------|
-| `verify` | `false` | Compute local sha256, compare against remote `sha256sum` (fallback `openssl dgst -sha256`) after write |
+| `verify` | `true` | Compute local sha256, compare against remote `sha256sum` (fallback `openssl dgst -sha256`) before the file takes its place. Pass `false` to skip it |
 | `atomic` | `true` (ignored) | Always on: writes to `.upload-<rand>.<name>` next to the target, then `mv -T` into place |
 | `binary` | `false` | `content` is base64; decoded and sent through the transfer runner. Use this for non-text payloads |
 

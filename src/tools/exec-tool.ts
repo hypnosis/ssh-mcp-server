@@ -182,12 +182,10 @@ export class ExecTool {
       name: 'ssh_exec',
       annotations: { title: 'Run commands', ...RUNS_COMMANDS },
       description:
-          'Runs one command or a list of them on a server and returns the exit code, stdout and stderr of ' +
-          'each. Every command gets its own shell, so a variable set or a directory entered in one is gone ' +
-          'in the next. Work measured in minutes should be detached rather than given a longer timeout: a ' +
-          'detached call returns a job id at once and outlives this request. Reach for it last — files, ' +
-          'logs, transfers, health and jobs each have a tool that batches the round trips and parses the ' +
-          'answer.',
+        'Runs one command or a list of them on a server, each with its own exit code, stdout and stderr. ' +
+        'Work measured in minutes belongs in detach, not in a longer timeout. ' +
+        'Reach for it last — files, logs, transfers, health and jobs each have a tool that batches the ' +
+        'round trips and parses the answer.',
       inputSchema: {
         type: 'object',
         properties: {

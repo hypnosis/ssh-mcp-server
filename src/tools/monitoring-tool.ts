@@ -93,18 +93,17 @@ export class MonitoringTool {
       name: 'ssh_monitor',
       annotations: { title: 'Manage connections', ...MANAGES_CONNECTION },
       description:
-        'Looks after the SSH connections, not the machines behind them: lists the configured profiles, ' +
-        'tests one and names the state (ready, limited, no-route, rejected), reports pool statistics, ' +
-        'closes a connection or reloads the profile file. Close and reload drop live connections; the ' +
-        'other actions only read. Start here on a machine you have not used yet — test says whether ' +
-        'anything else will work.',
+        'Looks after the SSH connections themselves, not the machines behind them: lists the configured ' +
+        'profiles, tests one, reports pool statistics, closes a connection or reloads the profile file. ' +
+        'Start here on a machine you have not used yet — test names the state before anything else runs.',
       inputSchema: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
             enum: ['stats', 'reload', 'test', 'list', 'close'],
-            description: 'Which of the five to do.'
+            description:
+              'Which of the five to do. close and reload drop live connections; the other three only read.'
           },
           profile: {
             type: 'string',

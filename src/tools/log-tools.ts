@@ -268,9 +268,7 @@ export class LogTools {
         annotations: { title: 'Tail a log file', ...READS_REMOTE },
         description:
           'Returns the last lines of one or more log files, whatever their size — nothing is shipped here ' +
-          'to be trimmed locally. Globs are expanded by the server\'s find rather than a shell, so a name ' +
-          'holding a space or a newline stays one path. To look for something instead of reading the end, ' +
-          'use ssh_log_search.',
+          'to be trimmed locally. To look for something rather than read the end, use ssh_log_search.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -296,10 +294,9 @@ export class LogTools {
         annotations: { title: 'Search log files', ...READS_REMOTE },
         description:
           'Greps log files on the server and returns the matching lines with their paths, or the paths ' +
-          'alone when line bodies are not wanted. An empty answer means no match, never a failed search: ' +
-          'files that could not be read are listed apart. A time window first skips files untouched in it ' +
-          'and then keeps only lines dated inside it, which is what lets a year of logs finish. For the ' +
-          'tail of a file, ssh_log_tail is cheaper.',
+          'alone when line bodies are not wanted. An empty answer means no match, never a failed search — ' +
+          'files that could not be read are listed apart. For the tail of a file rather than a search ' +
+          'through it, ssh_log_tail is cheaper.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -340,9 +337,9 @@ export class LogTools {
               type: 'string',
               description:
                 'Window: "today" | "2026-08-19" | "2h" | "3d", the day taken from the server. Skips ' +
-                'files untouched in it (count reported), then keeps only lines dated inside — ' +
-                '2026-08-19, Aug 19, 19/Aug/2026. Undated file: searched whole and named. Under a ' +
-                'day filters files, not lines.',
+                'files untouched in it (count reported). A window of a day or more then keeps only ' +
+                'lines dated inside — 2026-08-19, Aug 19, 19/Aug/2026; a shorter one filters files ' +
+                'and leaves their lines alone. Undated file: searched whole and named.',
             },
             from: {
               type: 'string',

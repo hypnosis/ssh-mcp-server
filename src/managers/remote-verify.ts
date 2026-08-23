@@ -79,10 +79,15 @@ export type VerifyOutcome =
  * a mismatch makes the installer tear down a tree that already made it to
  * the server.
  */
-type IncompleteAnswer = 'truncated' | 'guard-killed' | 'deadline';
+type IncompleteAnswer = 'truncated' | 'guard-killed' | 'deadline' | 'silent';
 
 function isIncomplete(answer: unknown): answer is IncompleteAnswer {
-  return answer === 'truncated' || answer === 'guard-killed' || answer === 'deadline';
+  return (
+    answer === 'truncated' ||
+    answer === 'guard-killed' ||
+    answer === 'deadline' ||
+    answer === 'silent'
+  );
 }
 
 /**
@@ -185,6 +190,7 @@ export async function verifyRemoteFiles(
 function incompleteReason(outcome: IncompleteAnswer): string {
   if (outcome === 'truncated') return 'the hashing output did not fit the transport buffer';
   if (outcome === 'guard-killed') return 'hashing was killed by the timeout guard on the server';
+  if (outcome === 'silent') return 'the hashing ran without complaint and named no hash at all';
   return 'the time allowed for verification ran out before all hashes were read';
 }
 
@@ -240,9 +246,15 @@ async function collectRemoteHashes(
     }
   };
 
+  /** Whether the server said anything at all: a run that spoke has judged the files */
+  let spoke = false;
+
   /** A non-zero exit code is normal: an unreadable file doesn't cancel the rest of the hashes */
-  const note = (exitCode: number, stderr: string) => {
-    if (exitCode !== 0) logger.debug(`[Verify] hashing reported exit ${exitCode}: ${stderr.trim()}`);
+  const note = (result: SSHExecuteResult) => {
+    if (result.stdout.length > 0 || result.exitCode !== 0) spoke = true;
+    if (result.exitCode !== 0) {
+      logger.debug(`[Verify] hashing reported exit ${result.exitCode}: ${result.stderr.trim()}`);
+    }
   };
 
   const listed = splitIntoCommands(
@@ -261,7 +273,7 @@ async function collectRemoteHashes(
     // would look like a mismatch, and a mismatch makes the installer tear
     // down a tree that already made it to the server
     if (result.truncated) return 'truncated';
-    note(result.exitCode, result.stderr);
+    note(result);
 
     for (const [path, hash] of parseHashOutput(result.stdout)) hashes.set(path, hash);
   }
@@ -273,11 +285,15 @@ async function collectRemoteHashes(
     if (result.exitCode === COMMAND_NOT_FOUND) return 'tool-missing';
     if (GUARD_KILLED_EXIT_CODES.includes(result.exitCode)) return 'guard-killed';
     if (result.truncated) return 'truncated';
-    note(result.exitCode, result.stderr);
+    note(result);
 
     const hash = hashOfSingleOutput(result.stdout, tool);
     if (hash) hashes.set(path, hash);
   }
+
+  // A run that printed nothing and complained about nothing has not judged the
+  // files at all: their names are missing an answer, not missing on disk
+  if (!spoke) return 'silent';
 
   return hashes;
 }

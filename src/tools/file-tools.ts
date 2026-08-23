@@ -94,15 +94,16 @@ const fileEntry = {
   },
   mode: {
     type: 'string',
-    description: 'Octal string, "644". Applied before the file takes its place.',
+    description: 'Octal string, "644", for this file alone. Applied before the file takes its place.',
   },
   sudo: {
     type: 'boolean',
-    description: 'Write as root — /etc and anywhere the profile user cannot write. Default: false',
+    description:
+      'Write as root, for this file alone — /etc and anywhere the profile user cannot write. Default: false',
   },
   verify: {
     type: 'boolean',
-    description: 'Compare sha256 before the file takes its place. Default: false',
+    description: 'Compare sha256 before the file takes its place. Default: true',
   },
   binary: {
     type: 'boolean',
@@ -139,11 +140,9 @@ export class FileTools {
         name: 'ssh_file_read',
         annotations: { title: 'Read a remote file', ...READS_REMOTE },
         description:
-          'Reads text files from a server, several of them in one call. A file too large or not text comes ' +
-          'back as a named failure rather than a partial file, and one unreadable path costs the others ' +
-          'nothing. Real binary should travel over the transport instead of the command channel, which has ' +
-          'a size limit. To look for something inside logs, ssh_log_search greps on the server rather than ' +
-          'shipping the file here.',
+          'Reads text files from a server, several of them in one call. A file it could not read is named ' +
+          'with the reason, never returned empty or cut short as if that were the content. To look for ' +
+          'something inside logs rather than read them, ssh_log_search greps on the server.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -190,10 +189,9 @@ export class FileTools {
         name: 'ssh_file_write',
         annotations: { title: 'Write a remote file', ...WRITES_REMOTE },
         description:
-          'Writes text files on a server, several in one call, each with its own permissions. Content lands ' +
-          'under a temporary name and takes its place in one rename, so a half-written file never appears ' +
-          'at the target, and an optional sha256 check confirms what arrived. A file is replaced whole; ' +
-          'there is no append. For something that already exists on this machine, use ssh_upload.',
+          'Writes text files on a server, several in one call, each with its own path, permissions and ' +
+          'sudo. A file is replaced whole and never appears half-written; there is no append. For ' +
+          'something that already exists on this machine, use ssh_upload.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -224,8 +222,8 @@ export class FileTools {
         annotations: { title: 'List a remote directory', ...READS_REMOTE },
         description:
           'Lists a directory on a server: every entry with its size, mode, owner and modification time. A ' +
-          'glob narrows the answer, and a recursive walk that hits the output limit says so instead of ' +
-          'returning a shortened list silently. To see what is inside a file, use ssh_file_read.',
+          'listing cut short by the output limit says so, never passes for the whole of it. To see what ' +
+          'is inside a file, use ssh_file_read.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -618,7 +616,7 @@ export class FileTools {
           ? this.stageByTransport(sshConfig, staging, buf, file.sudo)
           : this.stageByStdin(sshConfig, staging, buf, file.sudo),
       verify: async (staging) => {
-        if (!file.verify) return null;
+        if (file.verify === false) return null;
 
         const result = await verifyRemoteFiles(
           this.executor,

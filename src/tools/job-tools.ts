@@ -115,7 +115,9 @@ export class JobTools {
         name: 'ssh_job_status',
         annotations: { title: 'Check a background job', ...READS_REMOTE },
         description:
-          'Reports the state of a detached job, with the last lines it wrote so you can see where it got to. lost = no exit code, but ssh_job_output still has the output.',
+          'Reports the state of a detached job, with the last lines it wrote so you can see where it got ' +
+          'to. lost means no exit code was left behind, not that the work failed — ssh_job_output still ' +
+          'has the output.',
         inputSchema: {
           type: 'object',
           properties: { profile, id },
@@ -128,8 +130,8 @@ export class JobTools {
         annotations: { title: 'Read job output', ...READS_REMOTE },
         description:
           'Returns what a detached job has written so far, stdout and stderr together, from a byte offset ' +
-          'you choose. The answer names the next offset, so reading again never overlaps or skips a line. ' +
-          'For whether the job is still running, ssh_job_status answers in one line.',
+          'you choose. For whether the job is still running rather than what it printed, ssh_job_status ' +
+          'answers in one line.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -148,8 +150,8 @@ export class JobTools {
         name: 'ssh_job_list',
         annotations: { title: 'List background jobs', ...READS_REMOTE },
         description:
-          'Lists the detached jobs on a machine with their state, for when an id was not kept, jobs started ' +
-          'with sudo included. Ids and states only — for what a job printed, use ssh_job_output.',
+          'Lists the detached jobs on a machine with their state, jobs started with sudo included — for ' +
+          'when an id was not kept. Ids and states only; for what a job printed, use ssh_job_output.',
         inputSchema: {
           type: 'object',
           properties: { profile },
@@ -161,9 +163,8 @@ export class JobTools {
         name: 'ssh_job_kill',
         annotations: { title: 'Stop a background job', ...WRITES_REMOTE },
         description:
-          'Stops a detached job. The signal reaches the whole process group, so anything the job started ' +
-          'goes with it, and a job that already finished is reported as gone rather than refused. TERM is ' +
-          'the default; KILL is for a job that ignored it.',
+          'Stops a detached job and everything it started — the signal reaches the whole process group. ' +
+          'A job that had already finished is reported as gone, not as a refusal.',
         inputSchema: {
           type: 'object',
           properties: {

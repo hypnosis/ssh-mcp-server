@@ -12,10 +12,11 @@
 
 export const SERVER_INSTRUCTIONS = `SSH to configured machines. Every call names a profile; there is no default.
 
-Credentials — key, passphrase or password — live in the profiles and the server reads
-them itself. Never ask anyone for a secret; name the profile. When the person says "the
-server" without naming one, ask ssh_monitor action:list for the names instead of guessing:
-two profiles can point at the same address and differ only by name.
+Credentials — key, passphrase or password — live in the profiles and the server reads them
+itself, and so does the password sudo asks for where it asks for one.
+Never ask anyone for a secret; name the profile. When the person says "the server" without
+naming one, ask ssh_monitor action:list for the names instead of guessing: two profiles can
+point at the same address and differ only by name.
 
 On a machine you have not touched yet: ssh_monitor action:test first — it names the
 state (ready, limited, no-route, rejected) before anything else runs.
@@ -24,12 +25,14 @@ Which tool for which question:
   run something          ssh_exec — for what has no tool of its own
   slow work              ssh_exec detach:true, then ssh_job_status, ssh_job_output,
                          ssh_job_list, ssh_job_kill
-  logs, any text search   ssh_log_search, ssh_log_tail
-  files                   ssh_file_read, ssh_file_list, ssh_file_write
-  move bytes              ssh_upload, ssh_download
-  how it is doing         ssh_snapshot
-  how it is set up        ssh_audit_baseline, ssh_tls_check
-  something is wrong      ssh_service_status, ssh_disk_breakdown
+  logs, any text search   ssh_log_search to look for something, ssh_log_tail to read the end
+  files                   ssh_file_read to see inside, ssh_file_list to see what is there,
+                          ssh_file_write to put text there
+  move bytes              ssh_upload sends what is already on this machine, ssh_download fetches;
+                          text you can paste goes with ssh_file_write instead
+  how it is doing         ssh_snapshot — right now
+  how it is set up        ssh_audit_baseline — settings, not load; ssh_tls_check per domain
+  something is wrong      ssh_service_status for one unit, ssh_disk_breakdown for a full disk
   the connection          ssh_monitor
 
 Reach for the specific tool before ssh_exec: each batches round trips, parses the

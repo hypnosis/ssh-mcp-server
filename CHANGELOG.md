@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `ssh_file_list` answers in fields
+- A directory now comes back as entries with `name`, `type`, `size`, `mode`, `owner`,
+  `group`, `mtime` and, for a symlink, the path it points at — plus the schema that
+  declares them. Sizes are exact bytes and the time is a number, so nothing depends on how
+  `ls` rounded a size or whether it printed a year, and a name holding a newline stays one
+  name. Directories the walk was refused at are named in `unreadable` instead of being
+  quietly missing, which is the signal to repeat the call with `sudo: true`.
+- `pattern` is now matched by `find` on the machine rather than expanded by the server's
+  shell: a pattern that matches nothing is an empty list instead of a failed call.
+
 ### Added — `ssh_file_write` can set an owner
 - A file written as root now takes an `owner` too, per file, worded exactly as it is on
   `ssh_upload`. It is applied to the staging copy after the mode and before the rename, so
@@ -29,6 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   since the epoch).
 - `owner` on `ssh_upload` says "every file and directory sent": with `recursive` the
   ownership change walks the tree, directories included.
+
+### Fixed — an installed firewall no longer reads as one that is not there
+- Over SSH a regular user gets no `/usr/sbin` or `/sbin` on the PATH, so `ssh_audit_baseline`
+  could not find an installed `ufw` and reported it as not installed — and then warned that
+  incoming traffic was not filtered on a machine whose firewall was on. The audit now looks
+  in sbin as well, so an installed tool that refuses by permissions is reported as a refusal.
+- `include_sudo_sections` now covers every section that needs root, the firewall included,
+  and says so. Asking for `include: ["firewall"]` with the flag used to run without sudo at
+  all — the one case where it was asked for explicitly.
+- A refusal by permissions now says what removes it: without the flag, the answer names it;
+  with the flag already on, it says the rules are not readable even as root. The INPUT chain
+  policy and the docker nat rules used to say nothing at all when they were not readable —
+  and unread nat rules left "docker publishes nothing past the firewall" standing as a fact.
 
 ### Fixed — a silent answer to the hash check no longer reads as a mismatch
 - A server that ran the hashing, complained about nothing and named no hash at all was

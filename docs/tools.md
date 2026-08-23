@@ -409,11 +409,19 @@ ssh_file_read({
 ### `ssh_file_list` - List Files
 
 **Why not `ssh_exec` + `ls`.** Names, sizes, modes, owner and mtime come back as fields
-instead of a column layout that changes between BusyBox and coreutils.
+instead of a column layout that changes between BusyBox and coreutils. Sizes are exact
+bytes and mtime is a number, so nothing depends on how `ls` rounded a size or whether it
+printed a year. A symlink carries the path it points at.
 
-**Handy.** `pattern` is matched on the machine, so a wide directory is filtered before it
-travels. `recursive` walks the tree, and a tree too deep is cut at the output limit and
-says so rather than ending mid-way in silence.
+**Handy.** `pattern` is matched on the machine by `find`, so a wide directory is filtered
+before it travels, and a pattern matching nothing is an empty list rather than a failed
+call. `recursive` walks the tree and names every entry relative to the directory asked
+for; a tree too deep is cut at the output limit and says so rather than ending mid-way in
+silence.
+
+**Trap.** A directory the walk was not allowed to enter is named in `unreadable` instead
+of being skipped — a listing short by exactly the interesting directory reads as a
+complete one. That is the signal to repeat with `sudo: true`.
 
 
 ```typescript

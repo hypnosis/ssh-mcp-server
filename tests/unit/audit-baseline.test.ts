@@ -832,6 +832,25 @@ describe('ssh_audit_baseline: межсетевой экран', () => {
 
     expect(parsed.firewall.iptables).toEqual({ status: 'no_access' });
   });
+
+  /**
+   * Слово исхода решает, что читатель подумает о сервере, и объясняется оно
+   * только легендой. Экрана два, и каждый объясняет себя сам: расшифровка
+   * одного не годится для другого, они бывают в разных состояниях.
+   */
+  it('каждый экран объясняет своё слово, и объяснения не путаются', async () => {
+    const legend = structure(await baseline({ ufw: 'NO_UFW', iptables: 'permission denied' })).legend;
+
+    expect(legend['firewall.ufw.status=not_installed']).toContain('absent from the server');
+    expect(legend['firewall.iptables.status=no_access']).toContain('needs root');
+    expect(legend['firewall.ufw.status=no_access']).toBeUndefined();
+  });
+
+  it('без раздела экранов легенда о них молчит', async () => {
+    const legend = structure(await baseline({}, { include: ['system'] })).legend;
+
+    expect(Object.keys(legend).filter((key) => key.startsWith('firewall.'))).toEqual([]);
+  });
 });
 
 describe('ssh_audit_baseline: сводка для чтения', () => {

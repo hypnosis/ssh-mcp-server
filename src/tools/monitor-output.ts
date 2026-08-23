@@ -9,7 +9,7 @@
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { PingResult, PingState } from '../runner/types.js';
-import { legendFor, LEGEND_SCHEMA, type Legend } from './legend.js';
+import { legendFor, LEGEND_SCHEMA, meaningsList, type Legend } from './legend.js';
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
 
@@ -83,7 +83,11 @@ export const MONITOR_OUTPUT_SCHEMA: OutputSchema = {
   properties: {
     action: { type: 'string', enum: ['stats', 'reload', 'test', 'list', 'close'] },
     profile: { type: ['string', 'null'] },
-    state: { type: ['string', 'null'], enum: ['ready', 'limited', 'no-route', 'rejected', null] },
+    state: {
+      type: ['string', 'null'],
+      enum: ['ready', 'limited', 'no-route', 'rejected', null],
+      description: `${meaningsList(STATE_MEANING)} null — nothing was checked: only the test action reaches the server.`,
+    },
     latency_ms: { type: ['number', 'null'] },
     exit_code: { type: ['number', 'null'] },
     profiles: { type: 'array', items: { type: 'string' } },

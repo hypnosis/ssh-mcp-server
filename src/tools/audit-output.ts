@@ -9,6 +9,7 @@
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { DuEntry } from '../utils/du-lines.js';
+import { legendFor, LEGEND_SCHEMA, meaningsList, type Legend } from './legend.js';
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
 
@@ -62,6 +63,7 @@ export interface BaselineResult {
    */
   unavailable: string[];
   red_flags: { critical: string[]; warning: string[]; ok: string[] };
+  legend: Legend;
 }
 
 /**
@@ -125,6 +127,7 @@ export interface DiskBreakdownResult {
 export interface ServiceStatusResult {
   unit: string;
   outcome: 'checked' | 'no_systemd' | 'no_unit';
+  legend: Legend;
   enabled: string | null;
   active_state: string | null;
   sub_state: string | null;
@@ -137,6 +140,40 @@ export interface ServiceStatusResult {
 const STRING_LIST = { type: 'array', items: { type: 'string' } };
 
 const FIREWALL_STATUS = ['not_installed', 'no_access', 'read'];
+
+type FirewallStatus = 'not_installed' | 'no_access' | 'read';
+type ServiceOutcome = 'checked' | 'no_systemd' | 'no_unit';
+
+/** What each firewall status says about the rules that were or were not seen */
+const FIREWALL_MEANING: Record<FirewallStatus, string> = {
+  not_installed: 'the tool is absent from the server, so it filters nothing here',
+  no_access: 'the tool is there, but reading its rules needs root: what it allows is unknown',
+  read: 'the rules were read, and the fields beside this one come from them',
+};
+
+/** What each outcome says about the service that was asked about */
+const SERVICE_MEANING: Record<ServiceOutcome, string> = {
+  checked: 'systemd answered, and the fields below carry its measurement',
+  no_systemd: 'there was nobody to ask on this server, so the service was not measured',
+  no_unit: 'systemd knows no such unit, which is not the same as a unit that is stopped',
+};
+
+/**
+ * Words this baseline used, explained: a firewall nobody was allowed to read
+ * looks in the report exactly like one that filters nothing.
+ */
+export function baselineLegend(firewall: BaselineResult['firewall']): Legend {
+  if (!firewall) return {};
+  return {
+    ...legendFor('firewall.ufw.status', FIREWALL_MEANING, [firewall.ufw.status]),
+    ...legendFor('firewall.iptables.status', FIREWALL_MEANING, [firewall.iptables.status]),
+  };
+}
+
+/** The one word that says whether anything below it was measured at all */
+export function serviceLegend(outcome: ServiceOutcome): Legend {
+  return legendFor('outcome', SERVICE_MEANING, [outcome]);
+}
 
 export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
   type: 'object',
@@ -227,7 +264,11 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
         ufw: {
           type: 'object',
           properties: {
-            status: { type: 'string', enum: FIREWALL_STATUS },
+            status: {
+              type: 'string',
+              enum: FIREWALL_STATUS,
+              description: meaningsList(FIREWALL_MEANING),
+            },
             active: { type: 'boolean' },
             text: { type: 'string' },
           },
@@ -235,7 +276,11 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
         iptables: {
           type: 'object',
           properties: {
-            status: { type: 'string', enum: FIREWALL_STATUS },
+            status: {
+              type: 'string',
+              enum: FIREWALL_STATUS,
+              description: meaningsList(FIREWALL_MEANING),
+            },
             rules: { type: 'number' },
           },
         },
@@ -253,6 +298,7 @@ export const BASELINE_OUTPUT_SCHEMA: OutputSchema = {
       type: 'object',
       properties: { critical: STRING_LIST, warning: STRING_LIST, ok: STRING_LIST },
     },
+    legend: LEGEND_SCHEMA,
   },
 };
 
@@ -320,7 +366,11 @@ export const SERVICE_STATUS_OUTPUT_SCHEMA: OutputSchema = {
   type: 'object',
   properties: {
     unit: { type: 'string' },
-    outcome: { type: 'string', enum: ['checked', 'no_systemd', 'no_unit'] },
+    outcome: {
+      type: 'string',
+      enum: ['checked', 'no_systemd', 'no_unit'],
+      description: meaningsList(SERVICE_MEANING),
+    },
     enabled: { type: ['string', 'null'] },
     active_state: { type: ['string', 'null'] },
     sub_state: { type: ['string', 'null'] },
@@ -328,5 +378,6 @@ export const SERVICE_STATUS_OUTPUT_SCHEMA: OutputSchema = {
     restart_after: { type: ['string', 'null'] },
     status_head: { type: 'string' },
     recent_log: { type: 'string' },
+    legend: LEGEND_SCHEMA,
   },
 };

@@ -9,7 +9,7 @@
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { JobState } from '../utils/job-command.js';
-import { legendFor, LEGEND_SCHEMA, type Legend } from './legend.js';
+import { legendFor, LEGEND_SCHEMA, meaningsList, type Legend } from './legend.js';
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
 
@@ -80,10 +80,17 @@ export const JOBS_OUTPUT_SCHEMA: OutputSchema = {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          state: { type: 'string', enum: ['running', 'finished', 'lost', 'missing'] },
+          state: {
+            type: 'string',
+            enum: ['running', 'finished', 'lost', 'missing'],
+            description: meaningsList(STATE_MEANING),
+          },
           exit_code: { type: ['number', 'null'] },
           pid: { type: ['number', 'null'] },
-          started_at: { type: ['number', 'null'] },
+          started_at: {
+            type: ['number', 'null'],
+            description: 'Seconds since the epoch; null — the server did not record it.',
+          },
           output_tail: { type: 'array', items: { type: 'string' } },
         },
       },
@@ -157,8 +164,16 @@ export const KILL_OUTPUT_SCHEMA: OutputSchema = {
   type: 'object',
   properties: {
     id: { type: 'string' },
-    outcome: { type: 'string', enum: ['signalled', 'gone', 'nopid', 'missing', 'no-answer'] },
-    signal: { type: 'string', enum: ['TERM', 'KILL'] },
+    outcome: {
+      type: 'string',
+      enum: ['signalled', 'gone', 'nopid', 'missing', 'no-answer'],
+      description: meaningsList(KILL_MEANING),
+    },
+    signal: {
+      type: 'string',
+      enum: ['TERM', 'KILL'],
+      description: 'What was actually sent, which is not always what was asked for.',
+    },
     reason: { type: ['string', 'null'] },
     legend: LEGEND_SCHEMA,
   },

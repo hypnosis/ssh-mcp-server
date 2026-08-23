@@ -127,6 +127,37 @@ if (unavailable && LAB_REQUIRED) {
         expect(await asRoot(`stat -c '%U' '${target}' 2>/dev/null || stat -f '%Su' '${target}'`)).toBe('root');
       });
 
+      it('запись под sudo ставит заказанного владельца, а не только права', async () => {
+        const target = `${guardedDir}/owned.conf`;
+
+        await call(files, 'ssh_file_write', {
+          profile: server.name,
+          files: [{ path: target, content: 'ключ=значение\n', sudo: true, mode: '640', owner: 'daemon:daemon' }],
+        });
+
+        expect(
+          await asRoot(`stat -c '%a %U:%G' '${target}' 2>/dev/null || stat -f '%Lp %Su:%Sg' '${target}'`)
+        ).toBe('640 daemon:daemon');
+      });
+
+      it('владелец без sudo не выдаётся за поставленного', async () => {
+        // Пишем туда, где права пользователя есть: отказ по каталогу скрыл бы
+        // именно то, что проверяется — владелец не встал, а файл на месте
+        const target = `/tmp/owner-no-sudo-${server.port}.conf`;
+
+        const answer = JSON.stringify(
+          await call(files, 'ssh_file_write', {
+            profile: server.name,
+            files: [{ path: target, content: 'ключ=значение\n', owner: 'root:root' }],
+          })
+        );
+
+        expect(answer).toContain('owner was NOT applied');
+        expect(await asRoot(`cat '${target}'`)).toBe('ключ=значение');
+        expect(await asRoot(`stat -c '%U' '${target}' 2>/dev/null || stat -f '%Su' '${target}'`)).toBe('deploy');
+        await asRoot(`rm -f '${target}'`);
+      });
+
       it('чтение под sudo отдаёт файл, закрытый для пользователя профиля', async () => {
         const secretFile = `${guardedDir}/secret.txt`;
         await asRoot(`printf 'только для root\n' > '${secretFile}' && chmod 600 '${secretFile}'`);

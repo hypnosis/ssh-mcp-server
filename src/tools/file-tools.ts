@@ -16,6 +16,7 @@ import {
   failedFile,
   FILES_OUTPUT_SCHEMA,
   filesSummary,
+  OWNER_NEEDS_SUDO,
   writtenFile,
 } from './transfer-output.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
@@ -28,7 +29,7 @@ import { install } from '../managers/installer.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
 import { resolveRemotePath, type ExpandedPath } from '../managers/path-guard.js';
 import { buildSudoStagingPath } from '../utils/tmp-name.js';
-import { shellGlob, shellMode, shellQuote } from '../utils/shell-arg.js';
+import { shellGlob, shellMode, shellOwner, shellQuote } from '../utils/shell-arg.js';
 import { requireEntryList, requireText, requireTextList } from '../utils/tool-args.js';
 import {
   binaryReadMessage,
@@ -100,6 +101,12 @@ const fileEntry = {
     type: 'boolean',
     description:
       'Write as root, for this file alone — /etc and anywhere the profile user cannot write. Default: false',
+  },
+  owner: {
+    type: 'string',
+    description:
+      '"root:root", for this file alone. Set before the file takes its place. Needs sudo; ' +
+      'without it the answer says it was not applied.',
   },
   verify: {
     type: 'boolean',
@@ -189,8 +196,8 @@ export class FileTools {
         name: 'ssh_file_write',
         annotations: { title: 'Write a remote file', ...WRITES_REMOTE },
         description:
-          'Writes text files on a server, several in one call, each with its own path, permissions and ' +
-          'sudo. A file is replaced whole and never appears half-written; there is no append. For ' +
+          'Writes text files on a server, several in one call, each with its own path, permissions, ' +
+          'owner and sudo. A file is replaced whole and never appears half-written; there is no append. For ' +
           'something that already exists on this machine, use ssh_upload.',
         inputSchema: {
           type: 'object',
@@ -583,6 +590,7 @@ export class FileTools {
       content: string;
       mode?: string;
       sudo?: boolean;
+      owner?: string;
       verify?: boolean;
       binary?: boolean;
     },
@@ -593,15 +601,18 @@ export class FileTools {
       ? Buffer.from(file.content || '', 'base64')
       : Buffer.from(file.content || '', 'utf8');
 
-    // Mode is validated before the first command: a refusal halfway through
-    // would leave behind a staging path and a write nobody asked for
+    // Mode and owner are validated before the first command: a refusal halfway
+    // through would leave behind a staging path and a write nobody asked for
     const mode = file.mode ? shellMode(file.mode, 'mode') : undefined;
+    const owner = file.owner ? shellOwner(file.owner, 'owner') : undefined;
 
     const expectedHash = sha256OfBuffer(buf);
     // The verification outcome travels into the response: without it,
     // "matched" and "nothing to verify with" both look to the client like an
     // equally successful write
     let verification: VerificationOutcome = { status: 'skipped' };
+    /** A named owner that chown could not take: the file lands anyway, and silence would hide it */
+    let ownerWarnings: string[] = [];
     const ops = remotePathOps({
       executor: this.executor,
       config: sshConfig,
@@ -641,18 +652,34 @@ export class FileTools {
         return null;
       },
       finalize: async (staging) => {
-        if (!mode) return;
+        if (mode) {
+          await this.executor.executeChecked(
+            sshConfig,
+            `chmod ${mode} -- ${shellQuote(staging)}`,
+            { sudo: file.sudo }
+          );
+        }
+
+        if (!owner) return;
+
+        // Under a regular user chown refuses any name but its own, and a
+        // dropped owner is visible only in `ls -l` on the server
+        if (!file.sudo) {
+          ownerWarnings = [OWNER_NEEDS_SUDO];
+          return;
+        }
+
         await this.executor.executeChecked(
           sshConfig,
-          `chmod ${mode} -- ${shellQuote(staging)}`,
-          { sudo: file.sudo }
+          `chown ${owner} -- ${shellQuote(staging)}`,
+          { sudo: true }
         );
       },
     });
 
     return {
       path: outcome.path,
-      warnings: [...target.warnings, ...outcome.warnings],
+      warnings: [...target.warnings, ...outcome.warnings, ...ownerWarnings],
       verification,
     };
   }

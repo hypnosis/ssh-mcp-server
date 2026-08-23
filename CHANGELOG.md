@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `ssh_file_write` can set an owner
+- A file written as root now takes an `owner` too, per file, worded exactly as it is on
+  `ssh_upload`. It is applied to the staging copy after the mode and before the rename, so
+  the live path never shows the file under the wrong owner. Without `sudo` the file still
+  lands and the answer says the owner was not applied — the work is done, only part of it
+  is not. Setting an owner after a write no longer needs a separate `ssh_exec chown`.
+
+### Changed — the words an answer uses are explained before the call, not only after it
+- Every enum field in an answer schema now names all of its values and what each one means:
+  `jobs[].state`, the outcome of stopping a job, the outcome of reading a service, both
+  firewall screens, and the verification outcome of a write or transfer. The legend still
+  travels with the answer; both are built from one dictionary, so they cannot drift apart.
+  Measured on clean agents planning work against the surface alone: without this, five to
+  six values per run were ones the agent said outright it could not read — including
+  `limited`, which it was about to act on while warning it did not know what it meant.
+- `ssh_audit_baseline` and `ssh_service_status` carry a legend at all now. Their firewall
+  and service outcomes used to be explained neither in the schema nor in the answer.
+- Two fields say what they are: `files[].written` (permissions and owner are a separate
+  matter — one that did not apply is named in `reason`) and `jobs[].started_at` (seconds
+  since the epoch).
+- `owner` on `ssh_upload` says "every file and directory sent": with `recursive` the
+  ownership change walks the tree, directories included.
+
 ### Fixed — a silent answer to the hash check no longer reads as a mismatch
 - A server that ran the hashing, complained about nothing and named no hash at all was
   judged as a mismatch — and a mismatch makes the installer tear down the copy that had

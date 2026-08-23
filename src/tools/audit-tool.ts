@@ -29,11 +29,13 @@ import { parseDuLines, type DuEntry } from '../utils/du-lines.js';
 import {
   BASELINE_OUTPUT_SCHEMA,
   TLS_CHECK_OUTPUT_SCHEMA,
+  baselineLegend,
   type BaselineResult,
   type TlsCheckResult,
   DISK_BREAKDOWN_OUTPUT_SCHEMA,
   SERVICE_STATUS_OUTPUT_SCHEMA,
   type DiskBreakdownResult,
+  serviceLegend,
   type ServiceStatusResult,
 } from './audit-output.js';
 
@@ -445,6 +447,7 @@ export class AuditTool {
     const result: BaselineResult = {
       unavailable,
       red_flags: { critical: [], warning: [], ok: [] },
+      legend: {},
     };
 
     if (include.has('system')) {
@@ -645,6 +648,8 @@ export class AuditTool {
       result.red_flags.warning.push('reboot-required pending');
     if (result.updates && result.updates.upgradable > 50)
       result.red_flags.warning.push(`${result.updates.upgradable} upgradable packages`);
+
+    result.legend = baselineLegend(result.firewall);
 
     return result;
   }
@@ -1225,9 +1230,10 @@ export class AuditTool {
     // machine and a missing unit leave the fields empty, because a stopped
     // service and an unmeasured one must not look the same
     const measured = !noSystemd && !unknownUnit;
+    const outcome = noSystemd ? 'no_systemd' : unknownUnit ? 'no_unit' : 'checked';
     const result: ServiceStatusResult = {
       unit,
-      outcome: noSystemd ? 'no_systemd' : unknownUnit ? 'no_unit' : 'checked',
+      outcome,
       enabled: measured && /^[a-z-]+$/.test(out.is_enabled) ? out.is_enabled : null,
       active_state: measured ? out.props.ActiveState || null : null,
       sub_state: measured ? out.props.SubState || null : null,
@@ -1235,6 +1241,7 @@ export class AuditTool {
       restart_after: measured ? out.props.RestartUSec || null : null,
       status_head: out.status_head,
       recent_log: out.recent_log,
+      legend: serviceLegend(outcome),
     };
 
     return { content: [{ type: 'text', text }], structuredContent: result };

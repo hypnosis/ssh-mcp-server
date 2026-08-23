@@ -219,6 +219,17 @@ function answer(command: string, options?: SSHExecuteOptions): SSHExecuteResult 
     return ok();
   }
 
+  if (command.startsWith('chown ')) {
+    // Под обычным пользователем chown отказывает на чужом имени — тихого успеха тут не бывает
+    if (options?.sudo !== true) return fail(`chown: ${paths[0]}: Operation not permitted`);
+    const owner = command.replace(/^chown (-R )?/, '').split(' ')[0];
+    if (!/^[A-Za-z0-9_.][A-Za-z0-9_.-]*(:[A-Za-z0-9_.][A-Za-z0-9_.-]*)?$/.test(owner)) {
+      return fail(`chown: invalid user: '${owner}'`);
+    }
+    if (!server.has(paths[0])) return fail(`chown: cannot access '${paths[0]}'`);
+    return ok();
+  }
+
   // Наполнение файла: содержимое приходит байтами на вход команды
   if (command.startsWith('cat > ')) {
     if (!server.has(parentOf(paths[0]))) {
@@ -423,7 +434,7 @@ describe('объявление инструментов', () => {
 
   it('у записи объявлены все флаги, которые инструмент умеет читать', () => {
     const [single, many] = (toolNamed('ssh_file_write').inputSchema as any).properties.files.oneOf;
-    const flags = ['path', 'content', 'mode', 'sudo', 'verify', 'binary'];
+    const flags = ['path', 'content', 'mode', 'sudo', 'owner', 'verify', 'binary'];
     expect(Object.keys(single.properties)).toEqual(flags);
     expect(Object.keys(many.items.properties)).toEqual(flags);
   });
@@ -1038,6 +1049,47 @@ describe('ssh_file_write: что именно уезжает на сервер',
     expect(sentCommands().findIndex(([c]) => c.startsWith('chmod '))).toBeLessThan(
       sentCommands().findIndex(([c]) => c.startsWith('mv -T'))
     );
+  });
+
+  it('владелец ставится по временному пути под sudo, до замены и после прав', async () => {
+    await write({
+      files: { path: '/etc/app.conf', content: 'key=value\n', mode: '640', owner: 'www-data:www-data', sudo: true },
+    });
+    const [command, options] = commandFor(/^chown /)!;
+    const staging = quotedPaths(command)[0];
+    expect(command).toBe(`chown www-data:www-data -- '${staging}'`);
+    expect(staging).toMatch(/^\/etc\/\.upload-[0-9a-f]+\.app\.conf$/);
+    expect(options.sudo).toBe(true);
+
+    const order = (prefix: string) => sentCommands().findIndex(([c]) => c.startsWith(prefix));
+    expect(order('chmod ')).toBeLessThan(order('chown '));
+    expect(order('chown ')).toBeLessThan(order('mv -T'));
+  });
+
+  it('владелец без sudo не отправляется на сервер, а называется в ответе', async () => {
+    const text = await write({
+      files: { path: '/srv/app.conf', content: 'key=value\n', owner: 'www-data:www-data' },
+    });
+    expect(commandFor(/^chown /)).toBeUndefined();
+    expect(text).toContain('owner was NOT applied');
+    expect(server.has('/srv/app.conf')).toBe(true);
+  });
+
+  it('без владельца команда chown не отправляется вовсе', async () => {
+    const text = await write({ files: { path: '/etc/app.conf', content: 'key=value\n', sudo: true } });
+    expect(commandFor(/^chown /)).toBeUndefined();
+    // Предупреждение о владельце появляется только там, где владельца просили:
+    // приписанное к обычной записи, оно отправит читателя чинить исправное
+    expect(text).not.toContain('⚠');
+  });
+
+  it('негодное имя владельца отвергается до первой команды на сервере', async () => {
+    const text = await write({
+      files: { path: '/etc/app.conf', content: 'a', owner: 'root; rm -rf /', sudo: true },
+    });
+    expect(text).toContain('owner');
+    expect(sentCommands().filter(([c]) => c.startsWith('cat > '))).toHaveLength(0);
+    expect(server.has('/etc/app.conf')).toBe(false);
   });
 
   it('пустое содержимое даёт пустой файл, а не ошибку и не выдумку', async () => {

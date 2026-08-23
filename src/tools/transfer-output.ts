@@ -10,11 +10,18 @@
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { legendFor, LEGEND_SCHEMA, type Legend } from './legend.js';
+import { legendFor, LEGEND_SCHEMA, meaningsList, type Legend } from './legend.js';
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
 
 export type VerifiedOutcome = 'verified' | 'unavailable' | 'skipped';
+
+/**
+ * The owner is set by `chown`, and under a regular user it refuses on a name
+ * that isn't its own. Worded once for both tools that take an owner.
+ */
+export const OWNER_NEEDS_SUDO =
+  'owner was NOT applied: chown needs sudo — the file belongs to the connecting user';
 
 /** What each verification outcome says about the copy that was left behind */
 const VERIFIED_MEANING: Record<VerifiedOutcome, string> = {
@@ -24,12 +31,12 @@ const VERIFIED_MEANING: Record<VerifiedOutcome, string> = {
 };
 
 /**
- * Says which question the field answers, and leaves the values to the legend:
- * an outcome read as a failed write sends a caller undoing a sound one.
+ * Names the question the field answers, then the words it answers with: an
+ * outcome read as a failed write sends a caller undoing a sound one.
  */
 const VERIFIED_FIELD_DESCRIPTION =
   'How the sha256 check ended, not whether the data landed — written says that. ' +
-  'Only "verified" means compared and matched; the legend names what the others were.';
+  meaningsList(VERIFIED_MEANING);
 
 export interface FileSummary {
   /** Where the data went on the server, after the tilde and the rules were applied */
@@ -115,7 +122,12 @@ export const FILES_OUTPUT_SCHEMA: OutputSchema = {
         type: 'object',
         properties: {
           path: { type: 'string' },
-          written: { type: 'boolean' },
+          written: {
+            type: 'boolean',
+            description:
+              'Whether the data reached the path. Permissions and owner are a separate matter: ' +
+              'one that did not apply is named in reason, and written stays true.',
+          },
           verified: {
             type: 'string',
             enum: ['verified', 'unavailable', 'skipped'],

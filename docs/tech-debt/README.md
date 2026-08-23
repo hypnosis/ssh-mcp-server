@@ -42,8 +42,10 @@
 | TD-30 | Каталог доставляется только заменой целиком | 🔹 отложено, в следующий спринт | [directory-upload-replaces-whole_30.md](directory-upload-replaces-whole_30.md) |
 | TD-31 | Легенда ответа объявлена, но правило её ключей нигде не сказано | ✅ закрыт 2026-08-21 | [archive/legend-keys-not-declared_31.md](archive/legend-keys-not-declared_31.md) |
 | TD-32 | Поверхность читают кусками, и связи между кусками не держатся | ✅ закрыт 2026-08-23 | [archive/surface-read-in-pieces_32.md](archive/surface-read-in-pieces_32.md) |
-| TD-33 | Слова ответа объяснены только в ответе, а решение принимается до него | 🔹 отложено, нужно решение о значениях в схеме | [answer-words-explained-too-late_33.md](answer-words-explained-too-late_33.md) |
-| TD-34 | Записать файл можно, назначить ему владельца — нет | 🔹 отложено, недостающая возможность | [write-cannot-set-an-owner_34.md](write-cannot-set-an-owner_34.md) |
+| TD-33 | Слова ответа объяснены только в ответе, а решение принимается до него | ✅ закрыт 2026-08-23 | [archive/answer-words-explained-too-late_33.md](archive/answer-words-explained-too-late_33.md) |
+| TD-34 | Записать файл можно, назначить ему владельца — нет | ✅ закрыт 2026-08-23 | [archive/write-cannot-set-an-owner_34.md](archive/write-cannot-set-an-owner_34.md) |
+| TD-35 | Список файлов обещан полями, а приезжает текстом | 🔹 отложено, недостающая схема | [list-answers-without-a-schema_35.md](list-answers-without-a-schema_35.md) |
+| TD-36 | Экран не прочитан, и поднять права нечем | 🔹 отложено, названная дыра в аудите | [firewall-unreadable-and-unfixable_36.md](firewall-unreadable-and-unfixable_36.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.
 

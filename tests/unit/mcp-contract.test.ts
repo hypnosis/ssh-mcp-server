@@ -162,6 +162,7 @@ describe('Обещанные поля ответа', () => {
       'restart_after',
       'status_head',
       'recent_log',
+      'legend',
     ]);
     expect(schema.properties.outcome.enum).toEqual(['checked', 'no_systemd', 'no_unit']);
   });

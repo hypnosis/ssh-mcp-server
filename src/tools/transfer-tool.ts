@@ -33,7 +33,12 @@ import { buildSudoStagingPath } from '../utils/tmp-name.js';
 import { shellMode, shellOwner, shellQuote } from '../utils/shell-arg.js';
 import { requireText } from '../utils/tool-args.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
-import { FILES_OUTPUT_SCHEMA, filesSummary, transferredFile } from './transfer-output.js';
+import {
+  FILES_OUTPUT_SCHEMA,
+  filesSummary,
+  OWNER_NEEDS_SUDO,
+  transferredFile,
+} from './transfer-output.js';
 
 interface UploadFileResult {
   remote_path: string;
@@ -79,10 +84,6 @@ async function statLocal(path: string) {
 function formatWarnings(warnings: string[]): string {
   return warnings.length > 0 ? `\n  warnings:\n${warnings.map((w) => `    - ${w}`).join('\n')}` : '';
 }
-
-/** The owner is set by `chown`, and under a regular user it refuses on a name that isn't its own */
-const OWNER_NEEDS_SUDO =
-  'owner was NOT applied: chown needs sudo — the file belongs to the connecting user';
 
 /**
  * The largest timeout Node's timer can wait for (~24.8 days).
@@ -221,7 +222,7 @@ export class TransferTool {
             owner: {
               type: 'string',
               description:
-                '"root:root", every file sent. Needs sudo; without it the answer says it was not applied.',
+                '"root:root", every file and directory sent. Needs sudo; without it the answer says it was not applied.',
             },
             overwrite: {
               type: 'boolean',

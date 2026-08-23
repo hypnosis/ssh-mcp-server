@@ -311,8 +311,10 @@ ssh_file_read({
 name and moves into place with one rename, so a whole copy exists at every moment. With
 `verify` the sha256 is compared afterwards, which a heredoc cannot do.
 
-**Handy.** `mode` and `sudo` are decided per file, not per call, so one call can drop a
-config into `/etc` as root and a script into a home directory as the profile user.
+**Handy.** `mode`, `owner` and `sudo` are decided per file, not per call, so one call can
+drop a config into `/etc` as root and a script into a home directory as the profile user.
+Permissions and ownership are set on the staging copy, before it takes the target's place —
+the live path never shows the file under the wrong owner.
 
 **Trap.** `verified: "unavailable"` means the machine has no `sha256sum` — the file was
 delivered, not damaged. Treating it as a failure is how a good write gets rolled back.
@@ -358,6 +360,7 @@ ssh_file_write({
 | `verify` | `true` | Compute local sha256, compare against remote `sha256sum` (fallback `openssl dgst -sha256`) before the file takes its place. Pass `false` to skip it |
 | `atomic` | `true` (ignored) | Always on: writes to `.upload-<rand>.<name>` next to the target, then `mv -T` into place |
 | `binary` | `false` | `content` is base64; decoded and sent through the transfer runner. Use this for non-text payloads |
+| `owner` | — | `"root:root"`, for this file alone. Needs `sudo`; without it the file still lands, and the answer says the owner was not applied |
 
 ```typescript
 // Verified atomic config write (text)
@@ -367,6 +370,7 @@ ssh_file_write({
     path: "/etc/nginx/conf.d/app.conf",
     content: "server { listen 80; }\n",
     mode: "644",
+    owner: "root:root",
     sudo: true,
     atomic: true,
     verify: true

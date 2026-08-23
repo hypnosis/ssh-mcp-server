@@ -36,6 +36,20 @@ export function legendFor<Value extends string>(
   return legend;
 }
 
+/**
+ * The same meanings, written into the declaration the caller reads before
+ * calling anything.
+ *
+ * The legend answers a caller holding an answer; a caller building a plan
+ * holds none. Both are fed from one dictionary, so a value can never be
+ * explained one way in the schema and another way in the answer.
+ */
+export function meaningsList<Value extends string>(meanings: Record<Value, string>): string {
+  return `${Object.entries(meanings)
+    .map(([value, meaning]) => `${value} — ${meaning as string}`)
+    .join('; ')}.`;
+}
+
 /** Declared with every summary, empty where there was nothing to explain */
 export const LEGEND_SCHEMA: OutputSchema = {
   type: 'object',

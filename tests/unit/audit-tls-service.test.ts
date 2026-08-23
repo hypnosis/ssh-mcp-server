@@ -369,6 +369,32 @@ describe('ssh_service_status', () => {
   });
 
   /**
+   * Пустые поля рядом со словом исхода читаются как остановленная служба, если
+   * слово не объяснено. Объясняется только то, что в этом ответе и случилось.
+   */
+  it('исход объяснён легендой, и только тот, который случился', async () => {
+    const result = await parsed(
+      'ssh_service_status',
+      { unit: 'nginx.service' },
+      serverAnswer(SVC_SEP, { is_enabled: 'System has not been booted with systemd' })
+    );
+
+    expect(result.legend['outcome=no_systemd']).toContain('not measured');
+    expect(result.legend['outcome=checked']).toBeUndefined();
+  });
+
+  it('измеренная служба объясняет своё слово, а не чужое', async () => {
+    const result = await parsed(
+      'ssh_service_status',
+      { unit: 'nginx.service' },
+      serverAnswer(SVC_SEP, { is_enabled: 'enabled' })
+    );
+
+    expect(result.legend['outcome=checked']).toContain('systemd answered');
+    expect(result.legend['outcome=no_systemd']).toBeUndefined();
+  });
+
+  /**
    * systemd на несуществующий юнит всё равно печатает `ActiveState=inactive`
    * и `SubState=dead`. Взять эти значения — доложить о простое службы,
    * которой на машине нет.

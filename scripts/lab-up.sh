@@ -144,7 +144,7 @@ ensure_users() {
 }
 
 start() {
-  local name="$1" image="$2" port="$3" boot="$4"
+  local name="$1" image="$2" port="$3" boot="$4" caps="${5:-}"
 
   docker rm -f "$name" >/dev/null 2>&1 || true
 
@@ -154,7 +154,8 @@ start() {
   # не отключает. Без этой строки живая сетка падает после каждого пересоздания
   # лаборатории с «REMOTE HOST IDENTIFICATION HAS CHANGED».
   ssh-keygen -R "[127.0.0.1]:$port" >/dev/null 2>&1 || true
-  docker run -d --name "$name" -p "$port:22" \
+  # shellcheck disable=SC2086 — $caps раскрывается по словам намеренно
+  docker run -d --name "$name" -p "$port:22" $caps \
     -v "$KEY.pub:/tmp/authkey:ro" "$image" sh -c "$boot" >/dev/null
 
   # sshd поднимается после установки пакетов — на Debian это десятки секунд
@@ -173,11 +174,16 @@ start() {
   echo "$name готов на порту $port"
 }
 
-ALPINE_BOOT='apk add --no-cache openssh sudo >/dev/null && ssh-keygen -A &&
+# Права на сеть: без них даже root не читает правила — `iptables -nL` отвечает
+# «Permission denied», и ветка «прочитали под sudo» непроверяема. ufw в Alpine
+# нет вовсе, и это второй нужный исход: экран не установлен.
+LAB_CAPS='--cap-add=NET_ADMIN --cap-add=NET_RAW'
+
+ALPINE_BOOT='apk add --no-cache openssh sudo iptables >/dev/null && ssh-keygen -A &&
   mkdir -p /root/.ssh && cp /tmp/authkey /root/.ssh/authorized_keys &&
   chmod 600 /root/.ssh/authorized_keys && /usr/sbin/sshd -D -e'
 
-DEBIAN_BOOT='apt-get update -qq >/dev/null && apt-get install -y -qq openssh-server sudo >/dev/null &&
+DEBIAN_BOOT='apt-get update -qq >/dev/null && apt-get install -y -qq openssh-server sudo ufw iptables >/dev/null &&
   mkdir -p /run/sshd /root/.ssh && cp /tmp/authkey /root/.ssh/authorized_keys &&
   chmod 600 /root/.ssh/authorized_keys && /usr/sbin/sshd -D -e'
 
@@ -200,14 +206,14 @@ if probe "$ALPINE_PORT"; then
   echo "mcp-alpine уже отвечает на порту $ALPINE_PORT"
   ensure_users mcp-alpine
 else
-  start mcp-alpine alpine:3.20 "$ALPINE_PORT" "$ALPINE_BOOT"
+  start mcp-alpine alpine:3.20 "$ALPINE_PORT" "$ALPINE_BOOT" "$LAB_CAPS"
 fi
 
 if probe "$DEBIAN_PORT"; then
   echo "mcp-debian уже отвечает на порту $DEBIAN_PORT"
   ensure_users mcp-debian
 else
-  start mcp-debian debian:12 "$DEBIAN_PORT" "$DEBIAN_BOOT"
+  start mcp-debian debian:12 "$DEBIAN_PORT" "$DEBIAN_BOOT" "$LAB_CAPS"
 fi
 
 # Router не заводит deploy/pwuser через ensure_users (и потому не переиспользует

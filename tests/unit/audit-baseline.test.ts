@@ -653,6 +653,51 @@ describe('ssh_audit_baseline: сборка команды', () => {
 
     expect(sentCommand()).toContain('command -v apt >/dev/null 2>&1');
   });
+
+  /**
+   * Права нужны двум разделам, и просьба о них обязана работать для каждого:
+   * пока условие называло один `ssh`, набор из одного экрана уезжал без sudo —
+   * ровно там, где правила и читаются только под root.
+   */
+  it.each([
+    ['экран', ['firewall']],
+    ['настройки sshd', ['ssh']],
+    ['оба сразу', ['ssh', 'firewall']],
+  ])('просьба о правах поднимает sudo для раздела «%s»', async (_what, include) => {
+    await baseline({}, { include, include_sudo_sections: true });
+
+    expect(executeMock.mock.calls[0][2].sudo).toBe(true);
+  });
+
+  it('разделу, которому root ничего не даёт, sudo не поднимают', async () => {
+    await baseline({ df: DF_OUTPUT }, { include: ['disk'], include_sudo_sections: true });
+
+    expect(executeMock.mock.calls[0][2].sudo).toBe(false);
+  });
+
+  it('без просьбы права не поднимаются и там, где они нужны', async () => {
+    await baseline({}, { include: ['ssh', 'firewall'] });
+
+    expect(executeMock.mock.calls[0][2].sudo).toBe(false);
+  });
+
+  /**
+   * Замер на debian: обычному пользователю по SSH достаётся PATH без sbin, и
+   * установленный ufw отвечает «не установлен» — а машина с включённым экраном
+   * получает предупреждение, что входящее не фильтруется.
+   */
+  it('поиск команд идёт и по sbin, где живут ufw с iptables', async () => {
+    await baseline({}, { include: ['firewall'] });
+
+    expect(sentCommand().startsWith('PATH="$PATH:/usr/sbin:/sbin"; ')).toBe(true);
+  });
+
+  /** Склеенные без разделителя команды — одна команда с чужим хвостом */
+  it('каждая команда раздела отделена от соседней', async () => {
+    await baseline({}, { include: ['firewall'] });
+
+    expect(sentCommand().match(new RegExp(`; echo "${SEP}`, 'g'))).toHaveLength(4);
+  });
 });
 
 describe('ssh_audit_baseline: краткий и полный вид', () => {
@@ -731,8 +776,8 @@ describe('ssh_audit_baseline: системные поля', () => {
       'disk (df gave no output)',
       'listeners (neither ss nor netstat on the server)',
       'services (the services section produced no output)',
-      'firewall/ufw (installed, but its status is not readable — needs sudo?)',
-      'firewall/iptables (installed, but its rules are not readable — needs sudo?)',
+      'firewall/ufw (installed, but its status is not readable — run with include_sudo_sections: true)',
+      'firewall/iptables (installed, but its rules are not readable — run with include_sudo_sections: true)',
       'sshd config (sshd -T gave no output — run with include_sudo_sections: true)',
     ]);
     expect(parsed.red_flags).toEqual({ critical: [], warning: [], ok: [] });
@@ -789,7 +834,7 @@ describe('ssh_audit_baseline: межсетевой экран', () => {
 
     expect(text).toContain('ufw=NOT CHECKED');
     expect(structure(text).unavailable).toContain(
-      'firewall/ufw (installed, but its status is not readable — needs sudo?)'
+      'firewall/ufw (installed, but its status is not readable — run with include_sudo_sections: true)'
     );
   });
 
@@ -850,6 +895,81 @@ describe('ssh_audit_baseline: межсетевой экран', () => {
     const legend = structure(await baseline({}, { include: ['system'] })).legend;
 
     expect(Object.keys(legend).filter((key) => key.startsWith('firewall.'))).toEqual([]);
+  });
+
+  /**
+   * Отказ по правам без способа его снять отправляет читателя в `ssh_exec` —
+   * туда, откуда весь набор уводит. Под sudo тот же отказ означает другое, и
+   * совет повторить с правами был бы кругом.
+   */
+  it('отказ по правам говорит, чем его снять', async () => {
+    const parsed = structure(await baseline({ ufw: 'NO_UFW_ACCESS', iptables: 'permission denied' }));
+
+    expect(parsed.unavailable).toContain(
+      'firewall/ufw (installed, but its status is not readable — run with include_sudo_sections: true)'
+    );
+    expect(parsed.unavailable).toContain(
+      'firewall/iptables (installed, but its rules are not readable — run with include_sudo_sections: true)'
+    );
+  });
+
+  it('отказ под правами не советует повторить с правами', async () => {
+    const parsed = structure(
+      await baseline({ ufw: 'NO_UFW_ACCESS', iptables: 'permission denied' }, { include_sudo_sections: true })
+    );
+
+    expect(parsed.unavailable).toContain(
+      'firewall/ufw (installed, but its status is not readable even as root)'
+    );
+    expect(parsed.unavailable).toContain(
+      'firewall/iptables (installed, but its rules are not readable even as root)'
+    );
+  });
+
+  /**
+   * Политика цепочки и правила nat молчали об отказе: непрочитанная политика
+   * оставляла машину без единого слова о фильтрации, а непрочитанный nat —
+   * утверждение «докер мимо экрана ничего не публикует», которого никто не мерил.
+   */
+  it('непрочитанная политика INPUT названа, а не пропущена', async () => {
+    const parsed = structure(await baseline({ iptables_input: 'NO_IPTABLES_ACCESS' }));
+
+    expect(parsed.unavailable).toContain(
+      'firewall/iptables INPUT policy (not readable — run with include_sudo_sections: true)'
+    );
+  });
+
+  it('непрочитанные правила nat названы вместе с тем, что из-за них неизвестно', async () => {
+    const parsed = structure(await baseline({ docker_nat: 'NO_DOCKER_NAT_ACCESS' }));
+
+    expect(parsed.unavailable).toContain(
+      'firewall/docker nat rules (not readable — run with include_sudo_sections: true) — ' +
+        'ports published past the filter are unknown'
+    );
+  });
+
+  /**
+   * Маркер приезжает со своим переводом строки, а разделитель секций срезает
+   * только хвост: сравнение без trim молчит ровно там, где сервер ответил.
+   */
+  it('маркер отказа узнаётся с пробелами вокруг', async () => {
+    const parsed = structure(
+      await baseline({ iptables_input: '\n NO_IPTABLES_ACCESS \n', docker_nat: '\n NO_DOCKER_NAT_ACCESS \n' })
+    );
+
+    expect(parsed.unavailable).toContain(
+      'firewall/iptables INPUT policy (not readable — run with include_sudo_sections: true)'
+    );
+    expect(parsed.unavailable).toContain(
+      'firewall/docker nat rules (not readable — run with include_sudo_sections: true) — ' +
+        'ports published past the filter are unknown'
+    );
+  });
+
+  it('отсутствие докера и iptables не выдаётся за отказ по правам', async () => {
+    const parsed = structure(await baseline({ iptables_input: 'NO_IPTABLES', docker_nat: 'NO_DOCKER' }));
+
+    expect(parsed.unavailable.filter((x: string) => /INPUT policy|nat rules/.test(x))).toEqual([]);
   });
 });
 
@@ -964,7 +1084,7 @@ describe('ssh_audit_baseline: сводка для чтения', () => {
         '',
         'NOT CHECKED:',
         '  - listeners (neither ss nor netstat on the server)',
-        '  - firewall/iptables (installed, but its rules are not readable — needs sudo?)',
+        '  - firewall/iptables (installed, but its rules are not readable even as root)',
         '',
         'disk:',
         '  /data: 38G/50G (75%)',

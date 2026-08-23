@@ -27,17 +27,21 @@ await writeFile(
   profilesPath,
   JSON.stringify({
     profiles: Object.fromEntries(
-      LAB_SERVERS.map((server) => [
-        server.name,
-        {
+      LAB_SERVERS.flatMap((server) => {
+        const config = (username: string) => ({
           host: '127.0.0.1',
           port: server.port,
-          username: 'root',
+          username,
           privateKeyPath: LAB_KEY,
           strictHostKeyChecking: 'no',
           ignoreUserConfig: true,
-        },
-      ])
+        });
+
+        return [
+          [server.name, config('root')],
+          [`${server.name}-deploy`, config('deploy')],
+        ];
+      })
     ),
   })
 );
@@ -132,6 +136,64 @@ if (unavailable && LAB_REQUIRED) {
 
         expect(text).toContain(`host:    ${parsed.hostname}`);
         expect(text).toContain(`listeners (${parsed.net.listeners.length}):`);
+      });
+    });
+
+    /**
+     * Правила экрана читает только root, и под root эта разница не видна вовсе:
+     * здесь работает обычный пользователь, которому sudo разрешён. Наборы
+     * расходятся намеренно — ufw есть только на debian, iptables на обоих.
+     */
+    describe(`Экран под обычным пользователем: ${server.name}`, { timeout: LIVE_TIMEOUT_MS }, () => {
+      const audit = new AuditTool();
+
+      const firewall = async (sudoSections: boolean): Promise<any> => {
+        const response = await audit.handleCall({
+          params: {
+            name: 'ssh_audit_baseline',
+            arguments: {
+              profile: `${server.name}-deploy`,
+              include: ['firewall'],
+              include_sudo_sections: sudoSections,
+            },
+          },
+        } as never);
+        return JSON.parse(response.content[0].text.split('--- raw JSON ---')[1]);
+      };
+
+      it('без прав правила закрыты, и сказано, чем это снять', async () => {
+        const parsed = await firewall(false);
+
+        expect(parsed.firewall.iptables.status).toBe('no_access');
+        expect(parsed.unavailable).toContain(
+          'firewall/iptables (installed, but its rules are not readable — run with include_sudo_sections: true)'
+        );
+      });
+
+      it('просьба о правах открывает те же правила', async () => {
+        const parsed = await firewall(true);
+
+        expect(parsed.firewall.iptables.status).toBe('read');
+        expect(parsed.firewall.iptables.rules).toBeGreaterThan(0);
+        expect(parsed.unavailable.filter((x: string) => x.startsWith('firewall/'))).toEqual([]);
+      });
+
+      /**
+       * Второй экран отличает серверы друг от друга: на debian ufw установлен и
+       * без прав молчит, на alpine его нет вовсе — и «нет» не выдаётся за «молчит».
+       */
+      it('ufw отвечает по тому, установлен ли он', async () => {
+        const closed = await firewall(false);
+        const open = await firewall(true);
+
+        if (server.container === 'mcp-debian') {
+          expect(closed.firewall.ufw.status).toBe('no_access');
+          expect(open.firewall.ufw.status).toBe('read');
+          expect(open.firewall.ufw.active).toBe(false);
+        } else {
+          expect(closed.firewall.ufw.status).toBe('not_installed');
+          expect(open.firewall.ufw.status).toBe('not_installed');
+        }
       });
     });
   }

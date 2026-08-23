@@ -79,6 +79,9 @@ export class AuditTool {
     'system', 'disk', 'mem', 'net', 'ssh', 'services', 'docker', 'firewall', 'updates',
   ];
 
+  /** Sections whose commands answer nothing to anyone but root */
+  private static readonly SUDO_SECTIONS = ['ssh', 'firewall'];
+
   private executor: SSHExecutor;
 
   constructor() {
@@ -111,8 +114,9 @@ export class AuditTool {
             include_sudo_sections: {
               type: 'boolean',
               description:
-                'Read sshd config as sshd sees it (sshd -T), needs root. Without it the ssh section ' +
-                'says so instead of guessing from the file. Default: false',
+                'Run the sections that need root as root: sshd -T for ssh, ufw and iptables rules ' +
+                'for firewall. Without it those sections name what they could not read instead of ' +
+                'guessing. Default: false',
               default: false,
             },
             compact: {
@@ -390,11 +394,18 @@ export class AuditTool {
       parts.push({ key: 'reboot_required', cmd: '(test -f /var/run/reboot-required && echo YES) || echo NO' });
     }
 
-    const compound = parts
-      .map((p) => `echo "${SEP}${p.key}${SEP}"; ${p.cmd}`)
-      .join('; ');
+    // Administration tools live in sbin, and a login over SSH does not put it
+    // on a regular user's PATH: without this line an installed ufw answers
+    // "not installed", and a machine with the firewall on gets told that its
+    // incoming traffic is not filtered
+    const compound =
+      'PATH="$PATH:/usr/sbin:/sbin"; ' +
+      parts.map((p) => `echo "${SEP}${p.key}${SEP}"; ${p.cmd}`).join('; ');
 
-    const useSudo = include.includes('ssh') && !!args.include_sudo_sections;
+    // The whole compound goes under sudo, so the flag is about which sections
+    // were asked for at all: with none of them in the set, root buys nothing
+    const useSudo =
+      !!args.include_sudo_sections && include.some((name) => AuditTool.SUDO_SECTIONS.includes(name));
     const r = await this.executor.execute(sshConfig, compound, {
       sudo: useSudo,
       timeout: 60000,
@@ -525,10 +536,22 @@ export class AuditTool {
       );
       inputPolicy = (((s.get('iptables_input') || '').match(/policy\s+(\w+)/) || [])[1] || '').toUpperCase();
       publishedPorts = AuditTool.dockerPublishedPorts(s.get('docker_nat') || '');
+      // A refusal by permissions is only half an answer: the other half is
+      // what removes it, and under sudo the refusal means something else entirely
+      const blocked = useSudo
+        ? 'not readable even as root'
+        : 'not readable — run with include_sudo_sections: true';
       if (result.firewall.ufw.status === 'no_access')
-        unavailable.push('firewall/ufw (installed, but its status is not readable — needs sudo?)');
+        unavailable.push(`firewall/ufw (installed, but its status is ${blocked})`);
       if (result.firewall.iptables.status === 'no_access')
-        unavailable.push('firewall/iptables (installed, but its rules are not readable — needs sudo?)');
+        unavailable.push(`firewall/iptables (installed, but its rules are ${blocked})`);
+      // The INPUT policy and the nat rules were silent about a refusal: an
+      // unread policy left the machine looking unjudged, and unread nat rules
+      // left "docker publishes nothing past the firewall" standing as a fact
+      if ((s.get('iptables_input') || '').trim() === 'NO_IPTABLES_ACCESS')
+        unavailable.push(`firewall/iptables INPUT policy (${blocked})`);
+      if ((s.get('docker_nat') || '').trim() === 'NO_DOCKER_NAT_ACCESS')
+        unavailable.push(`firewall/docker nat rules (${blocked}) — ports published past the filter are unknown`);
     }
 
     if (include.has('updates')) {

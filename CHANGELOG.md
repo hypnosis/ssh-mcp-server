@@ -7,104 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-08-23
+
 ### Fixed — cancelling a call now stops the command on the server
-- A cancelled call used to drop the local ssh client and leave the command running to the
-  end. Nothing on the server signalled the loss: with multiplexing the sshd process owning
-  the command stays alive as long as the shared connection does, so neither the parent
-  dying, nor EOF on stdin, nor a write error on stdout ever happens. The stop is now sent
-  instead — a second call over the same connection finds the command by the marker in its
-  arguments and signals its process group, which costs one round trip on an already open
-  connection.
-- A command running under `sudo` is stopped under `sudo` too: it belongs to root, and a
-  signal from the login user never reaches it. The password comes from the same place the
-  command itself takes it from and travels on stdin, never in the arguments.
-- A server without `timeout` is marked all the same. It is the machine where the stop
-  matters most: there is no watchdog on it to end the command by a deadline either. Only a
-  call that asks for no wrapper at all — the passport probe — goes unmarked, and its
-  cancellation stays local as before.
-- Where there is no `/proc`, the command is found through `ps`: the same three columns
-  print on BusyBox, coreutils and macOS alike, and the server picks the branch itself by
-  the very file the other search reads — FreeBSD's procfs offers `cmdline` but no `stat`,
-  so testing for the directory would choose a search that cannot work there. FreeBSD is
-  not verified: correct behaviour there is not guaranteed.
+- A cancelled call used to drop the local ssh client and leave the command running on the
+  machine. The stop is now sent: a second call over the same connection finds the command
+  by the marker in its arguments and signals its process group.
+- A command running under `sudo` is stopped under `sudo` too — a signal from the login user
+  never reaches a process owned by root. The password travels on stdin, never in the
+  arguments.
+- Servers without `timeout` are covered, and so are servers without `/proc`, where the
+  command is found through `ps`. FreeBSD is not verified: correct behaviour there is not
+  guaranteed.
 - File transfers and `ssh_snapshot` still do not take cancellation, deliberately.
 
 ### Added — `ssh_file_list` answers in fields
-- A directory now comes back as entries with `name`, `type`, `size`, `mode`, `owner`,
-  `group`, `mtime` and, for a symlink, the path it points at — plus the schema that
-  declares them. Sizes are exact bytes and the time is a number, so nothing depends on how
-  `ls` rounded a size or whether it printed a year, and a name holding a newline stays one
-  name. Directories the walk was refused at are named in `unreadable` instead of being
-  quietly missing, which is the signal to repeat the call with `sudo: true`.
-- `pattern` is now matched by `find` on the machine rather than expanded by the server's
-  shell: a pattern that matches nothing is an empty list instead of a failed call.
+- A directory comes back as entries with `name`, `type`, `size`, `mode`, `owner`, `group`,
+  `mtime` and, for a symlink, its target — plus the schema that declares them. Sizes are
+  exact bytes, the time is a number, and a name holding a newline stays one name.
+  Directories the walk was refused at are named in `unreadable`: the signal to repeat the
+  call with `sudo: true`.
+- `pattern` is matched by `find` on the machine instead of the server's shell, so a pattern
+  that matches nothing is an empty list rather than a failed call.
 
 ### Added — `ssh_file_write` can set an owner
-- A file written as root now takes an `owner` too, per file, worded exactly as it is on
-  `ssh_upload`. It is applied to the staging copy after the mode and before the rename, so
-  the live path never shows the file under the wrong owner. Without `sudo` the file still
-  lands and the answer says the owner was not applied — the work is done, only part of it
-  is not. Setting an owner after a write no longer needs a separate `ssh_exec chown`.
+- A file written as root takes an `owner`, per file, worded as on `ssh_upload`. It is
+  applied before the rename, so the live path never shows the file under the wrong owner.
+  Without `sudo` the file still lands and the answer says the owner was not applied.
 
-### Changed — the words an answer uses are explained before the call, not only after it
-- Every enum field in an answer schema now names all of its values and what each one means:
-  `jobs[].state`, the outcome of stopping a job, the outcome of reading a service, both
-  firewall screens, and the verification outcome of a write or transfer. The legend still
-  travels with the answer; both are built from one dictionary, so they cannot drift apart.
-  Measured on clean agents planning work against the surface alone: without this, five to
-  six values per run were ones the agent said outright it could not read — including
-  `limited`, which it was about to act on while warning it did not know what it meant.
-- `ssh_audit_baseline` and `ssh_service_status` carry a legend at all now. Their firewall
-  and service outcomes used to be explained neither in the schema nor in the answer.
-- Two fields say what they are: `files[].written` (permissions and owner are a separate
-  matter — one that did not apply is named in `reason`) and `jobs[].started_at` (seconds
-  since the epoch).
-- `owner` on `ssh_upload` says "every file and directory sent": with `recursive` the
-  ownership change walks the tree, directories included.
+### Changed — the values an answer uses are explained before the call
+- Every enum field in an answer schema names all of its values and what each one means:
+  `jobs[].state`, the outcome of stopping a job or reading a service, both firewall screens,
+  and the verification outcome of a write or transfer. Schema and legend come from one
+  dictionary, so they cannot drift apart.
+- `ssh_audit_baseline` and `ssh_service_status` carry a legend at all now.
+- `files[].written` says that permissions and owner are a separate matter, named in
+  `reason`; `jobs[].started_at` says its unit; `owner` on `ssh_upload` says it walks the
+  whole tree with `recursive`.
 
 ### Fixed — an installed firewall no longer reads as one that is not there
-- Over SSH a regular user gets no `/usr/sbin` or `/sbin` on the PATH, so `ssh_audit_baseline`
-  could not find an installed `ufw` and reported it as not installed — and then warned that
-  incoming traffic was not filtered on a machine whose firewall was on. The audit now looks
-  in sbin as well, so an installed tool that refuses by permissions is reported as a refusal.
-- `include_sudo_sections` now covers every section that needs root, the firewall included,
-  and says so. Asking for `include: ["firewall"]` with the flag used to run without sudo at
-  all — the one case where it was asked for explicitly.
-- A refusal by permissions now says what removes it: without the flag, the answer names it;
-  with the flag already on, it says the rules are not readable even as root. The INPUT chain
-  policy and the docker nat rules used to say nothing at all when they were not readable —
-  and unread nat rules left "docker publishes nothing past the firewall" standing as a fact.
+- Over SSH a regular user has no `/usr/sbin` or `/sbin` on the PATH, so an installed `ufw`
+  was reported as missing — with a warning that incoming traffic was unfiltered on a machine
+  whose firewall was on. The audit now looks in sbin too.
+- `include_sudo_sections` covers every section that needs root, the firewall included.
+- A refusal by permissions says what removes it. The INPUT chain policy and the docker nat
+  rules used to say nothing when unreadable, leaving "docker publishes nothing past the
+  firewall" standing as a fact.
 
 ### Fixed — a silent answer to the hash check no longer reads as a mismatch
-- A server that ran the hashing, complained about nothing and named no hash at all was
-  judged as a mismatch — and a mismatch makes the installer tear down the copy that had
-  already arrived intact. Three causes of an incomplete answer were handled (a cut buffer,
-  the timeout guard, an expired deadline); this fourth one fell straight through into the
-  comparison. It is now told apart from a real one: a complaint about a missing file still
-  means the file is not there, while silence means there was nothing to verify with, and the
-  copy stays where it is.
+- A server that hashed, complained about nothing and named no hash was judged as a
+  mismatch — and a mismatch makes the installer tear down a copy that had arrived intact.
+  Silence now means there was nothing to verify with and the copy stays; a complaint about
+  a missing file still means the file is not there.
 
 ### Changed — a written file is verified unless you say otherwise
-- `verify` on `ssh_file_write` now defaults to `true`, as it already did on `ssh_upload` and
-  `ssh_download`. One name meant one thing on transfers and the opposite on writes, and a
-  caller who read it once carried the wrong rule to the other tool: a config written to
-  `/etc` went unchecked while the answer looked the same as a checked one. Pass
-  `verify: false` for the old behaviour. Answers now carry the outcome where they used to
-  say nothing, and each write costs one more round trip on the machine.
-- The `files[].verified` field says in the schema which question it answers — how the check
-  ended, not whether the data landed — so `unavailable` is not read as a failed write before
-  the legend arrives with the answer.
+- `verify` on `ssh_file_write` defaults to `true`, as it already did on `ssh_upload` and
+  `ssh_download`. Pass `verify: false` for the old behaviour. Each write costs one more
+  round trip, and answers carry the outcome where they used to say nothing.
+- `files[].verified` says which question it answers: how the check ended, not whether the
+  data landed.
 
 ### Changed — every fact on the surface is said once, where it is read
 - Tool descriptions follow one shape: what it does, what the answer promises where it could
-  be read wrongly, and which neighbour to use instead. What a parameter governs — the
-  staging name and the rename, the copy in `/tmp`, a shell per command, the `since` window,
-  `owner` needing `sudo` — is written in that parameter and nowhere else, so the two cannot
-  drift apart. Descriptions went from 6 214 to 4 622 characters, the whole surface from
-  35 323 to 34 707, and the longest description from 480 to 397.
-- The server instructions now tell the pairs apart where both sides are in view, and say
-  that the password `sudo` asks for lives in the profile like every other secret — until now
-  that was mentioned only inside one parameter of one tool.
+  be read wrongly, and which neighbour to use instead. What a parameter governs is written
+  in that parameter and nowhere else.
+- The server instructions tell the paired tools apart, and say that the password `sudo`
+  asks for lives in the profile like every other secret.
 
 ## [2.3.0] - 2026-08-21
 

@@ -95,8 +95,8 @@ export class InstallError extends Error {
    */
   readonly warnings: string[];
 
-  constructor(message: string, warnings: string[] = []) {
-    super(warnings.length > 0 ? `${message} — ${warnings.join('; ')}` : message);
+  constructor(message: string, warnings: string[] = [], cause?: unknown) {
+    super(warnings.length > 0 ? `${message} — ${warnings.join('; ')}` : message, { cause });
     this.name = 'InstallError';
     this.warnings = warnings;
   }
@@ -173,7 +173,7 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
   } catch (error) {
     await discard(ops, staging);
     throw warnings.length > 0
-      ? new InstallError(message(error), warnings)
+      ? new InstallError(message(error), warnings, error)
       : error;
   }
 

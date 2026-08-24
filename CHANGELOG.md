@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is in the call), and a refusal from `ssh_exec` itself or from a detached job.
 
 
+### Fixed — a checksum mismatch is now a word the answer says
+- Verification tells three outcomes apart inside and named only two of them outside:
+  `verified`, `unavailable`, `skipped`. A mismatch had no word at all, so an agent reading
+  the schema before the call could not tell what one would look like — and read
+  `written: false` as the mismatch, which means something else entirely.
+- `mismatched` is now in the answer schema of `ssh_upload`, `ssh_download` and
+  `ssh_file_write`, and in the legend beside it. The call still fails — a copy that did not
+  survive the trip is never reported as delivered — but the failure now carries the structure
+  with it: which path, that nothing was replaced, and that the path still holds what it held
+  before.
+- `ssh_file_write` used to report a mismatch as `skipped`, the word for "no comparison ran".
+- The error text no longer shows the temporary name a file travelled under; a directory names
+  the files that differ by their place inside it, not by their staging path.
+
 ## [2.4.0] - 2026-08-23
 
 ### Fixed — cancelling a call now stops the command on the server

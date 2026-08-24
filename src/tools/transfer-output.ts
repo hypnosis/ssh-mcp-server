@@ -2,7 +2,7 @@
  * Shape of the summary for tools that put data somewhere: ssh_file_write,
  * ssh_upload, ssh_download.
  *
- * The three verification outcomes are the whole point. In the text they are a
+ * The four verification outcomes are the whole point. In the text they are a
  * tail of the line — " (sha256 verified)", " (NOT verified: …)" or nothing at
  * all — and the last one, "nobody asked for a check", looks exactly like an
  * ordinary line about a written file. Absence of a check must not read as a
@@ -14,7 +14,7 @@ import { legendFor, LEGEND_SCHEMA, meaningsList, type Legend } from './legend.js
 
 type OutputSchema = NonNullable<Tool['outputSchema']>;
 
-export type VerifiedOutcome = 'verified' | 'unavailable' | 'skipped';
+export type VerifiedOutcome = 'verified' | 'mismatched' | 'unavailable' | 'skipped';
 
 /**
  * The owner is set by `chown`, and under a regular user it refuses on a name
@@ -26,6 +26,8 @@ export const OWNER_NEEDS_SUDO =
 /** What each verification outcome says about the copy that was left behind */
 const VERIFIED_MEANING: Record<VerifiedOutcome, string> = {
   verified: 'sha256 was compared after the write and matched',
+  mismatched:
+    'sha256 was compared and differed: nothing was replaced, and the path still holds what it held before',
   unavailable: 'the check had nothing to work with, and reason says what was missing',
   skipped: 'no comparison ran: none was asked for, or nothing landed to compare',
 };
@@ -108,6 +110,16 @@ export function transferredFile(
   };
 }
 
+/**
+ * A file whose copy on the server differed from the source.
+ *
+ * The replacement never happened, so `written` is false: the outcome travels
+ * with the failure flag, because a call that ends this way did no work.
+ */
+export function mismatchedFile(path: string, reason: string): FileSummary {
+  return { path, written: false, verified: 'mismatched', reason, bytes: null };
+}
+
 /** A file that never landed: the reason is the failure itself, not a missing check */
 export function failedFile(path: string, reason: string): FileSummary {
   return { path, written: false, verified: 'skipped', reason, bytes: null };
@@ -130,7 +142,7 @@ export const FILES_OUTPUT_SCHEMA: OutputSchema = {
           },
           verified: {
             type: 'string',
-            enum: ['verified', 'unavailable', 'skipped'],
+            enum: ['verified', 'mismatched', 'unavailable', 'skipped'],
             description: VERIFIED_FIELD_DESCRIPTION,
           },
           reason: { type: ['string', 'null'] },

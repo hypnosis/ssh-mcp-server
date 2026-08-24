@@ -18,13 +18,18 @@ import { PROFILE_PARAM_DESCRIPTION } from './params.js';
 import { stat } from 'fs/promises';
 import { join, posix as posixPath } from 'path';
 import { logger } from '../utils/logger.js';
-import { toolFailure, type ToolResult } from '../utils/tool-result.js';
+import { CallerError, toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
 import { sha256OfFile, sha256OfFiles } from '../utils/sha256.js';
 import { listTreeFiles } from '../utils/local-tree.js';
-import { verifyRemoteFiles, type VerifyEntry } from '../managers/remote-verify.js';
+import {
+  mismatchOf,
+  verifyRemoteFiles,
+  VerificationMismatchError,
+  type VerifyEntry,
+} from '../managers/remote-verify.js';
 import { install } from '../managers/installer.js';
 import { localPathOps } from '../managers/local-path-ops.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
@@ -36,6 +41,7 @@ import type { SSHConfig } from '../utils/ssh-config.js';
 import {
   FILES_OUTPUT_SCHEMA,
   filesSummary,
+  mismatchedFile,
   OWNER_NEEDS_SUDO,
   transferredFile,
 } from './transfer-output.js';
@@ -68,10 +74,22 @@ async function statLocal(path: string) {
   try {
     return await stat(path);
   } catch (error: any) {
-    if (error?.code === 'ENOENT') throw new Error(`local_path does not exist: ${path}`);
+    if (error?.code === 'ENOENT') throw new CallerError(`local_path does not exist: ${path}`);
     if (error?.code === 'EACCES') throw new Error(`local_path is not readable: ${path}`);
     throw error;
   }
+}
+
+/** Names of the files inside the tree, taken from the paths they were compared at */
+function namesWithin(paths: string[], root: string): string[] {
+  return paths.map((path) => posixPath.relative(root, path)).filter(Boolean);
+}
+
+/** The first few names, or nothing at all when a single file leaves no name to give */
+function listed(names: string[]): string {
+  if (names.length === 0) return '';
+  const shown = names.slice(0, 5).join(', ');
+  return ` (${shown})`;
 }
 
 /**
@@ -114,7 +132,7 @@ function parseTimeoutMs(value: unknown): number | undefined {
 
   const parsed = typeof value === 'string' ? Number(value.trim()) : value;
   if (typeof parsed !== 'number' || Number.isNaN(parsed) || parsed <= 0) {
-    throw new Error(
+    throw new CallerError(
       `timeout must be a positive number of milliseconds, got ${JSON.stringify(value)}. ` +
       'Omit the parameter to run without a limit.'
     );
@@ -160,7 +178,8 @@ interface DownloadArgs {
 const VERIFY_PARAM = {
   type: 'boolean',
   description:
-    'sha256 on both sides, per file. "unavailable" = no sha256 on the machine = delivered, not broken. Default: true',
+    'sha256 on both sides, per file. "unavailable" = no sha256 on the machine = delivered, not broken. ' +
+    '"mismatched" fails the call and replaces nothing. Default: true',
   default: true,
 } as const;
 
@@ -279,6 +298,19 @@ export class TransferTool {
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
+      const mismatch = mismatchOf(error);
+      if (mismatch) {
+        return toolFailure(
+          error,
+          filesSummary([
+            mismatchedFile(
+              mismatch.path,
+              `${mismatch.differing} of ${mismatch.total} file(s) differ from the source` +
+                listed(mismatch.names)
+            ),
+          ])
+        );
+      }
       return toolFailure(error);
     }
   }
@@ -464,8 +496,9 @@ export class TransferTool {
           sshConfig,
           [{ path: staging, hash: await localHashPromise! }],
           'upload',
+          remotePath,
           // under sudo the copy next to the target is no longer ours — there is no other way to read it
-          { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
+          { sudo: opts.sudo, timeoutMs: opts.timeoutMs, relativeTo: staging }
         );
         return null;
       },
@@ -643,9 +676,10 @@ export class TransferTool {
     sshConfig: any,
     entries: VerifyEntry[],
     label: string,
-    opts: { sudo?: boolean; timeoutMs?: number } = {}
+    reportPath: string,
+    opts: { sudo?: boolean; timeoutMs?: number; relativeTo: string }
   ): Promise<{ verified: boolean; verifyNote?: string }> {
-    const { sudo = false, timeoutMs } = opts;
+    const { sudo = false, timeoutMs, relativeTo } = opts;
     // The ceiling applies to the whole operation, not one part of it:
     // otherwise a gigabyte-sized tree would run into the commands' shared
     // 30-second limit right here
@@ -657,9 +691,17 @@ export class TransferTool {
     if (outcome.status === 'matched') return { verified: true };
 
     if (outcome.status === 'mismatched') {
-      throw new Error(
-        `sha256 mismatch after ${label}: ${outcome.paths.length} file(s) differ — ` +
-        outcome.paths.slice(0, 5).join(', ')
+      // Names inside the tree, not the staging paths they were compared at:
+      // the temporary name is ours, and it tells the reader nothing
+      const named = namesWithin(outcome.paths, relativeTo);
+      throw new VerificationMismatchError(
+        `sha256 mismatch after ${label} of ${reportPath}: ${outcome.paths.length} of ` +
+          `${entries.length} file(s) differ${listed(named)} — nothing was replaced, and ` +
+          `${reportPath} still holds what it held before`,
+        reportPath,
+        outcome.paths.length,
+        entries.length,
+        named
       );
     }
 
@@ -750,8 +792,9 @@ export class TransferTool {
             path: posixPath.join(staging, files[i]),
           })),
           'upload',
+          finalDir,
           // under sudo the staged tree belongs to root — there is no other way to read it
-          { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
+          { sudo: opts.sudo, timeoutMs: opts.timeoutMs, relativeTo: staging }
         );
         return null;
       },
@@ -941,9 +984,10 @@ export class TransferTool {
           sshConfig,
           [{ path: remotePath, hash: await sha256OfFile(staging) }],
           'download',
+          localPath,
           // the source is read under root here too — otherwise hashing it is
           // exactly as impossible as reading it was
-          { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
+          { sudo: opts.sudo, timeoutMs: opts.timeoutMs, relativeTo: remotePath }
         );
         return null;
       },
@@ -989,7 +1033,8 @@ export class TransferTool {
             path: posixPath.join(remoteDir, files[i]),
           })),
           'download',
-          { sudo: opts.sudo, timeoutMs: opts.timeoutMs }
+          localDir,
+          { sudo: opts.sudo, timeoutMs: opts.timeoutMs, relativeTo: remoteDir }
         );
         return null;
       },

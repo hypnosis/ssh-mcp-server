@@ -281,11 +281,11 @@ describe('Обещанные поля ответа', () => {
 
   /**
    * «Не просили проверять» и «проверили, сошлось» в тексте различаются
-   * пустотой в конце строки. Три исхода обещаны полем, поэтому их набор
+   * пустотой в конце строки. Четыре исхода обещаны полем, поэтому их набор
    * сторожится у всех трёх инструментов сразу.
    */
   it.each([['ssh_file_write'], ['ssh_upload'], ['ssh_download']])(
-    '%s обещает исход сверки одним из трёх слов',
+    '%s обещает исход сверки одним из четырёх слов',
     async (name) => {
       const { tools } = await client.listTools();
       const schema = tools.find((tool: Tool) => tool.name === name)?.outputSchema as any;
@@ -300,6 +300,7 @@ describe('Обещанные поля ответа', () => {
       ]);
       expect(schema.properties.files.items.properties.verified.enum).toEqual([
         'verified',
+        'mismatched',
         'unavailable',
         'skipped',
       ]);

@@ -46,6 +46,12 @@ const EXPLAINED = [
  */
 const SELF_EVIDENT = ['ssh_monitor: action', 'ssh_job_kill: signal'];
 
+/**
+ * Короче этого объяснение не объясняет: столько занимает пересказ самого
+ * значения («the job is gone»), и меньше писать уже нечего.
+ */
+const MIN_MEANING_CHARS = 12;
+
 let client: Client;
 let previousProfilesFile: string | undefined;
 
@@ -116,6 +122,11 @@ describe('Слова ответа объяснены до вызова', () => {
       expect(field.description, `${field.name} без описания`).toBeDefined();
       for (const value of field.values) {
         expect(field.description, `${field.name}: значение ${value} не объяснено`).toContain(value);
+        // Названо — ещё не объяснено: за тире должен идти текст, а не пустота
+        expect(
+          new RegExp(`${value} — [^;]{${MIN_MEANING_CHARS},}`).test(field.description!),
+          `${field.name}: у значения ${value} за тире пусто`
+        ).toBe(true);
       }
     }
   });

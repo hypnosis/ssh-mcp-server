@@ -156,6 +156,30 @@ describe('сбой до замены: последняя копия не тро�
     expect(fs.content(FINAL)).toBe('старое содержимое');
   });
 
+  /**
+   * Рядом с целью нашлись прошлые остатки — ошибку заворачивают, чтобы о них
+   * рассказать. Без причины внутри обёртки вызывающий уже не отличит
+   * расхождение от любого другого отказа проверки.
+   */
+  it('обёртка ради предупреждения причину не теряет', async () => {
+    fs.put(FINAL, 'file', 'старое содержимое');
+    fs.listSiblings = async () => ['/srv/.upload-aaaaaaaaaaaa.app.conf'];
+    const thrown = new Error('проверка бросила своё');
+
+    const failure = await install(
+      fs,
+      plan({
+        verify: async () => {
+          throw thrown;
+        },
+      })
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(InstallError);
+    expect((failure as InstallError).warnings.length).toBeGreaterThan(0);
+    expect((failure as Error).cause).toBe(thrown);
+  });
+
   it('уборка после сбоя касается только staging', async () => {
     fs.put(FINAL, 'file', 'старое содержимое');
 

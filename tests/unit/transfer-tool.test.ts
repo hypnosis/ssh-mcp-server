@@ -8,6 +8,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+/** Текст отказа целиком: к причине ответ всегда добавляет выход через ssh_exec */
+const refusalText = (reason: string) => `${reason} ${EXEC_FALLBACK}`;
+import { EXEC_FALLBACK } from '../../src/utils/tool-result.js';
 import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -712,9 +716,11 @@ describe('сверка не сошлась', () => {
 
     const staged = uploadMock.mock.calls[0][1] as string;
     expect(text).toBe(
-      `Error: sha256 mismatch after upload: 2 file(s) differ — ` +
-        `${staged}/app.js, ${staged}/conf/app.ini`
+      'Error: sha256 mismatch after upload of /srv/app: 2 of 2 file(s) differ ' +
+        '(app.js, conf/app.ini) — nothing was replaced, and /srv/app still holds ' +
+        'what it held before'
     );
+    expect(text).not.toContain(staged);
     // Целого дерева на боевом пути не появилось, временное убрано
     expect(server.has('/srv/app')).toBe(false);
     expect(server.has(staged)).toBe(false);
@@ -752,7 +758,7 @@ describe('сверка не сошлась', () => {
     expect(readFileSync(target, 'utf8')).toBe('mine');
   });
 
-  it('одиночный файл: названа операция и сам путь', async () => {
+  it('одиночный файл: названы операция и путь, который просил вызывающий', async () => {
     uploadMock.mockImplementation(async (_source: string, target: string) => {
       putFile(target, 'corrupted');
     });
@@ -762,7 +768,11 @@ describe('сверка не сошлась', () => {
     );
 
     const staged = uploadMock.mock.calls[0][1] as string;
-    expect(text).toBe(`Error: sha256 mismatch after upload: 1 file(s) differ — ${staged}`);
+    expect(text).toBe(
+      'Error: sha256 mismatch after upload of /srv/app.js: 1 of 1 file(s) differ — ' +
+        'nothing was replaced, and /srv/app.js still holds what it held before'
+    );
+    expect(text).not.toContain(staged);
     expect(server.has('/srv/app.js')).toBe(false);
   });
 
@@ -797,6 +807,57 @@ describe('сверка не сошлась', () => {
 
     expect(commandFor(/^sha256sum /)![1].sudo).toBeFalsy();
   });
+
+  it('расхождение приезжает и флагом, и полем: одно не заменяет другое', async () => {
+    uploadMock.mockImplementation(async (_source: string, target: string) => {
+      putFile(target, 'corrupted');
+    });
+
+    const response = await new TransferTool().handleCall(
+      call('ssh_upload', { local_path: localFile, remote_path: '/srv/app.js' })
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.structuredContent as FilesSummary).files).toEqual([
+      {
+        path: '/srv/app.js',
+        written: false,
+        verified: 'mismatched',
+        reason: '1 of 1 file(s) differ from the source',
+        bytes: null,
+      },
+    ]);
+  });
+
+  it('в причине названы файлы дерева, а временного имени там нет', async () => {
+    corruptOnUpload(['conf/app.ini']);
+
+    const response = await new TransferTool().handleCall(
+      call('ssh_upload', { local_path: localDir, remote_path: '/srv/app', recursive: true })
+    );
+    const [file] = (response.structuredContent as FilesSummary).files;
+    const staged = uploadMock.mock.calls[0][1] as string;
+
+    expect(file.verified).toBe('mismatched');
+    expect(file.reason).toBe('1 of 2 file(s) differ from the source (conf/app.ini)');
+    expect(file.reason).not.toContain(staged);
+  });
+
+  it('расхождение при скачивании названо тем же словом', async () => {
+    downloadMock.mockImplementation(async (_source: string, local: string) => {
+      writeFileSync(local, 'truncated', 'utf8');
+    });
+    const target = join(localDir, 'pulled.js');
+
+    const response = await new TransferTool().handleCall(
+      call('ssh_download', { remote_path: '/srv/app.js', local_path: target })
+    );
+    const [file] = (response.structuredContent as FilesSummary).files;
+
+    expect(response.isError).toBe(true);
+    expect(file.verified).toBe('mismatched');
+    expect(file.path).toBe(target);
+  });
 });
 
 /**
@@ -811,7 +872,7 @@ describe('на пути лежит не то, что ставим', () => {
       call('ssh_upload', { local_path: localFile, remote_path: '/srv/app.js', verify: false })
     );
 
-    expect(text).toBe('Error: cannot install file over an existing directory: /srv/app.js');
+    expect(text).toBe(refusalText('Error: cannot install file over an existing directory: /srv/app.js'));
   });
 
   it('каталог поверх файла — тоже отказ', async () => {
@@ -826,7 +887,7 @@ describe('на пути лежит не то, что ставим', () => {
       })
     );
 
-    expect(text).toBe('Error: cannot install directory over an existing file: /srv/app');
+    expect(text).toBe(refusalText('Error: cannot install directory over an existing file: /srv/app'));
   });
 
   it('скачанный каталог поверх локального файла — отказ, файл цел', async () => {
@@ -838,7 +899,9 @@ describe('на пути лежит не то, что ставим', () => {
       call('ssh_download', { remote_path: '/srv/app', local_path: target, verify: false })
     );
 
-    expect(text).toBe(`Error: cannot install directory over an existing file: ${target}`);
+    expect(text).toBe(
+      refusalText(`Error: cannot install directory over an existing file: ${target}`)
+    );
     expect(readFileSync(target, 'utf8')).toBe('mine');
   });
 });
@@ -932,7 +995,7 @@ describe('форма ответа и отказы до первой команд
   it('чужое имя инструмента называется в отказе', async () => {
     const text = await textOf(call('ssh_transfer', { local_path: localFile }));
 
-    expect(text).toBe('Error: Unknown transfer tool: ssh_transfer');
+    expect(text).toBe(refusalText('Error: Unknown transfer tool: ssh_transfer'));
   });
 
   it('отказ без remote_path показывает, как выглядит нужное значение', async () => {

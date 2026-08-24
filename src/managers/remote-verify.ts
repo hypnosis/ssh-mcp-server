@@ -431,3 +431,47 @@ function splitIntoCommands(
   if (current.length > 0) chunks.push(current);
   return chunks;
 }
+
+/**
+ * The copy on the far side differed from the source.
+ *
+ * Carries the path the caller named, not the temporary one the comparison ran
+ * at: a name the caller never chose explains nothing to whoever reads the
+ * failure.
+ */
+export class VerificationMismatchError extends Error {
+  /** The diagnosis is already complete: there is nothing here to route around */
+  readonly noExecHint = true as const;
+
+  readonly path: string;
+  readonly differing: number;
+  readonly total: number;
+  /** Names inside the tree, at most the first few; empty for a single file */
+  readonly names: string[];
+
+  constructor(
+    message: string,
+    path: string,
+    differing: number,
+    total: number,
+    names: string[] = []
+  ) {
+    super(message);
+    this.name = 'VerificationMismatchError';
+    this.path = path;
+    this.differing = differing;
+    this.total = total;
+    this.names = names;
+  }
+}
+
+/**
+ * The mismatch behind a failure, however it was wrapped on the way up: the
+ * installer wraps whatever verification threw whenever it has warnings of its
+ * own to report.
+ */
+export function mismatchOf(error: unknown): VerificationMismatchError | null {
+  if (error instanceof VerificationMismatchError) return error;
+  const cause = (error as { cause?: unknown } | null)?.cause;
+  return cause instanceof VerificationMismatchError ? cause : null;
+}

@@ -9,6 +9,10 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EXEC_FALLBACK } from '../../src/utils/tool-result.js';
+
+/** Текст отказа целиком: к причине ответ всегда добавляет выход через ssh_exec */
+const refusal = (reason: string) => `${reason} ${EXEC_FALLBACK}`;
 import { createHash } from 'crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -563,13 +567,13 @@ describe('ssh_file_read: одиночный файл', () => {
 
   it('отсутствующий файл — ошибка с текстом от сервера, а не пустое содержимое', async () => {
     expect(await read({ path: '/etc/missing.conf' })).toBe(
-      'Error: Failed to read file: cat: /etc/missing.conf: No such file or directory'
+      refusal('Error: Failed to read file: cat: /etc/missing.conf: No such file or directory')
     );
   });
 
   it('если сервер объяснился в stdout, ошибка берёт объяснение оттуда', async () => {
     overrides = [[/^cat /, { exitCode: 1, stderr: '', stdout: 'permission denied' }]];
-    expect(await read({ path: '/etc/hosts' })).toBe('Error: Failed to read file: permission denied');
+    expect(await read({ path: '/etc/hosts' })).toBe(refusal('Error: Failed to read file: permission denied'));
   });
 
   it('путь списком из одного файла читается как одиночный, без сводки', async () => {
@@ -739,7 +743,10 @@ describe('ssh_file_write: одиночный файл', () => {
     const expected = createHash('sha256').update('key=value\n').digest('hex');
     expect(
       await write({ files: { path: '/etc/app.conf', content: 'key=value\n', verify: true } })
-    ).toBe(`Error: verification failed for /etc/app.conf: local=${expected}, remote differs`);
+    ).toBe(
+      'Error: what landed at /etc/app.conf differs from what was sent ' +
+        `(local sha256 ${expected})`
+    );
   });
 
   it('сервер без счётчика хэшей не превращает исправную запись в ошибку', async () => {
@@ -1022,14 +1029,14 @@ describe('ssh_file_list', () => {
 
   it('несуществующий каталог — ошибка с текстом от сервера', async () => {
     expect(await list({ path: '/var/nowhere' })).toBe(
-      "Error: Failed to list files: find: '/var/nowhere': No such file or directory"
+      refusal("Error: Failed to list files: find: '/var/nowhere': No such file or directory")
     );
   });
 
   it('если сервер объяснился в stdout, ошибка берёт объяснение оттуда', async () => {
     overrides = [[/find /, { exitCode: 2, stderr: '', stdout: 'find: permission denied' }]];
     expect(await list({ path: '/var/log' })).toBe(
-      'Error: Failed to list files: find: permission denied'
+      refusal('Error: Failed to list files: find: permission denied')
     );
   });
 
@@ -1761,6 +1768,31 @@ describe('сводка записи', () => {
     expect(summary.files).toEqual([
       { path: '/srv/a.js', written: true, verified: 'verified', reason: null, bytes: 6 },
     ]);
+  });
+
+  it('сверка не сошлась — своё слово, а не «не проверяли»', async () => {
+    overrides = [[/^sha256sum /, { stdout: `${'0'.repeat(64)}  x\n` }]];
+
+    const [file] = (
+      await summaryOf({ files: { path: '/srv/a.js', content: 'run();', verify: true } })
+    ).files;
+
+    expect(file.verified).toBe('mismatched');
+    expect(file.written).toBe(false);
+    expect(file.reason).toContain('differs from what was sent');
+  });
+
+  it('расхождение в пакете названо у своего файла, соседний остаётся записанным', async () => {
+    overrides = [[/^sha256sum .*bad\.js/, { stdout: `${'0'.repeat(64)}  x\n` }]];
+
+    const summary = await summaryOf({
+      files: [
+        { path: '/srv/good.js', content: 'ok();', verify: true },
+        { path: '/srv/bad.js', content: 'run();', verify: true },
+      ],
+    });
+
+    expect(summary.files.map((file) => file.verified)).toEqual(['verified', 'mismatched']);
   });
 
   it('никто не просил сверять — это свой исход, а не сверка, которая прошла', async () => {

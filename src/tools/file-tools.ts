@@ -11,9 +11,10 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { logger } from '../utils/logger.js';
-import { batchOutcome, toolFailure, type ToolResult } from '../utils/tool-result.js';
+import { batchOutcome, CallerError, toolFailure, type ToolResult } from '../utils/tool-result.js';
 import {
   failedFile,
+  mismatchedFile,
   FILES_OUTPUT_SCHEMA,
   filesSummary,
   OWNER_NEEDS_SUDO,
@@ -31,7 +32,11 @@ import { SSHExecutor } from '../managers/ssh-executor.js';
 import { getRunner } from '../runner/get-runner.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
 import { sha256OfBuffer } from '../utils/sha256.js';
-import { verifyRemoteFiles } from '../managers/remote-verify.js';
+import {
+  mismatchOf,
+  verifyRemoteFiles,
+  VerificationMismatchError,
+} from '../managers/remote-verify.js';
 import { install } from '../managers/installer.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
 import { resolveRemotePath, type ExpandedPath } from '../managers/path-guard.js';
@@ -271,7 +276,9 @@ const fileEntry = {
   },
   verify: {
     type: 'boolean',
-    description: 'Compare sha256 before the file takes its place. Default: true',
+    description:
+      'Compare sha256 before the file takes its place. A mismatch fails the call and ' +
+      'leaves the path as it was. Default: true',
   },
   binary: {
     type: 'boolean',
@@ -441,7 +448,7 @@ export class FileTools {
         case 'ssh_file_list':
           return await this.handleFileList(request, signal);
         default:
-          throw new Error(`Unknown tool: ${toolName}`);
+          throw new CallerError(`Unknown tool: ${toolName}`);
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
@@ -638,7 +645,12 @@ export class FileTools {
         // One file answers with the same summary a batch does: the outcome of
         // the only file would otherwise be readable from the text alone
         const failure = toolFailure(error);
-        failure.structuredContent = filesSummary([failedFile(target.path, error.message)]);
+        const mismatch = mismatchOf(error);
+        failure.structuredContent = filesSummary([
+          mismatch
+            ? mismatchedFile(mismatch.path, mismatch.message)
+            : failedFile(target.path, error.message),
+        ]);
         return failure;
       }
 
@@ -667,6 +679,8 @@ export class FileTools {
       warnings?: string[];
       verification?: VerificationOutcome;
       error?: string;
+      /** The write reached the server and came back different */
+      mismatched?: boolean;
     }> = [];
 
     for (const { file, target } of files) {
@@ -685,6 +699,7 @@ export class FileTools {
           success: false,
           bytesWritten: 0,
           error: error.message,
+          mismatched: !!mismatchOf(error),
         });
       }
     }
@@ -715,11 +730,15 @@ export class FileTools {
     // Even a call where nothing landed carries the summary: which file failed
     // and on what is the answer the caller acts on
     answer.structuredContent = filesSummary(
-      results.map((result) =>
-        result.success && result.verification
-          ? writtenFile(result.path, result.verification, result.bytesWritten)
-          : failedFile(result.path, result.error ?? 'write failed')
-      )
+      results.map((result) => {
+        if (result.success && result.verification) {
+          return writtenFile(result.path, result.verification, result.bytesWritten);
+        }
+        const reason = result.error ?? 'write failed';
+        return result.mismatched
+          ? mismatchedFile(result.path, reason)
+          : failedFile(result.path, reason);
+      })
     );
 
     return answer;
@@ -799,7 +818,15 @@ export class FileTools {
         );
 
         if (result.status === 'mismatched') {
-          return `local=${expectedHash}, remote differs`;
+          // Thrown rather than returned as a reason: the outcome has a word of
+          // its own in the answer, and a plain reason arrives as "not checked"
+          throw new VerificationMismatchError(
+            `what landed at ${target.path} differs from what was sent ` +
+              `(local sha256 ${expectedHash})`,
+            target.path,
+            1,
+            1
+          );
         }
 
         // "Nothing to verify with" is not the same as a corrupted write:

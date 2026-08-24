@@ -11,7 +11,7 @@
       "displayName": "SSH MCP Server",
       "description": "Run commands, move files, search logs and audit machines over SSH from your agent.",
       "source": "./",
-      "version": "2.4.0"
+      "version": "2.3.1"
     }
   ]
 }

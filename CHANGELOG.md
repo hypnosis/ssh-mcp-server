@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-08-24
+
 ### Changed — a refusal says where the way through is
 - A tool that cannot do something now ends its refusal by naming `ssh_exec`, which runs
   commands on the machine directly. The cases are not worth enumerating — a driver nobody
@@ -46,8 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ssh_file_write` used to report a mismatch as `skipped`, the word for "no comparison ran".
 - The error text no longer shows the temporary name a file travelled under; a directory names
   the files that differ by their place inside it, not by their staging path.
-
-## [2.4.0] - 2026-08-23
 
 ### Fixed — cancelling a call now stops the command on the server
 - A cancelled call used to drop the local ssh client and leave the command running on the

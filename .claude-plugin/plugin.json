@@ -1,7 +1,7 @@
 {
   "name": "ssh-mcp-server",
   "displayName": "SSH MCP Server",
-  "version": "2.4.0",
+  "version": "2.3.1",
   "description": "Remote server work over the OpenSSH client already on your machine: run commands, move files with checksum verification, search logs and audit hosts, with destructive commands blocked before they reach the shell.",
   "author": {
     "name": "hypnosis",

@@ -37,6 +37,9 @@ import {
   inspectCommand,
 } from '../utils/destructive-command.js';
 import { DB_CLIENTS, inspectIrreversible } from '../utils/irreversible-command.js';
+import { findBlindStrikes } from '../utils/blind-target.js';
+import { judgeStrikes, readConfirmedNames } from '../utils/strike-refusal.js';
+import { previewStrikes } from '../managers/strike-preview.js';
 import { parseInvocations, unquote } from '../utils/command-parse.js';
 import { resolveRemovalTargets } from '../managers/removal-guard.js';
 import { buildStartCommand, createJobId, jobPaths, parseJobStart } from '../utils/job-command.js';
@@ -91,16 +94,6 @@ function checkDangerousCommand(command: string): string | null {
   for (const { name, args } of invocations) {
     if (name === 'chmod' && args.some((argument) => unquote(argument) === '777'))
       return 'chmod 777 detected (security risk)';
-
-    // Wiping every container at once: the containers themselves get
-    // recreated, so this is a warning, not a refusal — data volumes outlive them
-    if (
-      name === 'docker' &&
-      args[0] === 'rm' &&
-      args.includes('-f') &&
-      /\$\(docker\s+ps/.test(args.join(' '))
-    )
-      return 'docker rm all containers detected';
   }
 
   // The query is searched for across the whole command, but only if a DB
@@ -293,7 +286,14 @@ export class ExecTool {
         );
 
         return {
-          content: [{ type: 'text', text: blockedMessage(commands[refusal.index], refusal.reason) }],
+          content: [
+            {
+              type: 'text',
+              text: refusal.spoken
+                ? refusal.reason
+                : blockedMessage(commands[refusal.index], refusal.reason),
+            },
+          ],
           isError: true,
           structuredContent: summary,
         };
@@ -527,7 +527,7 @@ export class ExecTool {
     commands: string[],
     config: SSHConfig,
     sudo?: boolean
-  ): Promise<{ index: number; reason: string } | null> {
+  ): Promise<{ index: number; reason: string; spoken?: boolean } | null> {
     // The passport is only needed for the home directory, and that is only
     // needed where a deletion appears at all. An ordinary command should not
     // pay for a check that does not concern it — so the home directory is fetched lazily.
@@ -539,6 +539,16 @@ export class ExecTool {
       const irreversible = inspectIrreversible(command);
       if (irreversible.blocked) {
         return { index, reason: irreversible.reason! };
+      }
+
+      // A strike whose target the server would find is judged by what the
+      // server actually finds: the text alone cannot say, and the caller
+      // believed it could
+      const strikes = findBlindStrikes(command);
+      if (strikes.length > 0) {
+        const previews = await previewStrikes(this.executor, config, strikes, { sudo });
+        const spoken = judgeStrikes(previews, readConfirmedNames(command));
+        if (spoken !== null) return { index, reason: spoken, spoken: true };
       }
 
       if (findRemovalTargets(command).length === 0) continue;

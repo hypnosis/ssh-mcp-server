@@ -178,8 +178,10 @@ describe('массовая уборка docker', () => {
     expect(await warned('docker system df')).toBe(false);
   });
 
-  it('docker rm всех контейнеров — предупреждение', async () => {
-    expect(await warned('docker rm -f $(docker ps -aq)')).toBe(true);
+  // Ступень поднялась: цель, которую раскрывает сервер, теперь не предупреждение,
+  // а отказ — до отправки, со списком того, что попало бы под удар
+  it('docker rm всех контейнеров — отказ, а не предупреждение', async () => {
+    expect(await blocked('docker rm -f $(docker ps -aq)')).toBe(true);
   });
 
   it('слежение за логами живого контейнера — тишина, хотя флаг тот же', async () => {

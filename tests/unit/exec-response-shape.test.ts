@@ -276,7 +276,6 @@ describe('ssh_exec: ответ подписан текстовым типом', 
 describe('ssh_exec: предупреждение об опасной команде', () => {
   it.each([
     ['chmod 777 /srv/app', 'chmod 777 detected (security risk)'],
-    ['docker rm -f $(docker ps -aq)', 'docker rm all containers detected'],
     ['psql -c "DROP TABLE users;"', 'DROP TABLE detected'],
     ['psql -c "TRUNCATE users;"', 'TRUNCATE detected'],
     ['psql -c "DELETE FROM users;"', 'DELETE without WHERE detected'],

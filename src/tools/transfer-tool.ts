@@ -34,7 +34,7 @@ import { install } from '../managers/installer.js';
 import { localPathOps } from '../managers/local-path-ops.js';
 import { remotePathOps } from '../managers/remote-path-ops.js';
 import { resolveRemotePath } from '../managers/path-guard.js';
-import { buildSudoStagingPath } from '../utils/tmp-name.js';
+import { buildSudoStagingPath, buildTempPath } from '../utils/tmp-name.js';
 import { shellMode, shellOwner, shellQuote } from '../utils/shell-arg.js';
 import { requireText } from '../utils/tool-args.js';
 import type { SSHConfig } from '../utils/ssh-config.js';
@@ -61,6 +61,8 @@ interface UploadFileResult {
 
 interface UploadDirResult extends UploadFileResult {
   files_uploaded: number;
+  /** The target's own files were kept: asked for by merge, and there was something to keep */
+  merged: boolean;
 }
 
 /**
@@ -154,6 +156,7 @@ interface UploadArgs {
   sudo?: boolean;
   owner?: unknown;
   overwrite?: boolean;
+  merge?: boolean;
   timeout?: unknown;
 }
 
@@ -209,8 +212,8 @@ export class TransferTool {
         description:
           'Copies a local file or directory to a server, checked by sha256 on both sides and never left ' +
           'half-written at the target. A directory replaces the target whole — whatever was there and is ' +
-          'not in the source is gone with it. For text you can paste, ssh_file_write is cheaper; piping ' +
-          'base64 through ssh_exec truncates silently.',
+          'not in the source is gone with it; merge: true keeps it instead. For text you can paste, ' +
+          'ssh_file_write is cheaper; piping base64 through ssh_exec truncates silently.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -223,7 +226,7 @@ export class TransferTool {
               type: 'string',
               description:
                 'Where it goes on the server. A sent directory becomes this path itself and replaces ' +
-                'it whole, not file by file.',
+                'it whole, not file by file — with merge: true what the source lacks stays.',
             },
             mode: {
               type: 'string',
@@ -249,6 +252,15 @@ export class TransferTool {
                 'false = refuse rather than replace, including when the target cannot be checked. ' +
                 'A directory is judged whole, not per file. Default: true',
               default: true,
+            },
+            merge: {
+              type: 'boolean',
+              description:
+                'Directories only. true = what the target holds and the source does not stays — ' +
+                'uploads, .env, logs; same-named files are taken from the source. The tree is still ' +
+                'put in place whole, by one rename. mode and owner then cover the kept files too. ' +
+                'Default: false',
+              default: false,
             },
             timeout: TIMEOUT_PARAM,
           },
@@ -354,6 +366,23 @@ export class TransferTool {
       );
     }
 
+    // Both refusals name a caller's contradiction, and both are answered
+    // before the first command: a single file has nothing to merge with, and
+    // merging is writing into an occupied target, which overwrite: false forbids
+    if (args.merge && !isDir) {
+      throw new CallerError(
+        `merge applies to directories only, and ${localPath} is a file. ` +
+        'Drop merge, or send a directory.'
+      );
+    }
+
+    if (args.merge && args.overwrite === false) {
+      throw new CallerError(
+        'merge and overwrite: false ask for opposite things: merging writes into the target ' +
+        'that overwrite: false forbids touching. Pass one of them.'
+      );
+    }
+
     if (isDir) {
       const result = await this.uploadDirectory(
         sshConfig,
@@ -365,6 +394,7 @@ export class TransferTool {
           sudo: !!args.sudo,
           owner,
           overwrite: args.overwrite !== false,
+          merge: args.merge === true,
           timeoutMs,
         }
       );
@@ -428,6 +458,11 @@ export class TransferTool {
       lines.push(`  sha256: verified (${(r as UploadDirResult).files_uploaded} files)`);
     }
     lines.push(`  atomic: ${r.atomic}`);
+    // Said only when it happened: on an empty target merge has nothing to keep,
+    // and a line about kept files would describe something that never took place
+    if (isDir && (r as UploadDirResult).merged) {
+      lines.push('  merged: true — files the source does not have were kept');
+    }
     lines.push(`  sudo: ${r.sudo}`);
     return lines.join('\n') + formatWarnings([...pathWarnings, ...(r.warnings ?? [])]);
   }
@@ -478,7 +513,6 @@ export class TransferTool {
       sudo: opts.sudo,
     });
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
-    let ownerWarnings: string[] = [];
 
     const outcome = await install(ops, {
       finalPath: remotePath,
@@ -502,9 +536,7 @@ export class TransferTool {
         );
         return null;
       },
-      finalize: async (staging) => {
-        ownerWarnings = await this.applyOwnership(sshConfig, staging, opts);
-      },
+      finalize: (staging) => this.applyOwnership(sshConfig, staging, opts),
     });
 
     return {
@@ -514,7 +546,7 @@ export class TransferTool {
       ...verdict,
       atomic: true,
       sudo: opts.sudo,
-      warnings: [...outcome.warnings, ...ownerWarnings],
+      warnings: outcome.warnings,
     };
   }
 
@@ -723,6 +755,8 @@ export class TransferTool {
       sudo: boolean;
       owner?: string;
       overwrite: boolean;
+      /** Keep what the target holds and the source does not */
+      merge: boolean;
       /** Transfer ceiling; without it the transfer runs as long as it takes */
       timeoutMs?: number;
     }
@@ -759,7 +793,7 @@ export class TransferTool {
 
     const ops = remotePathOps({ executor: this.executor, config: sshConfig, sudo: opts.sudo });
     let verdict: { verified: boolean; verifyNote?: string } = { verified: false };
-    let ownerWarnings: string[] = [];
+    let merged = false;
 
     // The directory is replaced only as a whole and only through the
     // installer. A separate `rm -rf` on the live path followed by a `mv`
@@ -770,18 +804,36 @@ export class TransferTool {
     const outcome = await install(ops, {
       finalPath: finalDir,
       kind: 'directory',
-      stage: async (staging) => {
+      stage: async (staging, existing) => {
         // The whole tree travels at once: the transport creates subdirectories
-        const runner = await getRunner(sshConfig);
-        if (opts.sudo) {
-          await this.stageTreeUnderSudo(sshConfig, localDir, staging, opts.timeoutMs, !opts.mode);
+        const deliver = async (destination: string) => {
+          if (opts.sudo) {
+            await this.stageTreeUnderSudo(
+              sshConfig,
+              localDir,
+              destination,
+              opts.timeoutMs,
+              !opts.mode
+            );
+            return;
+          }
+          const runner = await getRunner(sshConfig);
+          await runner.upload(localDir, destination, {
+            recursive: true,
+            preserveMode: !opts.mode,
+            timeoutMs: opts.timeoutMs,
+          });
+        };
+
+        // Nothing at the target means nothing to keep: merge asked for on an
+        // empty spot is an ordinary install, not a failure
+        if (!opts.merge || existing !== 'directory') {
+          await deliver(staging);
           return;
         }
-        await runner.upload(localDir, staging, {
-          recursive: true,
-          preserveMode: !opts.mode,
-          timeoutMs: opts.timeoutMs,
-        });
+
+        await this.stageMerged(sshConfig, finalDir, staging, deliver, opts);
+        merged = true;
       },
       verify: async (staging) => {
         if (!opts.verify) return null;
@@ -802,13 +854,12 @@ export class TransferTool {
       // would live on the live path with the wrong access for a while.
       // Walking the tree scales with its size, so the ceiling here is the
       // same as for the transfer
-      finalize: async (staging) => {
-        ownerWarnings = await this.applyOwnership(sshConfig, staging, {
+      finalize: (staging) =>
+        this.applyOwnership(sshConfig, staging, {
           ...opts,
           recursive: true,
           timeoutMs: opts.timeoutMs ?? 0,
-        });
-      },
+        }),
     });
 
     return {
@@ -818,8 +869,56 @@ export class TransferTool {
       atomic: true,
       sudo: opts.sudo,
       files_uploaded: files.length,
-      warnings: [...outcome.warnings, ...ownerWarnings],
+      merged,
+      warnings: outcome.warnings,
     };
+  }
+
+  /**
+   * Build the staging tree out of the target's own content with the new tree
+   * on top.
+   *
+   * The order is the whole point. The new tree crosses the network first, into
+   * a temporary path of its own next to the target; only then is the target
+   * copied, and only then does the new tree land on top of that copy. Copying
+   * the target first would widen the window in which writes into the live
+   * directory — a log line, an upload — are missed by the copy that replaces it.
+   *
+   * The composition is two plain `cp -a`: the same two on BusyBox and on
+   * coreutils. `cp -a -n` reads better and would do it in one command, but on
+   * BusyBox it skips the whole tree and still exits 0 — merge would quietly
+   * become a full replacement, which is the loss the flag exists to prevent.
+   */
+  private async stageMerged(
+    sshConfig: SSHConfig,
+    finalDir: string,
+    staging: string,
+    deliver: (destination: string) => Promise<void>,
+    opts: { sudo: boolean; timeoutMs?: number }
+  ): Promise<void> {
+    const incoming = buildTempPath(finalDir);
+    await deliver(incoming);
+
+    try {
+      await this.executor.executeChecked(
+        sshConfig,
+        `cp -a -- ${shellQuote(finalDir)} ${shellQuote(staging)}`,
+        { sudo: opts.sudo, timeout: opts.timeoutMs }
+      );
+      await this.executor.executeChecked(
+        sshConfig,
+        `cp -a -- ${shellQuote(`${incoming}/.`)} ${shellQuote(`${staging}/`)}`,
+        { sudo: opts.sudo, timeout: opts.timeoutMs }
+      );
+    } finally {
+      // A second whole copy of the data: it goes away whatever happens. Under
+      // sudo it was written next to the target as root, so the cleanup needs
+      // the same privileges — the connecting user cannot remove it, and the
+      // copy would stay next to the target as a leftover nobody asked for
+      await this.executor
+        .execute(sshConfig, `rm -rf -- ${shellQuote(incoming)}`, { sudo: opts.sudo })
+        .catch(() => undefined);
+    }
   }
 
   // ---------------------------------------------------------------------------

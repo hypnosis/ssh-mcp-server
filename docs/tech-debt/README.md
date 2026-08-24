@@ -39,7 +39,7 @@
 | TD-27 | Фоновую задачу опрашивают вслепую | ✅ закрыт 2026-08-20 | [archive/job-polled-blind_27.md](archive/job-polled-blind_27.md) |
 | TD-28 | Профилю по ключу нечем предъявить пароль на `sudo` | ✅ закрыт 2026-08-22 | [archive/sudo-needs-a-password-nobody-has_28.md](archive/sudo-needs-a-password-nobody-has_28.md) |
 | TD-29 | Долгую работу под root запустить нечем | ✅ закрыт 2026-08-21 | [archive/detached-work-cannot-be-root_29.md](archive/detached-work-cannot-be-root_29.md) |
-| TD-30 | Каталог доставляется только заменой целиком | 🔹 отложено, в следующий спринт | [directory-upload-replaces-whole_30.md](directory-upload-replaces-whole_30.md) |
+| TD-30 | Каталог доставляется только заменой целиком | ✅ закрыт 2026-08-25 | [archive/directory-upload-replaces-whole_30.md](archive/directory-upload-replaces-whole_30.md) |
 | TD-31 | Легенда ответа объявлена, но правило её ключей нигде не сказано | ✅ закрыт 2026-08-21 | [archive/legend-keys-not-declared_31.md](archive/legend-keys-not-declared_31.md) |
 | TD-32 | Поверхность читают кусками, и связи между кусками не держатся | ✅ закрыт 2026-08-23 | [archive/surface-read-in-pieces_32.md](archive/surface-read-in-pieces_32.md) |
 | TD-33 | Слова ответа объяснены только в ответе, а решение принимается до него | ✅ закрыт 2026-08-23 | [archive/answer-words-explained-too-late_33.md](archive/answer-words-explained-too-late_33.md) |

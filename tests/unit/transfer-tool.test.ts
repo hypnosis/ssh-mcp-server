@@ -231,18 +231,40 @@ function answer(command: string): SSHExecuteResult {
     return ok();
   }
 
-  // Флаги разбираются, а не сверяются целиком: `-p` тащит права, `-r` — дерево,
-  // и без `-r` каталог утилита не копирует, а отказывает
+  // Флаги разбираются, а не сверяются целиком: `-p` тащит права, `-r` и `-a` —
+  // дерево, и без них каталог утилита не копирует, а отказывает
   const copyFlags = command.match(/^cp( -([a-z]+))? -- /);
   if (copyFlags) {
-    const [source, target] = paths;
-    const recursive = (copyFlags[2] ?? '').includes('r');
+    const flags = copyFlags[2] ?? '';
+    const recursive = flags.includes('r') || flags.includes('a');
+    // `cp -a X/. Y/` — содержимое каталога в каталог, а не сам каталог внутрь.
+    // Обе формы измерены на лаборатории: BusyBox и coreutils отвечают одинаково
+    const contents = paths[0].endsWith('/.');
+    const source = contents ? paths[0].slice(0, -2) : paths[0];
+    const target = paths[1].replace(/\/+$/, '');
     const node = server.get(source);
     if (!node) return fail(`cp: cannot stat '${source}': No such file or directory`);
     if (node.kind === 'dir' && !recursive) return fail(`cp: -r not specified; omitting '${source}'`);
+
+    if (contents) {
+      if (node.kind !== 'dir') return fail(`cp: cannot stat '${paths[0]}': Not a directory`);
+      // Назначения может не быть: обе утилиты создают его и отвечают успехом
+      putDir(target);
+      for (const key of subtree(source)) {
+        if (key === source) continue;
+        server.set(target + key.slice(source.length), { ...server.get(key)! });
+      }
+      return ok();
+    }
+
     if (!server.has(parentOf(target))) return fail(`cp: cannot create '${target}'`);
-    if (recursive) copyTree(source, target);
-    else server.set(target, { ...node });
+    // Занятая цель у обычной формы не заменяется, а получает копию внутрь себя —
+    // ровно та ловушка, из-за которой замена идёт через `mv -T`
+    const nested = server.get(target)?.kind === 'dir'
+      ? `${target}/${source.slice(source.lastIndexOf('/') + 1)}`
+      : target;
+    if (recursive) copyTree(source, nested);
+    else server.set(nested, { ...node });
     return ok();
   }
 
@@ -688,6 +710,194 @@ describe('перезапись по умолчанию', () => {
     expect(text).toContain('Upload OK');
     expect(server.has('/srv/app/old.js')).toBe(false);
     expect(server.get('/srv/app/app.js')).toEqual({ kind: 'file', content: 'run();' });
+  });
+});
+
+/**
+ * Слияние: цель отдаёт то, чего нет в источнике, и всё равно встаёт на место
+ * целиком, одним переименованием.
+ *
+ * Собирается двумя `cp -a`, и обе команды проверяются по отдельности: первая
+ * даёт основу из живой цели, вторая кладёт поверх приехавшее. Порядок тоже
+ * под тестом — копия цели снимается после передачи по сети, иначе запись,
+ * сделанная в цель во время передачи, теряется молча.
+ */
+describe('слияние каталога', () => {
+  /** Живой каталог: сборка и то, что сборка про себя не знает */
+  function putLiveTarget(): void {
+    putFile('/srv/app/app.js', 'old');
+    putFile('/srv/app/.env', 'SECRET=1');
+    putFile('/srv/app/uploads/pic.bin', 'bytes');
+  }
+
+  const uploadMerging = (extra: Record<string, unknown> = {}) =>
+    call('ssh_upload', {
+      local_path: localDir,
+      remote_path: '/srv/app',
+      recursive: true,
+      merge: true,
+      verify: false,
+      ...extra,
+    });
+
+  it('чужое в цели остаётся, одноимённое берётся из источника', async () => {
+    putLiveTarget();
+
+    const text = await textOf(uploadMerging());
+
+    expect(text).toContain('Upload OK');
+    expect(server.get('/srv/app/.env')).toEqual({ kind: 'file', content: 'SECRET=1' });
+    expect(server.get('/srv/app/uploads/pic.bin')).toEqual({ kind: 'file', content: 'bytes' });
+    expect(server.get('/srv/app/app.js')).toEqual({ kind: 'file', content: 'run();' });
+    expect(server.get('/srv/app/conf/app.ini')).toEqual({ kind: 'file', content: 'key=value' });
+  });
+
+  it('без merge то же самое исчезает — разница именно в параметре', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging({ merge: false }));
+
+    expect(server.has('/srv/app/.env')).toBe(false);
+    expect(server.has('/srv/app/uploads/pic.bin')).toBe(false);
+  });
+
+  it('основа берётся из цели: первая команда копирует живой каталог', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging());
+
+    const [command, options] = commandFor(/^cp -a -- '\/srv\/app' /)!;
+    expect(command).toMatch(/^cp -a -- '\/srv\/app' '\/srv\/\.upload-[0-9a-f]+\.app'$/);
+    expect(options.sudo).toBeFalsy();
+  });
+
+  it('приехавшее ложится поверх основы содержимым, а не каталогом внутрь', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging());
+
+    const [command] = commandFor(/\/\.' '/)!;
+    expect(command).toMatch(
+      /^cp -a -- '\/srv\/\.upload-[0-9a-f]+\.app\/\.' '\/srv\/\.upload-[0-9a-f]+\.app\/'$/
+    );
+  });
+
+  it('сеть отрабатывает раньше, чем снимается копия цели', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging());
+
+    const delivered = uploadMock.mock.invocationCallOrder[0];
+    const copiedTarget = executeMock.mock.calls.findIndex(([, command]: [unknown, string]) =>
+      /^cp -a -- '\/srv\/app' /.test(command)
+    );
+    expect(delivered).toBeLessThan(executeMock.mock.invocationCallOrder[copiedTarget]);
+  });
+
+  it('второй временный путь убирается, рядом с целью следов не остаётся', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging());
+
+    const leftovers = [...server.keys()].filter((path) => /\/\.(upload|bak)-/.test(path));
+    expect(leftovers).toEqual([]);
+  });
+
+  it('сверяются только приехавшие файлы: чужого в цели источник не знает', async () => {
+    putLiveTarget();
+
+    const text = await textOf(uploadMerging({ verify: true }));
+
+    expect(text).toContain('sha256: verified (2 files)');
+    expect(server.get('/srv/app/.env')).toEqual({ kind: 'file', content: 'SECRET=1' });
+  });
+
+  it('пустое место сливать не с чем — установка обычная, и ответ этого не выдумывает', async () => {
+    const text = await textOf(uploadMerging());
+
+    expect(text).toContain('Upload OK');
+    expect(text).not.toContain('merged');
+    expect(server.get('/srv/app/app.js')).toEqual({ kind: 'file', content: 'run();' });
+  });
+
+  it('слияние названо в ответе только тогда, когда оно было', async () => {
+    putLiveTarget();
+
+    const text = await textOf(uploadMerging());
+
+    expect(text).toContain('merged: true');
+  });
+
+  it('под sudo обе команды сборки идут под sudo', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging({ sudo: true }));
+
+    const composing = sentCommands().filter(([command]) => command.startsWith('cp -a -- '));
+    expect(composing).toHaveLength(2);
+    for (const [, options] of composing) expect(options.sudo).toBe(true);
+  });
+
+  it('под sudo временная копия рядом с целью убирается тоже под sudo', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging({ sudo: true }));
+
+    const [command, options] = commandFor(/^rm -rf -- '\/srv\/\.upload-/)!;
+    expect(command).toMatch(/^rm -rf -- '\/srv\/\.upload-[0-9a-f]+\.app'$/);
+    // Копия написана от root: без sudo уборка молча провалится и оставит след
+    expect(options.sudo).toBe(true);
+  });
+
+  it('под sudo права источника едут по той же просьбе, что и без него', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging({ sudo: true, mode: '750' }));
+
+    expect(uploadMock.mock.calls[0][2]).toMatchObject({ recursive: true, preserveMode: false });
+  });
+
+  it('права накрывают и сохранённое: chmod идёт по всей собранной копии', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging({ mode: '750' }));
+
+    const [command] = commandFor(/^chmod /)!;
+    expect(command).toMatch(/^chmod -R 750 -- '\/srv\/\.upload-[0-9a-f]+\.app'$/);
+  });
+
+  it('одиночный файл сливать не с чем — отказ называет и причину, и выход', async () => {
+    const text = await textOf(
+      call('ssh_upload', { local_path: localFile, remote_path: '/srv/app.js', merge: true })
+    );
+
+    expect(text).toContain(`merge applies to directories only, and ${localFile} is a file.`);
+    expect(text).toContain('Drop merge, or send a directory.');
+    expect(sentCommands()).toEqual([]);
+  });
+
+  it('merge и overwrite:false просят противоположного — сказано, чего они хотят порознь', async () => {
+    const text = await textOf(uploadMerging({ overwrite: false }));
+
+    expect(text).toContain('merge and overwrite: false ask for opposite things');
+    expect(text).toContain('that overwrite: false forbids touching. Pass one of them.');
+    expect(sentCommands()).toEqual([]);
+  });
+
+  it('без просьбы о правах слияние тащит права источника', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging());
+
+    expect(uploadMock.mock.calls[0][2]).toMatchObject({ recursive: true, preserveMode: true });
+  });
+
+  it('заказанный mode отменяет права источника — их всё равно перекроют', async () => {
+    putLiveTarget();
+
+    await textOf(uploadMerging({ mode: '750' }));
+
+    expect(uploadMock.mock.calls[0][2]).toMatchObject({ recursive: true, preserveMode: false });
   });
 });
 
@@ -1173,6 +1383,7 @@ describe('объявление инструментов', () => {
     expect(download.sudo.default).toBe(false);
     expect(upload.sudo.default).toBe(false);
     expect(upload.overwrite.default).toBe(true);
+    expect(upload.merge.default).toBe(false);
     expect(download.verify.default).toBe(true);
   });
 

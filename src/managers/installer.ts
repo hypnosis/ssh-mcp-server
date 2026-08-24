@@ -72,12 +72,22 @@ export interface InstallPlan {
   /** The path the caller asked for */
   finalPath: string;
   kind: 'file' | 'directory';
-  /** Write the data to a temporary path */
-  stage: (stagingPath: string) => Promise<void>;
+  /**
+   * Write the data to a temporary path.
+   *
+   * `existing` is what the survey found at the target: staging that keeps
+   * part of the target has to know whether there is anything to keep.
+   */
+  stage: (stagingPath: string, existing: PathKind) => Promise<void>;
   /** Verify the temporary path before the replacement: a rejection reason, or null */
   verify?: (stagingPath: string) => Promise<string | null>;
-  /** Permissions and ownership after the replacement; a failure here does not undo it */
-  finalize?: (finalPath: string) => Promise<void>;
+  /**
+   * Permissions and ownership after the replacement; a failure here does not
+   * undo it. What could not be applied comes back as warnings rather than
+   * through a variable the caller keeps outside: a value written from inside
+   * a callback is read as an answer even when the callback never ran.
+   */
+  finalize?: (finalPath: string) => Promise<string[] | void>;
 }
 
 export interface InstallOutcome {
@@ -162,14 +172,17 @@ export async function install(ops: PathOps, plan: InstallPlan): Promise<InstallO
   // otherwise the live path would have a window where the data already
   // lives there but access to it is still wrong
   try {
-    await plan.stage(staging);
+    await plan.stage(staging, existing);
 
     if (plan.verify) {
       const reason = await plan.verify(staging);
       if (reason) throw new InstallError(`verification failed for ${plan.finalPath}: ${reason}`);
     }
 
-    if (plan.finalize) await plan.finalize(staging);
+    if (plan.finalize) {
+      const notes = await plan.finalize(staging);
+      if (notes) warnings.push(...notes);
+    }
   } catch (error) {
     await discard(ops, staging);
     throw warnings.length > 0

@@ -643,7 +643,7 @@ documented in **[docs/security.md](docs/security.md)**.
 | `ssh_file_read` | Read one or several files, text or binary |
 | `ssh_file_write` | Write files with atomic rename and optional SHA-256 verification |
 | `ssh_file_list` | List a directory, with optional glob and recursion |
-| `ssh_upload` | Upload a file or directory over SSH, binary-safe with integrity checks |
+| `ssh_upload` | Upload a file or directory over SSH, binary-safe with integrity checks; a directory replaces the target or merges into it |
 | `ssh_download` | Download a file or directory over SSH, binary-safe with integrity checks |
 | `ssh_job_status` | State of a background job: running, finished, or lost |
 | `ssh_job_output` | Read accumulated output from a byte offset |

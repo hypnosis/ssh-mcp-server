@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-08-24
+
+### Added — a directory can be updated without wiping what the source does not carry
+- `ssh_upload` takes `merge: true` for directories. What the target holds and the new tree
+  does not — uploads, `.env`, logs — stays where it is; files that share a name are taken
+  from the source. Without the flag a directory is still replaced whole, as before, and
+  "update the build in a live directory" no longer has to go around the tool through
+  `ssh_exec` and `tar`, outside every check.
+- The tree still arrives whole. The new files cross the network first, into a temporary
+  path of their own; only then is the target's own content copied beside it, the two are
+  composed there, and the result takes the target's place by a single rename. A connection
+  that breaks leaves the live directory exactly as it was, and there is no moment when it
+  is half old and half new.
+- The composition is two plain copies, the same ones on BusyBox and on coreutils. The
+  shorter spelling with a no-clobber flag was measured on both and rejected: BusyBox skips
+  the whole tree and still reports success, which would turn merging back into a silent
+  full replacement.
+- `mode` and `owner` describe everything that ends up at the target, the kept files
+  included.
+- Merging together with `overwrite: false` is refused before the first command: one asks to
+  write into the target, the other forbids touching it.
+- The answer says `merged: true` only when something was really kept — asking to merge onto
+  an empty path is an ordinary install, and it is not dressed up as anything more.
+
+### Changed — a note about an owner that was not applied cannot be lost on the way out
+- The step that sets permissions and ownership now hands its notes back instead of writing
+  them into a variable kept outside it. The wording in `ssh_upload` and `ssh_file_write` is
+  the same as before; what changed is that there is no longer a path on which the note is
+  prepared and then dropped.
+
+### Changed — the tool list reads as one table
+- All 18 tools stand in a single table under a `## Tools` heading instead of five tables
+  split by topic, and the install section carries the plain `mcpServers` block most clients
+  share. Catalogues read a README literally: they look for that heading and that block, and
+  a listing without them shows neither the tools nor a way to install the server.
+
 ## [2.3.2] - 2026-08-24
 
 ### Added — a command that does not name what it stops is shown the target first

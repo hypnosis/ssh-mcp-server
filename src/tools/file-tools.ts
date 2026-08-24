@@ -792,8 +792,6 @@ export class FileTools {
     // "matched" and "nothing to verify with" both look to the client like an
     // equally successful write
     let verification: VerificationOutcome = { status: 'skipped' };
-    /** A named owner that chown could not take: the file lands anyway, and silence would hide it */
-    let ownerWarnings: string[] = [];
     const ops = remotePathOps({
       executor: this.executor,
       config: sshConfig,
@@ -853,10 +851,7 @@ export class FileTools {
 
         // Under a regular user chown refuses any name but its own, and a
         // dropped owner is visible only in `ls -l` on the server
-        if (!file.sudo) {
-          ownerWarnings = [OWNER_NEEDS_SUDO];
-          return;
-        }
+        if (!file.sudo) return [OWNER_NEEDS_SUDO];
 
         await this.executor.executeChecked(
           sshConfig,
@@ -868,7 +863,7 @@ export class FileTools {
 
     return {
       path: outcome.path,
-      warnings: [...target.warnings, ...outcome.warnings, ...ownerWarnings],
+      warnings: [...target.warnings, ...outcome.warnings],
       verification,
     };
   }

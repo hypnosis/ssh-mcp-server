@@ -18,11 +18,55 @@ export type ToolResult = {
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
   /**
-   * Parsed response for tools that declared its schema. A failure has none:
-   * the client only requires parsing for a response without the failure flag.
+   * Parsed response for tools that declared its schema. A failure carries one
+   * only where the failure is itself a measurement the caller acts on — a
+   * refused login, a copy that differed from its source. Everything else
+   * fails with text alone.
    */
   structuredContent?: object;
 };
+
+/**
+ * The way out of anything a tool could not do.
+ *
+ * The cases are not worth enumerating — a driver nobody supports, a utility
+ * missing from the machine, an engine this server does not speak. They share
+ * one exit, and the exit belongs in the refusal itself: a caller told only
+ * that the door is shut goes looking for the next door blind, and the first
+ * thing it tries is the shell anyway. Which command to run there is the
+ * caller's business — this names the tool, not the line.
+ */
+export const EXEC_FALLBACK = 'What this tool cannot do, ssh_exec can — it runs commands on the machine directly.';
+
+/**
+ * A refusal the shell would not get past either.
+ *
+ * A rule of the profile is not a limitation of the tool: pointing at ssh_exec
+ * there teaches the caller to walk around the rule instead of respecting it.
+ * Such errors carry this flag and get no way out added.
+ */
+type GuardedError = { noExecHint: true };
+
+/**
+ * The call itself was wrong: a parameter missing, of the wrong kind, out of
+ * range. The fix is in the call and nowhere else, so no way out is offered —
+ * there is nothing here to work around, and pointing at the shell would send
+ * the caller to redo by hand what it only had to ask for correctly.
+ */
+export class CallerError extends Error {
+  readonly noExecHint = true as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'CallerError';
+  }
+}
+
+function isGuarded(error: unknown): boolean {
+  return (
+    typeof error === 'object' && error !== null && (error as GuardedError).noExecHint === true
+  );
+}
 
 /** An error that carries the output the command accumulated before it was stopped */
 type PartialOutputCarrier = { partialStdout: string; partialStderr: string };
@@ -65,14 +109,28 @@ export function batchOutcome(
  * that's the only trace of its work: it can't be retried — it already
  * started on the server.
  */
-export function toolFailure(error: unknown): ToolResult {
+export function toolFailure(
+  error: unknown,
+  structuredContent?: object,
+  options: { hint?: boolean } = {}
+): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
   const partial = carriesPartialOutput(error)
     ? partialOutputSection(error.partialStdout, error.partialStderr)
     : '';
 
-  return {
-    content: [{ type: 'text', text: partial ? `Error: ${message}\n\n${partial}` : `Error: ${message}` }],
+  // The shell is not a way round a rule, and it is no answer to a tool that
+  // is the shell; everywhere else it is the answer, said once
+  const hint =
+    options.hint !== false && !isGuarded(error) && !message.includes('ssh_exec')
+      ? ` ${EXEC_FALLBACK}`
+      : '';
+  const text = `Error: ${message}${hint}`;
+
+  const result: ToolResult = {
+    content: [{ type: 'text', text: partial ? `${text}\n\n${partial}` : text }],
     isError: true,
   };
+  if (structuredContent) result.structuredContent = structuredContent;
+  return result;
 }

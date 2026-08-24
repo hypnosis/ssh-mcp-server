@@ -58,6 +58,22 @@ const RESOLVE_MARKER = 'SSH_MCP_PATH';
 const UNRESOLVED = 'SSH_MCP_PATH_UNRESOLVED';
 
 /**
+ * A path the profile's rules refuse.
+ *
+ * The refusal is not a limit of the tool but a decision of the profile, so no
+ * answer offers a way past it: pointing at the shell here would teach the
+ * caller to walk around the rule that was set on purpose.
+ */
+export class PathDeniedError extends Error {
+  readonly noExecHint = true as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'PathDeniedError';
+  }
+}
+
+/**
  * Turn `~` and `~/…` into a real path.
  *
  * Paths without a tilde are returned as is, without requesting a passport.
@@ -246,7 +262,7 @@ export async function resolveRemotePath(
   const decision = await decideRemotePath(executor, config, path, options);
 
   if (decision.outcome === 'denied') {
-    throw new Error(`Path validation failed: ${decision.reason}`);
+    throw new PathDeniedError(`Path validation failed: ${decision.reason}`);
   }
 
   return { path: decision.path, warnings: decision.warnings };

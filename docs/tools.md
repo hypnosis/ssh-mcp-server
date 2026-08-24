@@ -16,6 +16,13 @@ shell commands: they return structured results, keep related work in one call, a
 the boundary between reading, writing, transfer, and audit explicit. Use `ssh_exec` when
 there is no fitting tool, not as the default for work the server already understands.
 
+Where a tool runs out of what it can do, it says so and names `ssh_exec` in the same breath
+— an unsupported log driver, a missing utility, an engine this server does not speak. The
+edge of the toolset is not something to memorise in advance; the refusal points past it at
+the moment it matters. Two refusals stay silent about the shell on purpose: a path your
+profile forbids and a malformed call — see
+[013](decisions/013-refusal-names-the-way-through.md).
+
 ## Common SSH and audit tasks
 
 - Check a server first: `ssh_audit_baseline`; follow a disk, TLS, or service finding with
@@ -458,6 +465,14 @@ space or a newline stays one name.
 something specific is `ssh_log_search`, which filters on the machine instead of shipping
 the tail to you first.
 
+**A container instead of a file.** `container: "web-1"` asks docker where that container
+writes and reads the file it names — the answer says which one. Only the `json-file` driver
+leaves a file behind. Everything this cannot read — another driver, another engine, a name
+nothing answers to, a socket closed by permissions — comes back said aloud, naming `ssh_exec`
+as the way through, so a refusal never sends the caller searching blind.
+The file belongs to root, so `sudo: true`. `path` and `container` are alternatives, never a
+pair.
+
 
 **Note:** For multiple logs, use double quotes: `path: ["log1", "log2"]`
 
@@ -478,6 +493,14 @@ ssh_log_tail({
   ],
   lines: 50
 })
+
+// A container, by name
+ssh_log_tail({
+  profile: "production",
+  container: "web-1",
+  sudo: true,
+  lines: 50
+})
 ```
 
 ### `ssh_log_search` - Search Logs
@@ -496,6 +519,11 @@ multi-gigabyte file to its end.
 `files_unreadable`, and that is the signal to retry with `sudo: true`. Under a day, `since`
 filters files rather than lines; a file with undated lines is searched whole and named as
 such.
+
+**A container instead of a file.** `container: "web-1"` searches the file that container's
+driver writes, found by asking docker. Line numbers are the file's own, and `source` in the
+answer names the engine, the driver and the path. Same rules as in `ssh_log_tail`:
+`json-file` only, root's file, not combined with `path` or with `recursive`.
 
 **What comes back.** The matched lines themselves, as `lines`: `{file, line, text,
 context}`. `context: true` marks a neighbour brought in by the `context` option rather than

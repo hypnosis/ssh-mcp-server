@@ -53,6 +53,13 @@ impossible — no `sha256sum` on the server, output truncated, the guard killed 
 command — the answer says "could not verify" instead of claiming a mismatch, because a
 false mismatch would make the installer delete what it just delivered.
 
+**A refusal never teaches you to walk around your own rule.** When a tool cannot do
+something, its answer names `ssh_exec` as the way through — but not when the refusal came
+from your own configuration. A path outside `pathSecurity` is refused without that hint,
+because a fence you set on purpose is not a limitation to route around. The same holds for
+the destructive-command guards: they refuse, and the answer names the `# CONFIRMED-DESTRUCTIVE`
+marker that you have to write yourself, never a way to get the same effect unnoticed.
+
 **What is out of scope.** Whoever can call this MCP server can reach every machine in
 the profiles file with the rights of those accounts. The server does not authenticate
 its caller — that is the MCP client's job. Restrict what an account may do on the

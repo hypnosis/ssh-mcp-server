@@ -17,6 +17,8 @@
  * clipped permissions or a silently altered pattern would go unnoticed.
  */
 
+import { CallerError } from './tool-result.js';
+
 /** What survives in a pattern: letters and digits of any language, harmless punctuation, glob characters */
 const GLOB_KEEP = /[^\p{L}\p{N}._/*?[\]-]/gu;
 
@@ -31,7 +33,7 @@ export function shellQuote(value: string): string {
 }
 
 function reject(name: string, value: unknown, expected: string): never {
-  throw new Error(`${name} must be ${expected}, got ${JSON.stringify(String(value))}`);
+  throw new CallerError(`${name} must be ${expected}, got ${JSON.stringify(String(value))}`);
 }
 
 /** A whole non-negative number: a line count, a sample size */

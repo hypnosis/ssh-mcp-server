@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a refusal says where the way through is
+- A tool that cannot do something now ends its refusal by naming `ssh_exec`, which runs
+  commands on the machine directly. The cases are not worth enumerating — a driver nobody
+  supports, a utility the machine does not have, an engine this server does not speak — and
+  they share one exit. An agent that hits a wall goes to the shell anyway; the question is
+  whether it goes blind. Which command to run there is the caller's business: the answer
+  names the tool, not the line.
+- Three kinds of refusal say nothing of the sort, because there the shell is the wrong
+  answer: a rule of the profile (walking around it is not a fix), a malformed call (the fix
+  is in the call), and a refusal from `ssh_exec` itself or from a detached job.
+
+
 ## [2.4.0] - 2026-08-23
 
 ### Fixed — cancelling a call now stops the command on the server

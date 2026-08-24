@@ -202,7 +202,8 @@ export class JobTools {
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
-      return toolFailure(error);
+      // A detached job is ssh_exec already: there is nowhere to point
+      return toolFailure(error, undefined, { hint: false });
     }
   }
 

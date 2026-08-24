@@ -607,8 +607,8 @@ open-world. See the [full table](docs/tools.md#what-each-tool-declares-about-its
 
 | Tool | What it does |
 |---|---|
-| `ssh_log_tail` | Last N lines of one or several logs, glob supported |
-| `ssh_log_search` | Pattern search across logs |
+| `ssh_log_tail` | Last N lines of one or several logs, glob supported; a container by name |
+| `ssh_log_search` | Pattern search across logs, or through a container's log |
 | `ssh_snapshot` | One-shot health snapshot: services, resources, Docker, network, errors |
 | `ssh_monitor` | Transport control: stats, reload, test, list, close |
 
@@ -794,6 +794,15 @@ The shared connection outlives this process on purpose: closing it on exit would
 
 ## SSH MCP server limitations
 
+**Every limit tells you the way around it.** A tool that cannot do something says so and
+names `ssh_exec`, which runs commands on the machine directly — an unsupported log driver,
+a utility the machine does not have, an engine this server does not speak. You do not have
+to know in advance where the tools end: the refusal says it, at the moment it matters.
+
+Three refusals deliberately stay silent about the shell, because there it is the wrong
+answer: a path your profile forbids (walking around your own rule is not a fix), a
+malformed call (the fix is in the call), and a refusal from `ssh_exec` itself.
+
 - **Cancellation:** a cancelled call now stops the command on the server too, sent as a second call over the same connection. Where the server has no `/proc`, the command is found through `ps` instead. FreeBSD is not verified: correct behaviour there is not guaranteed. File transfers and `ssh_snapshot` do not take cancellation at all.
 - **Atomic writes:** BSD and macOS cannot pre-check cross-filesystem renames.
 
@@ -807,6 +816,8 @@ The shared connection outlives this process on purpose: closing it on exit would
 - [ ] Remote operation timeline — commands, transfers and guard decisions in one audit trail
 - [ ] Ready-made SSH troubleshooting playbooks
 
+- [x] ~~Container logs without dropping to the shell~~ — **DONE:** `ssh_log_tail` and `ssh_log_search` take a container name, ask docker where it writes and read that file with the same machinery as any other log
+- [x] ~~A refusal that leaves you stuck~~ — **DONE:** every limit now names `ssh_exec` as the way through, so hitting the edge of a tool costs one sentence instead of a guessing game
 - [x] ~~Answers that reach the model~~ — **DONE:** command output, matched log lines, machine names and snapshot sections travel in the fields, not only in the text
 - [x] ~~Smaller MCP tool schemas~~ — **DONE:** the tool list got 10% lighter, and a detached job now shows the last lines it wrote instead of being polled blind
 - [x] ~~Long work under root~~ — **DONE:** a detached job runs with `sudo` and is followed as root, and a key-only profile answers `sudo` with its own `sudoPassword`

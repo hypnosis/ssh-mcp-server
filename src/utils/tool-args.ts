@@ -23,6 +23,8 @@
  * files" isn't work done, it's a lost call the caller needs to know about.
  */
 
+import { CallerError } from './tool-result.js';
+
 /**
  * A value in a rejection message: "nothing" is distinct from an empty
  * string and from zero.
@@ -42,7 +44,7 @@ function describe(value: unknown): string {
 }
 
 function reject(name: string, value: unknown, expected: string): never {
-  throw new Error(`${name} must be ${expected}, got ${describe(value)}`);
+  throw new CallerError(`${name} must be ${expected}, got ${describe(value)}`);
 }
 
 /** A required string: a destination path, a directory, a file name */

@@ -255,3 +255,10 @@ Two limits worth knowing:
   refuse work.
 - Rules cover file and log tools. `ssh_exec` runs arbitrary commands, and a command is not a
   path — restrict those with the account's own permissions on the server.
+
+**The refusal does not point at the way round.** Tools that cannot do something end their
+refusal by naming `ssh_exec`, which has no such limits. A path denied by `pathSecurity` is
+the one refusal that stays silent about it: the fence is yours, set on purpose, and an answer
+that suggested stepping over it would be teaching the caller to undo your own configuration.
+The limit above still holds — the rules do not reach `ssh_exec` — so a profile that relies on
+them should also restrict what the account may do on the server.

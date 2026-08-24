@@ -419,7 +419,8 @@ export class ExecTool {
       };
     } catch (error: any) {
       logger.error('ssh_exec failed:', error);
-      return toolFailure(error);
+      // Pointing at ssh_exec inside an ssh_exec answer sends the caller in a circle
+      return toolFailure(error, undefined, { hint: false });
     }
   }
 
@@ -446,7 +447,7 @@ export class ExecTool {
     };
 
     return {
-      ...toolFailure(error),
+      ...toolFailure(error, undefined, { hint: false }),
       structuredContent: execSummary(commands.map(summarize), null) satisfies ExecSummary,
     };
   }

@@ -553,7 +553,7 @@ whole call stays on your machine. The same check catches
 | Refused — the container itself | Only warned — its contents |
 |---|---|
 | `DROP DATABASE`, `dropdb` | `DROP TABLE`, `TRUNCATE`, `DELETE FROM` |
-| `docker volume rm`, `docker compose down -v` | `docker rm -f`, `docker system prune -a` |
+| `docker volume rm`, `docker compose down -v` | `docker rm -f <name>` |
 | `crontab -r` | editing one job |
 | `mkfs`, `wipefs -a`, `lvremove`, `zfs destroy` | `chmod 777` |
 | `reboot`, `shutdown`, `halt` | `git reset --hard` |
@@ -564,6 +564,46 @@ volume. Without `-v`, stopping the services is not treated as the same irreversi
 Recursive deletion of the filesystem root, a home directory or system trees such as `/etc`,
 `/var` and `/usr` is also refused, including when a symlink leads there. An unresolved target
 such as `rm -rf "$DIR"/*` is refused too: "could not check" is not treated as "safe".
+
+### Name what you stop
+
+A command that finds its target instead of naming it is not sent. The server expands it and
+answers with what stands behind the target:
+
+```bash
+docker kill $(docker ps -q --filter ancestor=web)
+# BLOCKED — would stop:
+#   edge — web:latest, Up 34 days, 0.0.0.0:8443->8443/tcp
+```
+
+For a process the answer adds the signs that it is in use: how long it has been running,
+which ports it accepts connections on, how many connections it is carrying. Named targets
+cost nothing extra and go through in silence — `docker kill web-1`, `kill 4871`,
+`systemctl stop app`.
+
+To go ahead, name what is being stopped. The names are checked against what the command
+actually reaches, so a mask that has drifted onto something else is refused rather than
+confirmed:
+
+```bash
+docker kill $(docker ps -q --filter ancestor=web) # CONFIRMED-KILL: edge
+```
+
+A pattern over command lines is a case of its own. It matches the very command that carries
+it, so the shell running it is signalled before the target and the reply breaks off in the
+middle. Such a strike is not confirmed but rewritten — by number, or with one character
+written as a class so the pattern stops matching itself:
+
+```bash
+pkill -f relay
+# BLOCKED — two ways through:
+#   kill 4871
+#   pkill -f '[r]elay' # CONFIRMED-KILL: 4871
+```
+
+Three outcomes stay apart: targets found, the expansion reached nothing, and nothing to ask
+with — no engine on the machine, a clipped answer, a connection that failed. The last two
+are refusals as well: not knowing is not a reason to proceed.
 
 ### Confirm an intentional destructive command
 

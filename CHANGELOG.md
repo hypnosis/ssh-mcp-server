@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-08-24
+
+### Added — a command that does not name what it stops is shown the target first
+- `docker kill $(docker ps -q --filter …)`, `kill $(pgrep -f …)`, `pkill -f …` and the like
+  are no longer sent. The server expands the target itself and answers with what stands
+  behind it: name, image and status for a container; number, command line, age, listening
+  ports and open connections for a process. The caller wrote a way of finding a target and
+  could not know what the way would find — now it can, before anything is stopped.
+- Named targets go through as they always did: `docker kill web-1`, `kill 4871`,
+  `systemctl stop app` cost nothing extra and ask the machine nothing.
+- To go ahead, name what is being stopped: `# CONFIRMED-KILL: edge, api`. The names are
+  checked against what the command actually reaches, so a mask that quietly drifted onto
+  something else is refused instead of confirmed. Repeating the same unnamed command is not
+  agreement, and it stops again.
+- A pattern over command lines is not confirmed but rewritten: it matches the very command
+  that carries it, so the shell running it dies before the target and the reply breaks off
+  mid-stream. The refusal offers both ways out — by number, or with one character written as
+  a class (`[r]elay`) so the pattern stops matching itself.
+- Three outcomes stay apart: targets found, the expansion reached nothing, and nothing to
+  ask with — no engine on the machine, a clipped answer, a connection that failed. The last
+  two are refusals as well: not knowing is not a reason to proceed.
+
+### Removed
+- The warning `docker rm all containers detected`: the same form is now refused before it
+  reaches the machine, and the warning could no longer be triggered.
+
 ## [2.3.1] - 2026-08-24
 
 ### Changed — a refusal says where the way through is

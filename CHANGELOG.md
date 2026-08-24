@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer: a rule of the profile (walking around it is not a fix), a malformed call (the fix
   is in the call), and a refusal from `ssh_exec` itself or from a detached job.
 
+### Added — a container's log is read by name
+- `ssh_log_tail` and `ssh_log_search` take `container` instead of `path`: docker is asked
+  where that container writes, and the file it names is read by the same machinery as any
+  other log — the window, `since`, the match cap, the truncation mark and the honest "could
+  not be read". Until now the only way in was `ssh_exec` with `docker logs`, which returns
+  text, and an empty text reads as "no errors".
+- The answer says where the lines came from: the engine, the driver and the file. Line
+  numbers are the file's own, and the text is what the container printed — the driver's
+  record around it is unwrapped, and a record that will not parse is shown as it lies rather
+  than dropped.
+- Only the `json-file` driver leaves a file behind. Everything this cannot read — another
+  driver, an engine that is not docker, a name nothing answers to, a socket closed by
+  permissions — comes back named rather than empty. Permissions additionally say to repeat
+  with `sudo: true`.
 
 ### Fixed — a checksum mismatch is now a word the answer says
 - Verification tells three outcomes apart inside and named only two of them outside:

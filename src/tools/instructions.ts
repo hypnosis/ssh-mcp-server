@@ -25,7 +25,8 @@ Which tool for which question:
   run something          ssh_exec — for what has no tool of its own
   slow work              ssh_exec detach:true, then ssh_job_status, ssh_job_output,
                          ssh_job_list, ssh_job_kill
-  logs, any text search   ssh_log_search to look for something, ssh_log_tail to read the end
+  logs, any text search   ssh_log_search to look for something, ssh_log_tail to read the end;
+                          a container is read by name, container: "web-1"
   files                   ssh_file_read to see inside, ssh_file_list to see what is there,
                           ssh_file_write to put text there
   move bytes              ssh_upload sends what is already on this machine, ssh_download fetches;

@@ -23,6 +23,7 @@ KEY="$LAB_DIR/key"
 ALPINE_PORT=2231
 DEBIAN_PORT=2232
 ROUTER_PORT=2233
+DIND_PORT=2234
 
 # Пароль лабораторного пользователя pwuser. Дублируется в tests/live/lab.ts —
 # одно значение на shell и на тесты, поэтому меняется в двух местах сразу.
@@ -240,7 +241,59 @@ else
   echo "mcp-router готов на порту $ROUTER_PORT"
 fi
 
+# Четвёртый узел: машина с собственным докером. Журнал контейнера лежит там,
+# куда показывает `docker inspect`, и прочитать его можно только на машине, где
+# этот докер и работает — проброс сокета хоста даёт путь чужой файловой системы.
+#
+# Ключ монтируется в корень, а не в /tmp: образ dind кладёт на /tmp свою tmpfs
+# и перекрывает всё, что было смонтировано туда снаружи.
+#
+# sshd ставится после старта: entrypoint образа занят своим делом — поднимает
+# dockerd, и второй демон в команду запуска не помещается.
+if probe "$DIND_PORT"; then
+  echo "mcp-dind уже отвечает на порту $DIND_PORT"
+else
+  docker rm -f mcp-dind >/dev/null 2>&1 || true
+  ssh-keygen -R "[127.0.0.1]:$DIND_PORT" >/dev/null 2>&1 || true
+  docker run -d --privileged --name mcp-dind -p "$DIND_PORT:22" \
+    -v "$KEY.pub:/authkey:ro" docker:28-dind >/dev/null
+
+  waited=0
+  until docker exec mcp-dind docker info >/dev/null 2>&1; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 90 ]; then
+      echo "докер внутри mcp-dind не поднялся за 90 секунд" >&2
+      docker logs --tail 20 mcp-dind >&2
+      exit 1
+    fi
+    sleep 1
+  done
+
+  docker exec mcp-dind sh -c '
+    apk add --no-cache openssh >/dev/null &&
+    ssh-keygen -A >/dev/null &&
+    mkdir -p /root/.ssh && cp /authkey /root/.ssh/authorized_keys &&
+    chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys &&
+    /usr/sbin/sshd -e' >/dev/null
+
+  waited=0
+  until probe "$DIND_PORT"; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 60 ]; then
+      echo "mcp-dind не ответил за 60 секунд" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  echo "mcp-dind готов на порту $DIND_PORT"
+fi
+
+# Образ для контейнеров, которые заводит живой тест: тянется один раз при
+# подъёме лаборатории, чтобы сам тест не зависел от сети.
+docker exec mcp-dind docker image inspect alpine:3.20 >/dev/null 2>&1 ||
+  docker exec mcp-dind docker pull -q alpine:3.20 >/dev/null
+
 echo
 echo "лаборатория поднята, ключ: $KEY"
 echo "живая сетка: npm run test:live"
-echo "снести: docker rm -f mcp-alpine mcp-debian mcp-router"
+echo "снести: docker rm -f mcp-alpine mcp-debian mcp-router mcp-dind"

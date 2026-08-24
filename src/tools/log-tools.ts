@@ -7,7 +7,7 @@ import { CallToolRequest, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { READS_REMOTE } from './annotations.js';
 import { PROFILE_PARAM_DESCRIPTION, SUDO_PARAM_DESCRIPTION } from './params.js';
 import { logger } from '../utils/logger.js';
-import { toolFailure, type ToolResult } from '../utils/tool-result.js';
+import { CallerError, toolFailure, type ToolResult } from '../utils/tool-result.js';
 import { resolveSSHConfig } from '../utils/profile-resolver.js';
 import { SSHExecutor, DEFAULT_TIMEOUT_MS } from '../managers/ssh-executor.js';
 import { validateArrayParameter, createValidationErrorResponse } from '../utils/array-validator.js';
@@ -23,11 +23,49 @@ import { parseGrepLines, type FoundLine } from '../utils/grep-lines.js';
 import { shellCount, shellQuote } from '../utils/shell-arg.js';
 import { requireText, requireTextList } from '../utils/tool-args.js';
 import { resolveRemotePath } from '../managers/path-guard.js';
+import { resolveContainerLog, type ContainerLog } from '../managers/container-logs.js';
+import { unwrapJsonLog, unwrapJsonLogLine } from '../utils/json-log.js';
 import { posix as posixPath } from 'path';
 
 /** Lines that carry something, as the answer counts them */
 function countLines(text: string): number {
   return text ? text.split('\n').filter((line) => line.length > 0).length : 0;
+}
+
+/** What grep -n puts before a line: its number, then ':' for a match or '-' for context */
+const GREP_LINE_PREFIX = /^(\d+[:-])(.*)$/;
+
+/** Plain lines: a container's are records, everything else is already text */
+function readAs(text: string, container?: ContainerLog): string {
+  return container ? unwrapJsonLog(text) : text;
+}
+
+/** The same for grep output, where the line number in front has to survive */
+function readMatches(text: string, container?: ContainerLog): string {
+  if (!container || !text) return text;
+
+  return text
+    .split('\n')
+    .map((line) => {
+      const numbered = GREP_LINE_PREFIX.exec(line);
+      return numbered
+        ? `${numbered[1]}${unwrapJsonLogLine(numbered[2])}`
+        : unwrapJsonLogLine(line);
+    })
+    .join('\n');
+}
+
+/** Said in the answer, because the caller named a container and got a file */
+function sourceNote(log: ContainerLog): string {
+  return (
+    `Note: read from the ${log.driver} log of ${log.container} (${log.engine}, container ` +
+    `${log.status}) at ${log.path}.`
+  );
+}
+
+/** The same fact for the structured answer */
+function sourceLabel(log: ContainerLog): string {
+  return `${log.engine} ${log.driver} ${log.path}`;
 }
 
 /** Characters that make a name count as a pattern instead of a file name */
@@ -43,6 +81,7 @@ const GLOB_LITERAL = 'SSH_MCP_GLOB_LITERAL';
 interface LogArgs {
   profile?: string;
   path?: unknown;
+  container?: unknown;
   lines?: number;
   sudo?: boolean;
   query?: unknown;
@@ -75,6 +114,8 @@ interface SearchOutcome {
   lines?: FoundLine[];
   /** Names of the matching files, when only names were asked for */
   files?: string[];
+  /** Where the lines came from when a container was named instead of a path */
+  source?: string;
 }
 
 const SEARCH_OUTPUT_SCHEMA: NonNullable<Tool['outputSchema']> = {
@@ -120,6 +161,12 @@ const SEARCH_OUTPUT_SCHEMA: NonNullable<Tool['outputSchema']> = {
           context: { type: 'boolean' },
         },
       },
+    },
+    source: {
+      type: 'string',
+      description:
+        'Named only when container was asked: the engine, the driver and the file the lines ' +
+        'were read from.',
     },
     files: {
       type: 'array',
@@ -261,6 +308,20 @@ export class LogTools {
       default: false,
     };
 
+    // A container writes to a file like everything else here; what changes is
+    // who knows the file name. The engine is asked, and the answer says which
+    // file was read — a driver that keeps no file is named instead of
+    // answering with nothing
+    const CONTAINER_PARAM = {
+      type: 'string',
+      description:
+        'Read this container\'s output instead of a file: docker is asked where it writes, and the ' +
+        'answer names the file it read. Whatever cannot be read this way — a driver that keeps no ' +
+        'file, an engine that is not docker, a name nothing answers to — comes back said aloud, ' +
+        'naming ssh_exec as the way through. The file belongs to root, so sudo: true. ' +
+        'Give this or path, never both.',
+    };
+
     return [
       // ssh_log_tail
       {
@@ -268,7 +329,8 @@ export class LogTools {
         annotations: { title: 'Tail a log file', ...READS_REMOTE },
         description:
           'Returns the last lines of one or more log files, whatever their size — nothing is shipped here ' +
-          'to be trimmed locally. To look for something rather than read the end, use ssh_log_search.',
+          'to be trimmed locally. A container is read by name instead of by path, through the file its ' +
+          'driver writes. To look for something rather than read the end, use ssh_log_search.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -277,6 +339,7 @@ export class LogTools {
               description: PROFILE_PARAM_DESCRIPTION,
             },
             path: PATH_PARAM,
+            container: CONTAINER_PARAM,
             lines: {
               type: 'number',
               description: 'How many lines from the end. Default: 100',
@@ -284,7 +347,7 @@ export class LogTools {
             },
             sudo: SUDO_PARAM,
           },
-          required: ['profile', 'path'],
+          required: ['profile'],
         },
       },
       
@@ -296,7 +359,7 @@ export class LogTools {
           'Greps log files on the server and returns the matching lines with their paths, or the paths ' +
           'alone when line bodies are not wanted. An empty answer means no match, never a failed search — ' +
           'files that could not be read are listed apart. For the tail of a file rather than a search ' +
-          'through it, ssh_log_tail is cheaper.',
+          'through it, ssh_log_tail is cheaper. A container is searched by name instead of by path.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -305,6 +368,7 @@ export class LogTools {
               description: PROFILE_PARAM_DESCRIPTION,
             },
             path: PATH_PARAM,
+            container: CONTAINER_PARAM,
             query: {
               type: 'string',
               description: 'Regex, grep -E dialect.',
@@ -364,7 +428,7 @@ export class LogTools {
             },
             sudo: SUDO_PARAM,
           },
-          required: ['profile', 'path', 'query'],
+          required: ['profile', 'query'],
         },
         outputSchema: SEARCH_OUTPUT_SCHEMA,
       },
@@ -384,7 +448,7 @@ export class LogTools {
         case 'ssh_log_search':
           return await this.handleLogSearch(request, signal);
         default:
-          throw new Error(`Unknown tool: ${toolName}`);
+          throw new CallerError(`Unknown tool: ${toolName}`);
       }
     } catch (error: any) {
       logger.error(`${toolName} failed:`, error);
@@ -405,13 +469,14 @@ export class LogTools {
     }
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
     // The schema's type guarantees nothing: MCP hands over arguments as is
     const lines = shellCount(args.lines ?? 100, 'lines');
     const sudo = args.sudo || false;
+    const source = await this.resolveSources(sshConfig, args, sudo, signal);
 
     // Profile rules are checked by buildSafePath — already on the expanded path
-    const { paths, notes } = await this.expandPatterns(sshConfig, requested, sudo);
+    const { paths, notes } = await this.expandPatterns(sshConfig, source.paths, sudo);
+    if (source.container) notes.push(sourceNote(source.container));
 
     // Single log - simple result
     if (paths.length === 1) {
@@ -428,7 +493,10 @@ export class LogTools {
           {
             type: 'text',
             text: this.withGlobNotes(
-              withTruncationNote(result.stdout || '(empty log)', result.truncated),
+              withTruncationNote(
+                readAs(result.stdout, source.container) || '(empty log)',
+                result.truncated
+              ),
               notes
             ),
           },
@@ -517,7 +585,6 @@ export class LogTools {
     }
     const sshConfig = resolveSSHConfig({ profile: args.profile });
     
-    const requested = requireTextList(args.path, 'path', '"/var/log/syslog"');
     const query = requireText(args.query, 'query', '"error"');
     const context = shellCount(args.context ?? 0, 'context');
     const caseSensitive = args.caseSensitive || false;
@@ -526,6 +593,7 @@ export class LogTools {
     const from = readMatchEnd(args.from);
     const namesOnly = args.namesOnly === true;
     const timeout = args.timeout;
+    const source = await this.resolveSources(sshConfig, args, sudo, signal, args.recursive === true);
 
     if (namesOnly && context > 0) {
       throw new Error(
@@ -537,11 +605,12 @@ export class LogTools {
     // Profile rules are checked by buildSafePath — already on the expanded path
     const expansion = await this.expandPatterns(
       sshConfig,
-      requested,
+      source.paths,
       sudo,
       args.recursive === true
     );
     const notes = expansion.notes;
+    if (source.container) notes.push(sourceNote(source.container));
     // Directories find could not walk are unreadable in the same sense as a
     // file grep could not open, and travel in the same field
     const refusedDirs = expansion.unreadable;
@@ -688,6 +757,7 @@ export class LogTools {
           limited: false,
           truncated: result.truncated,
           files: found,
+          ...(source.container ? { source: sourceLabel(source.container) } : {}),
         } satisfies SearchOutcome,
       };
     }
@@ -717,6 +787,7 @@ export class LogTools {
         limited,
         truncated: result.truncated,
         lines,
+        ...(source.container ? { source: sourceLabel(source.container) } : {}),
       });
 
       if (!result.stdout) {
@@ -726,7 +797,7 @@ export class LogTools {
         };
       }
 
-      const limited = limitMatches(result.stdout, maxMatches, from);
+      const limited = limitMatches(readMatches(result.stdout, source.container), maxMatches, from);
 
       return {
         content: [
@@ -840,6 +911,40 @@ export class LogTools {
         lines: results.flatMap((result) => result.lines ?? []),
       } satisfies SearchOutcome,
     };
+  }
+
+  /**
+   * Which files the call is about: the ones named, or the one a container writes to.
+   *
+   * The two are alternatives, not a pair — a call carrying both names two
+   * different sources and gets neither, rather than a silent choice between them.
+   */
+  private async resolveSources(
+    sshConfig: any,
+    args: LogArgs,
+    sudo: boolean,
+    signal?: AbortSignal,
+    recursive = false
+  ): Promise<{ paths: string[]; container?: ContainerLog }> {
+    if (args.container === undefined) {
+      return { paths: requireTextList(args.path, 'path', '"/var/log/syslog"') };
+    }
+    if (args.path !== undefined) {
+      throw new Error(
+        'path and container name two different sources — pass one of them. A container is read ' +
+          'through the file its driver writes, and that file is found by asking the engine.'
+      );
+    }
+    if (recursive) {
+      throw new Error(
+        'recursive walks a directory and a container names a single file — drop one of the two.'
+      );
+    }
+
+    const name = requireText(args.container, 'container', '"web-1"');
+    const log = await resolveContainerLog(this.executor, sshConfig, name, { sudo, signal });
+
+    return { paths: [log.path], container: log };
   }
 
   /**

@@ -9,6 +9,10 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EXEC_FALLBACK } from '../../src/utils/tool-result.js';
+
+/** Текст отказа целиком: к причине ответ всегда добавляет выход через ssh_exec */
+const refusal = (reason: string) => `${reason} ${EXEC_FALLBACK}`;
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { SSHExecuteOptions, SSHExecuteResult } from '../../src/managers/ssh-executor.js';
 
@@ -54,6 +58,12 @@ const { TRUNCATED_OUTPUT_NOTE } = await import('../../src/utils/output-notes.js'
 let logs: Map<string, string[]>;
 /** Ответы, которые сервер даёт вместо обычных: ключ — образец команды */
 let overrides: Array<[RegExp, Partial<SSHExecuteResult>]>;
+/** Что движок знает о контейнерах: имя → путь журнала, драйвер, состояние */
+let containers: Map<string, { logPath: string; driver: string; status: string }>;
+/** Какой движок стоит на машине — и стоит ли вообще */
+let engine: 'docker' | 'podman' | 'none';
+/** Отказ движка на любой вопрос: сокет под root, спрашивающий не в группе */
+let engineDenies: string | null;
 
 const ok = (stdout = ''): SSHExecuteResult =>
   ({ stdout, stderr: '', exitCode: 0, truncated: false }) as SSHExecuteResult;
@@ -89,6 +99,19 @@ function answer(command: string): SSHExecuteResult {
 function respond(command: string): SSHExecuteResult {
   const override = overrides.find(([pattern]) => pattern.test(command));
   if (override) return { ...ok(), ...override[1] } as SSHExecuteResult;
+
+  // Движок: один вопрос про журнал контейнера, ответ строкой из трёх полей
+  if (command.startsWith('if command -v docker ')) {
+    if (engine === 'none') return ok('SSH_MCP_NO_DOCKER\n');
+    if (engine === 'podman') return ok('SSH_MCP_PODMAN_ONLY\n');
+    if (engineDenies) return fail(engineDenies);
+
+    const name = /-- '([^']*)'/.exec(command)?.[1] ?? '';
+    const known = containers.get(name);
+    // Незнакомого имени движок не знает — и говорит это, а не молчит
+    if (!known) return fail(`Error response from daemon: No such object: ${name}`);
+    return ok(`${known.logPath}|${known.driver}|${known.status}\n`);
+  }
 
   // Куда ведёт путь: сервер без readlink отвечает «выяснить нечем»
   if (command.startsWith('p=')) return ok('SSH_MCP_PATH_UNRESOLVED\n');
@@ -225,6 +248,11 @@ beforeEach(() => {
     ['/var/log/nginx.log', ['GET /', 'error 500', 'GET /about']],
   ]);
   overrides = [];
+  containers = new Map([
+    ['web-1', { logPath: '/var/lib/docker/containers/abc/abc-json.log', driver: 'json-file', status: 'running' }],
+  ]);
+  engine = 'docker';
+  engineDenies = null;
   profile.config = { host: 'example.com', username: 'deploy', port: 22 };
   executeMock.mockImplementation(async (_config: unknown, command: string) => answer(command));
   passportMock.mockResolvedValue(fullPassport());
@@ -270,10 +298,16 @@ describe('объявление инструментов', () => {
     }
   });
 
-  it('хвосту обязательны машина и путь, а число строк по умолчанию — сто', () => {
+  it('хвосту обязательна машина, источник — путь либо контейнер, строк по умолчанию сто', () => {
     const schema = toolNamed('ssh_log_tail').inputSchema as any;
-    expect(schema.required).toEqual(['profile', 'path']);
-    expect(Object.keys(schema.properties)).toEqual(['profile', 'path', 'lines', 'sudo']);
+    expect(schema.required).toEqual(['profile']);
+    expect(Object.keys(schema.properties)).toEqual([
+      'profile',
+      'path',
+      'container',
+      'lines',
+      'sudo',
+    ]);
     expect(schema.properties.lines.default).toBe(100);
     expect(schema.properties.sudo.default).toBe(false);
   });
@@ -300,12 +334,15 @@ describe('объявление инструментов', () => {
     expect(output).not.toContain('conf.d/api.conf');
   });
 
-  it('поиску обязательны машина, путь и запрос, а контекст и регистр по умолчанию выключены', () => {
+  it('поиску обязательны машина и запрос, источник — путь либо контейнер', () => {
     const schema = toolNamed('ssh_log_search').inputSchema as any;
-    expect(schema.required).toEqual(['profile', 'path', 'query']);
+    // Путь из обязательных ушёл не по забывчивости: источником бывает и
+    // контейнер, а взаимное исключение двух проверяется в вызове
+    expect(schema.required).toEqual(['profile', 'query']);
     expect(Object.keys(schema.properties)).toEqual([
       'profile',
       'path',
+      'container',
       'query',
       'context',
       'caseSensitive',
@@ -383,15 +420,17 @@ describe('ssh_log_tail: один журнал', () => {
 
   it('недоступный журнал объясняется текстом от сервера', async () => {
     expect(await tail({ path: '/var/log/missing.log' })).toBe(
-      "Error: Failed to read log: tail: cannot open '/var/log/missing.log' for reading:" +
-        ' No such file or directory'
+      refusal(
+        "Error: Failed to read log: tail: cannot open '/var/log/missing.log' for reading:" +
+          ' No such file or directory'
+      )
     );
   });
 
   it('если сервер объяснился в stdout, ошибка берёт объяснение оттуда', async () => {
     overrides = [[/^tail /, { exitCode: 1, stderr: '', stdout: 'tail: permission denied' }]];
     expect(await tail({ path: '/var/log/syslog' })).toBe(
-      'Error: Failed to read log: tail: permission denied'
+      refusal('Error: Failed to read log: tail: permission denied')
     );
   });
 
@@ -515,14 +554,14 @@ describe('ssh_log_search: один журнал', () => {
 
   it('настоящая ошибка grep остаётся ошибкой', async () => {
     expect(await search({ path: '/var/log/missing.log', query: 'ERROR' })).toBe(
-      'Error: Failed to search log: grep: /var/log/missing.log: No such file or directory'
+      refusal('Error: Failed to search log: grep: /var/log/missing.log: No such file or directory')
     );
   });
 
   it('если сервер объяснился в stdout, ошибка берёт объяснение оттуда', async () => {
     overrides = [[/^grep /, { exitCode: 2, stderr: '', stdout: 'grep: permission denied' }]];
     expect(await search({ path: '/var/log/syslog', query: 'ERROR', from: 'start' })).toBe(
-      'Error: Failed to search log: grep: permission denied'
+      refusal('Error: Failed to search log: grep: permission denied')
     );
   });
 
@@ -741,7 +780,7 @@ describe('ssh_log_search: один журнал', () => {
     ];
 
     expect(await search({ path: '/var/log/syslog', query: 'ERROR' })).toBe(
-      'Error: Failed to search log: grep: /var/log/syslog: Permission denied'
+      refusal('Error: Failed to search log: grep: /var/log/syslog: Permission denied')
     );
   });
 
@@ -968,7 +1007,9 @@ describe('шаблон имени', () => {
 
   it('шаблон в каталоге — отказ до первой команды чтения', async () => {
     expect(await search({ path: '/var/*/app.log', query: 'ERROR' })).toBe(
-      'Error: cannot expand "/var/*/app.log": a pattern is supported in the file name, not in the directory.'
+      refusal(
+        'Error: cannot expand "/var/*/app.log": a pattern is supported in the file name, not in the directory.'
+      )
     );
     expect(commandFor(/^grep /)).toBeUndefined();
     expect(commandFor(/^if \[ -f /)).toBeUndefined();
@@ -976,10 +1017,10 @@ describe('шаблон имени', () => {
 
   it('шаблон без совпадений называет себя, а не отвечает словами утилиты', async () => {
     expect(await search({ path: '/var/log/*.journal', query: 'ERROR' })).toBe(
-      'Error: no files match "/var/log/*.journal"'
+      refusal('Error: no files match "/var/log/*.journal"')
     );
     expect(await tail({ path: '/var/log/*.journal' })).toBe(
-      'Error: no files match "/var/log/*.journal"'
+      refusal('Error: no files match "/var/log/*.journal"')
     );
   });
 
@@ -1009,7 +1050,9 @@ describe('шаблон имени', () => {
     overrides.push([/^if \[ -f /, { stdout: '', truncated: true }]);
 
     expect(await search({ path: '/var/log/*.log', query: 'ERROR' })).toBe(
-      'Error: cannot expand "/var/log/*.log": the list of matching files was too long to read.'
+      refusal(
+        'Error: cannot expand "/var/log/*.log": the list of matching files was too long to read.'
+      )
     );
   });
 
@@ -1389,5 +1432,210 @@ describe('ssh_log_search: заметка появляется только по 
 
     expect(output).toContain('/var/log/closed');
     expect(output).not.toContain('/var/log/other');
+  });
+});
+
+/**
+ * Журнал контейнера.
+ *
+ * Путь к нему знает только движок, поэтому проверяется вся цепочка: что
+ * спросили движок, что прочитали названный им файл и что отдали наружу текст
+ * контейнера, а не запись драйвера вокруг него. Отдельно — случаи, где читать
+ * нечего: там ответ обязан называть причину, а не приезжать пустым.
+ */
+describe('журнал контейнера', () => {
+  const CONTAINER_LOG = '/var/lib/docker/containers/abc/abc-json.log';
+
+  const record = (text: string, stream = 'stdout') =>
+    JSON.stringify({ log: `${text}\n`, stream, time: '2026-08-24T10:34:16.835543924Z' });
+
+  beforeEach(() => {
+    logs.set(CONTAINER_LOG, [
+      record('listening on 8080'),
+      record('upstream timed out: 502 Bad Gateway', 'stderr'),
+      record('ready'),
+    ]);
+  });
+
+  it('хвост читается из файла, который назвал движок', async () => {
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(commandFor(/^tail /)![0]).toContain(CONTAINER_LOG);
+    expect(output).toContain('upstream timed out: 502 Bad Gateway');
+    // Обёртка драйвера наружу не выходит: агент читает то, что напечатал контейнер
+    expect(output).not.toContain('"stream"');
+    expect(output).not.toContain('\\n');
+  });
+
+  it('источник назван в ответе: движок, драйвер и файл', async () => {
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('json-file');
+    expect(output).toContain('web-1');
+    expect(output).toContain(CONTAINER_LOG);
+  });
+
+  it('поиск сохраняет номера строк и разворачивает записи', async () => {
+    const response = await responseOf(
+      call('ssh_log_search', { profile: 'production', container: 'web-1', query: '502' })
+    );
+    const outcome = response.structuredContent as any;
+
+    expect(outcome.matches).toBe(1);
+    expect(outcome.lines[0].line).toBe(2);
+    expect(outcome.lines[0].text).toBe('upstream timed out: 502 Bad Gateway');
+    expect(outcome.source).toBe(`docker json-file ${CONTAINER_LOG}`);
+  });
+
+  it('вопрос движку идёт под тем же sudo, что и чтение', async () => {
+    await tail({ profile: 'production', container: 'web-1', sudo: true });
+
+    expect(commandFor(/docker inspect/)![1].sudo).toBe(true);
+    expect(commandFor(/^tail /)![1].sudo).toBe(true);
+  });
+
+  it('драйвер без файла назван вслух, и читать никто не идёт', async () => {
+    containers.set('web-1', { logPath: '', driver: 'journald', status: 'running' });
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('journald');
+    expect(commandFor(/^tail /)).toBeUndefined();
+  });
+
+  it('машина без движка отвечает про движок, а не пустотой', async () => {
+    engine = 'none';
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('no docker on this machine');
+    expect(commandFor(/^tail /)).toBeUndefined();
+  });
+
+  it('podman назван своим именем', async () => {
+    engine = 'podman';
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('podman');
+  });
+
+  /**
+   * Случаев, где читать нечем, больше, чем можно перечислить: чужой движок,
+   * незнакомый драйвер, машина, которой никто не видел. Перечислять их и не
+   * нужно — выход у всех один, и он обязан быть в самом отказе. Иначе агент
+   * после первого отказа идёт искать обход вслепую.
+   */
+  it.each([
+    ['движка нет', () => { engine = 'none'; }],
+    ['движок чужой', () => { engine = 'podman'; }],
+    ['драйвер без файла', () => { containers.set('web-1', { logPath: '', driver: 'journald', status: 'running' }); }],
+    ['имя неизвестно', () => { containers.clear(); }],
+    ['движок отказал', () => { engineDenies = 'permission denied'; }],
+  ])('отказ «%s» называет инструмент, которым это всё-таки делается', async (_case, arrange) => {
+    arrange();
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('ssh_exec');
+  });
+
+  it('неизвестное имя контейнера отличается от отказа прав', async () => {
+    const output = await tail({ profile: 'production', container: 'web-9' });
+
+    expect(output).toContain('no container named web-9');
+    expect(output).not.toContain('sudo: true');
+  });
+
+  it('отказ по правам зовёт поднять права', async () => {
+    engineDenies = 'permission denied while trying to connect to the Docker daemon socket';
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('sudo: true');
+  });
+
+  /**
+   * Тот же отказ, но права уже подняты: советовать sudo второй раз — значит
+   * посылать по кругу. Причина остаётся, совет уходит.
+   */
+  it('под sudo тот же отказ повторно к sudo не отсылает', async () => {
+    engineDenies = 'permission denied while trying to connect to the Docker daemon socket';
+
+    const output = await tail({ profile: 'production', container: 'web-1', sudo: true });
+
+    expect(output).toContain('permission denied');
+    expect(output).not.toContain('repeat with sudo: true');
+  });
+
+  it('ответ движка в незнакомой форме назван целиком, а не разобран наугад', async () => {
+    overrides.push([/docker inspect/, { stdout: 'nonsense\n' }]);
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('nonsense');
+    expect(commandFor(/^tail /)).toBeUndefined();
+  });
+
+  /**
+   * Драйвер тот самый, а файла движок не назвал — так отвечает контейнер,
+   * который ещё ничего не писал. Пустое имя пошло бы в `tail` как весь корень.
+   */
+  it('json-file без пути к файлу — тоже отказ', async () => {
+    containers.set('web-1', { logPath: '', driver: 'json-file', status: 'running' });
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('named no log file');
+    expect(commandFor(/^tail /)).toBeUndefined();
+  });
+
+  it('состояние, которого движок не назвал, приезжает словом, а не пустотой', async () => {
+    containers.set('web-1', { logPath: CONTAINER_LOG, driver: 'json-file', status: '' });
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('container unknown');
+  });
+
+  it('отказ без объяснения не приезжает пустой жалобой', async () => {
+    overrides.push([/docker inspect/, { stdout: '', stderr: '', exitCode: 1 }]);
+
+    const output = await tail({ profile: 'production', container: 'web-1' });
+
+    expect(output).toContain('no reason given');
+  });
+
+  /**
+   * Вопрос о журнале ничего не меняет, и повторить его после обрыва связи
+   * безопаснее, чем провалить весь вызов.
+   */
+  it('вопрос движку помечен повторяемым', async () => {
+    await tail({ profile: 'production', container: 'web-1' });
+
+    expect(commandFor(/docker inspect/)![1].idempotent).toBe(true);
+  });
+
+  it('путь и контейнер вместе — отказ, движок не спрашивают', async () => {
+    const output = await tail({
+      profile: 'production',
+      container: 'web-1',
+      path: '/var/log/syslog',
+    });
+
+    expect(output).toContain('two different sources');
+    expect(commandFor(/docker inspect/)).toBeUndefined();
+  });
+
+  it('обход дерева к контейнеру не применяется', async () => {
+    const output = await search({
+      profile: 'production',
+      container: 'web-1',
+      query: '502',
+      recursive: true,
+    });
+
+    expect(output).toContain('recursive');
+    expect(commandFor(/docker inspect/)).toBeUndefined();
   });
 });

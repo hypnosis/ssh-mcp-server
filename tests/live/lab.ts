@@ -41,6 +41,13 @@ export const LAB_SERVERS: LabServer[] = [
  */
 export const LAB_ROUTER: LabServer = { name: 'router/dropbear', port: 2233, container: 'mcp-router' };
 
+/**
+ * Машина с докером внутри: единственная в лаборатории, где журнал контейнера
+ * лежит там, куда указывает `docker inspect`. Тоже вне LAB_SERVERS — общей
+ * сетке она не нужна, а проверка журналов контейнеров без неё непроверяема.
+ */
+export const LAB_DOCKER: LabServer = { name: 'dind/docker', port: 2234, container: 'mcp-dind' };
+
 /** Строгий режим: отсутствие лаборатории — падение, а не пропуск */
 export const LAB_REQUIRED = process.env.SSH_MCP_LIVE === '1';
 
@@ -128,6 +135,15 @@ export async function labUnavailableReason(): Promise<string | null> {
     if (!(await portOpen(server.port))) return `порт ${server.port} (${server.name}) молчит`;
   }
 
+  return null;
+}
+
+/** То же для узла с докером: свой порт, свой сторож */
+export async function dockerUnavailableReason(): Promise<string | null> {
+  if (!existsSync(LAB_KEY)) return `нет ключа ${LAB_KEY}`;
+  if (!(await portOpen(LAB_DOCKER.port))) {
+    return `порт ${LAB_DOCKER.port} (${LAB_DOCKER.name}) молчит`;
+  }
   return null;
 }
 

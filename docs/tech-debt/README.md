@@ -46,6 +46,7 @@
 | TD-34 | Записать файл можно, назначить ему владельца — нет | ✅ закрыт 2026-08-23 | [archive/write-cannot-set-an-owner_34.md](archive/write-cannot-set-an-owner_34.md) |
 | TD-35 | Список файлов обещан полями, а приезжает текстом | ✅ закрыт 2026-08-23 | [archive/list-answers-without-a-schema_35.md](archive/list-answers-without-a-schema_35.md) |
 | TD-36 | Экран не прочитан, и поднять права нечем | ✅ закрыт 2026-08-23 | [archive/firewall-unreadable-and-unfixable_36.md](archive/firewall-unreadable-and-unfixable_36.md) |
+| TD-37 | Логи контейнера достаются только через `ssh_exec` | ✅ закрыт 2026-08-24 | [archive/container-logs-need-exec_37.md](archive/container-logs-need-exec_37.md) |
 | TD-38 | Расхождение сумм не названо в ответе, хотя исход у него есть | ✅ закрыт 2026-08-24 | [archive/mismatch-missing-from-answer_38.md](archive/mismatch-missing-from-answer_38.md) |
 
 **Жизненный цикл** — как у спринтов: закрыт → `archive/`, отказались → `deprecated/`.

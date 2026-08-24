@@ -25,7 +25,7 @@ magick "$WORK/glyph.png" -background none -gravity center \
 # тёмная тема: тот же знак белым
 magick "$WORK/square.png" -channel RGB -negate +channel "$WORK/square-dark.png"
 
-for size in 512 128 48; do
+for size in 512 400 128 48; do
   magick "$WORK/square.png" -filter Lanczos -resize "${size}x${size}" \
     -strip "$OUT/icon-${size}.png"
   magick "$WORK/square-dark.png" -filter Lanczos -resize "${size}x${size}" \

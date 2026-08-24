@@ -21,7 +21,7 @@ Works with Claude Code, Codex CLI, Cline, opencode, Gemini CLI, Qwen Code, Herme
 
 [![MCP Registry](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fregistry.modelcontextprotocol.io%2Fv0%2Fservers%3Fsearch%3Dio.github.hypnosis%2Fssh-mcp-server%26version%3Dlatest&query=%24.servers%5B0%5D.server.version&style=flat-square&logo=modelcontextprotocol&logoColor=white&label=MCP%20Registry&color=0F172A)](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.hypnosis/ssh-mcp-server&version=latest) [![Glama](https://glama.ai/mcp/servers/hypnosis/ssh-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/hypnosis/ssh-mcp-server) [![Smithery](https://img.shields.io/badge/Smithery-install-EA580C?style=flat-square)](https://smithery.ai/servers/hypnosis/ssh-mcp-server) [![npm downloads](https://img.shields.io/npm/dm/@hypnosis/ssh-mcp-server?style=flat-square&logo=npm&logoColor=white&color=2EA043&label=downloads)](https://www.npmjs.com/package/@hypnosis/ssh-mcp-server) [![tests](https://img.shields.io/github/actions/workflow/status/hypnosis/ssh-mcp-server/test.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=tests)](https://github.com/hypnosis/ssh-mcp-server/actions/workflows/test.yml)
 
-**[Install](#install-in-30-seconds) · [Tools](#tools) · [Setup](#set-up-the-ssh-mcp-server) · [Security](#destructive-command-protection-for-ai-agents) · [Roadmap](#ssh-mcp-server-roadmap) · [Docs](docs/tools.md) · [Changelog](CHANGELOG.md)**
+**[Install](#install-in-30-seconds) · [Tools](#ssh-mcp-tools-for-server-operations) · [Setup](#set-up-the-ssh-mcp-server) · [Security](#destructive-command-protection-for-ai-agents) · [Roadmap](#ssh-mcp-server-roadmap) · [Docs](docs/tools.md) · [Changelog](CHANGELOG.md)**
 
 ---
 
@@ -39,22 +39,6 @@ Add it to your MCP client — **Claude Code**, for example — for every project
 claude mcp add ssh -s user \
   -e SSH_PROFILES_FILE="$HOME/.claude/ssh-profiles.json" \
   -- npx -y @hypnosis/ssh-mcp-server
-```
-
-Or write it by hand — the same server in the config shape most clients share:
-
-```json
-{
-  "mcpServers": {
-    "ssh": {
-      "command": "npx",
-      "args": ["-y", "@hypnosis/ssh-mcp-server"],
-      "env": {
-        "SSH_PROFILES_FILE": "~/.claude/ssh-profiles.json"
-      }
-    }
-  }
-}
 ```
 
 Then create `~/.claude/ssh-profiles.json` with at least one machine:
@@ -592,10 +576,9 @@ read in the next, or reason about tools it does not recognize. It is a seatbelt,
 engine: recoverable operations remain your call. Path restrictions and quoting rules are
 documented in **[docs/security.md](docs/security.md)**.
 
-## Tools
+## SSH MCP tools for server operations
 
-18 SSH MCP tools for server operations. Full parameters and examples live in
-**[docs/tools.md](docs/tools.md)**.
+18 tools. Full parameters and examples live in **[docs/tools.md](docs/tools.md)**.
 
 ### MCP tool safety annotations
 
